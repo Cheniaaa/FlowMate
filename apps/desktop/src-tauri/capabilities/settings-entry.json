@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-settings-entry",
+  "description": "主窗口与复用小窗可请求主窗口内的设置分类导航，不创建设置 WebView。",
+  "windows": ["main", "quick"],
+  "permissions": ["host-open-settings"]
+}

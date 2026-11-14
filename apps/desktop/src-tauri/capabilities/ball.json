@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "ball-local-only",
+  "description": "悬浮球只能切换入口、读取脱敏待办聚合及拖动自身，不获得设置、Runtime 连接、Run 内容、凭据或通用插件命令。",
+  "windows": ["ball"],
+  "permissions": ["host-pending-counts", "host-window-entry", "host-ball-drag", "core:event:allow-listen", "core:event:allow-unlisten"]
+}

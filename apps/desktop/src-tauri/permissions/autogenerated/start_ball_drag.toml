@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-ball-drag"
+description = "Enables the start_ball_drag command without any pre-configured scope."
+commands.allow = ["start_ball_drag"]
+
+[[permission]]
+identifier = "deny-start-ball-drag"
+description = "Denies the start_ball_drag command without any pre-configured scope."
+commands.deny = ["start_ball_drag"]

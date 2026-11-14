@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pending-counts"
+description = "Enables the pending_counts command without any pre-configured scope."
+commands.allow = ["pending_counts"]
+
+[[permission]]
+identifier = "deny-pending-counts"
+description = "Denies the pending_counts command without any pre-configured scope."
+commands.deny = ["pending_counts"]

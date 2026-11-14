@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-choose-export-target"
+description = "Enables the choose_export_target command without any pre-configured scope."
+commands.allow = ["choose_export_target"]
+
+[[permission]]
+identifier = "deny-choose-export-target"
+description = "Denies the choose_export_target command without any pre-configured scope."
+commands.deny = ["choose_export_target"]

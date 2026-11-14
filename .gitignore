@@ -1,0 +1,33 @@
+# 本机环境、凭据和实验原始数据
+.venv/
+.local/
+.env
+.env.*
+!.env.example
+*.local.json
+
+# 构建产物与缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+node_modules/
+target/
+dist/
+build/
+
+# 本地开发资料、Agent记录及独立工作副本
+AGENTS.md
+/AgenticWorkFlow.md
+/docs/
+/evals/
+/experiments/
+/scripts/
+/tests/
+.planning/
+.superpowers/
+.worktrees/

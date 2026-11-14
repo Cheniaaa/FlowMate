@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-runtime-connection"
+description = "Enables the runtime_connection command without any pre-configured scope."
+commands.allow = ["runtime_connection"]
+
+[[permission]]
+identifier = "deny-runtime-connection"
+description = "Denies the runtime_connection command without any pre-configured scope."
+commands.deny = ["runtime_connection"]

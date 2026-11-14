@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-select-resources"
+description = "Enables the select_resources command without any pre-configured scope."
+commands.allow = ["select_resources"]
+
+[[permission]]
+identifier = "deny-select-resources"
+description = "Denies the select_resources command without any pre-configured scope."
+commands.deny = ["select_resources"]

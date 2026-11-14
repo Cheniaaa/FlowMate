@@ -1,0 +1,64 @@
+[[permission]]
+identifier = "host-main"
+description = "主窗口与小窗的连接、停机和原生选择；不含凭据或任意路径入口。"
+commands.allow = ["runtime_connection", "stop_runtime", "select_resources", "choose_export_target"]
+
+[[permission]]
+identifier = "host-settings"
+description = "仅本地主窗口可保存、清除、查询凭据是否已配置，不能读回密钥。"
+commands.allow = ["save_credential", "clear_credential", "credential_status"]
+
+[[permission]]
+identifier = "host-open-settings"
+description = "主窗与小窗可请求主窗口内的设置分类导航；不创建独立设置窗口或授予凭据权限。"
+commands.allow = ["open_settings"]
+
+[[permission]]
+identifier = "host-settings-navigation"
+description = "仅主窗口可领取一次性的设置分类导航请求，事件不携带分类。"
+commands.allow = ["take_settings_navigation", "return_to_quick"]
+
+[[permission]]
+identifier = "host-open-external"
+description = "本地产品窗口仅能通过校验后的 http(s) 外链入口打开系统浏览器，不开放通用 opener 权限。"
+commands.allow = ["open_external"]
+
+[[permission]]
+identifier = "host-window-read"
+description = "只有本地主窗和小窗可读取原生入口设置。"
+commands.allow = ["window_settings"]
+
+[[permission]]
+identifier = "host-pending-counts"
+description = "三个本地产品窗口只能读取脱敏待办聚合，不附带设置或 Runtime 连接权限。"
+commands.allow = ["pending_counts"]
+
+[[permission]]
+identifier = "host-window-settings"
+description = "主窗和小窗可显式配置 pin、悬浮球和全局快捷键；不开放插件通用命令。"
+commands.allow = ["set_quick_pinned", "set_ball_enabled", "set_shortcut"]
+
+[[permission]]
+identifier = "host-window-entry"
+description = "主窗、小窗和球可切换已有入口；球不得携带导航 Run ID。"
+commands.allow = ["toggle_quick", "show_workbench"]
+
+[[permission]]
+identifier = "host-workbench-navigation"
+description = "仅主窗口可领取一次性的待导航 Run ID。"
+commands.allow = ["take_workbench_navigation"]
+
+[[permission]]
+identifier = "host-quick-form"
+description = "仅小窗可报告自己的未完成表单与草稿。"
+commands.allow = ["set_quick_form_active"]
+
+[[permission]]
+identifier = "host-ball-drag"
+description = "仅悬浮球可拖动自己的原生窗口；不接受目标窗口 label 或路径，不开放通用窗口管理。"
+commands.allow = ["start_ball_drag"]
+
+[[permission]]
+identifier = "host-workspace-directory"
+description = "仅本地主窗口可原生选择目录创建项目、重试冻结命令或核对原命令；不开放任意路径或文件读取。"
+commands.allow = ["create_workspace_from_directory", "retry_workspace_from_directory", "check_workspace_directory_command"]

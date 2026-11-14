@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-take-settings-navigation"
+description = "Enables the take_settings_navigation command without any pre-configured scope."
+commands.allow = ["take_settings_navigation"]
+
+[[permission]]
+identifier = "deny-take-settings-navigation"
+description = "Denies the take_settings_navigation command without any pre-configured scope."
+commands.deny = ["take_settings_navigation"]

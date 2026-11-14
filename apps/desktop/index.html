@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>FlowMate</title>
+    <style>
+      html, body, #root { height: 100%; margin: 0; }
+      .startup-shell { min-height: 100%; box-sizing: border-box; display: grid; place-items: center; align-content: center; gap: 8px; padding: 16px; background: #f8fbf7; color: #42604d; font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; text-align: center; }
+      .startup-shell strong { color: #2f6b55; font-size: 24px; }
+      .startup-shell p { margin: 0; max-width: 28em; overflow-wrap: anywhere; }
+      @media (max-width: 160px) { .startup-shell { padding: 6px; gap: 4px; font-size: 10px; } .startup-shell strong { font-size: 20px; } }
+    </style>
+  </head>
+  <body>
+    <div id="root"><div class="startup-shell"><strong aria-hidden="true">F</strong><p id="startup-status" role="status">正在加载…</p></div></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

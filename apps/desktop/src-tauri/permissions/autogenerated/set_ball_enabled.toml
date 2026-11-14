@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-ball-enabled"
+description = "Enables the set_ball_enabled command without any pre-configured scope."
+commands.allow = ["set_ball_enabled"]
+
+[[permission]]
+identifier = "deny-set-ball-enabled"
+description = "Denies the set_ball_enabled command without any pre-configured scope."
+commands.deny = ["set_ball_enabled"]

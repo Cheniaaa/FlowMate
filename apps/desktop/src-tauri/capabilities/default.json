@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "capabilities": [
+    {
+      "identifier": "main-local-only",
+      "description": "本地主窗口持有应用内设置、限定凭据操作与原生目录命令，不授权 shell、通用文件系统或远程 IPC。",
+      "windows": ["main"],
+      "permissions": ["host-main", "host-settings", "host-settings-navigation", "host-workspace-directory", "host-window-read", "host-pending-counts", "host-window-settings", "host-window-entry", "host-workbench-navigation", "core:event:allow-listen", "core:event:allow-unlisten"]
+    },
+    {
+      "identifier": "external-links-local-only",
+      "description": "仅本地产品窗口可请求校验后的系统浏览器外链，不允许通用 opener 命令。",
+      "windows": ["main", "quick"],
+      "permissions": ["host-open-external"]
+    }
+  ]
+}

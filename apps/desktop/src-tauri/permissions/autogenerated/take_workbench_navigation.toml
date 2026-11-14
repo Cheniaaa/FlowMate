@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-take-workbench-navigation"
+description = "Enables the take_workbench_navigation command without any pre-configured scope."
+commands.allow = ["take_workbench_navigation"]
+
+[[permission]]
+identifier = "deny-take-workbench-navigation"
+description = "Denies the take_workbench_navigation command without any pre-configured scope."
+commands.deny = ["take_workbench_navigation"]

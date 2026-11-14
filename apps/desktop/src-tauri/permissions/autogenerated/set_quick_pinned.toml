@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-quick-pinned"
+description = "Enables the set_quick_pinned command without any pre-configured scope."
+commands.allow = ["set_quick_pinned"]
+
+[[permission]]
+identifier = "deny-set-quick-pinned"
+description = "Denies the set_quick_pinned command without any pre-configured scope."
+commands.deny = ["set_quick_pinned"]

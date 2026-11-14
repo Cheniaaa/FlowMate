@@ -1,0 +1,2 @@
+# Tauri CLI 生成的本机 schema，不作为源身份或提交内容。
+/src-tauri/gen/

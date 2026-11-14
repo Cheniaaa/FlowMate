@@ -1,0 +1,27 @@
+[
+  {
+    "provider_preset_id": "openai",
+    "model_id": "gpt-4.1",
+    "capabilities": {"tools": true, "thinking": false},
+    "source_url": "https://developers.openai.com/api/docs/models/gpt-4.1",
+    "source_version": "flowmate-model-metadata-2026-11-12",
+    "verified_at": "2026-11-12"
+  },
+  {
+    "provider_preset_id": "openai",
+    "model_id": "gpt-6.1-sol",
+    "capabilities": {"tools": false, "thinking": true},
+    "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+    "source_version": "flowmate-model-metadata-2026-11-12",
+    "verified_at": "2026-11-12",
+    "note": "Tool calling requires the Responses API; this preset uses Chat Completions."
+  },
+  {
+    "provider_preset_id": "anthropic",
+    "model_id": "claude-sonnet-5-5",
+    "capabilities": {"tools": true, "thinking": true},
+    "source_url": "https://platform.claude.com/docs/en/models/overview",
+    "source_version": "flowmate-model-metadata-2026-11-12",
+    "verified_at": "2026-11-12"
+  }
+]

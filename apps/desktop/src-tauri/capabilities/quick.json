@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "quick-local-only",
+  "description": "小窗复用同一宿主，但不读取或修改凭据，也不使用通用窗口和快捷键插件命令。",
+  "windows": ["quick"],
+  "permissions": ["host-main", "host-window-read", "host-pending-counts", "host-window-settings", "host-window-entry", "host-quick-form", "core:event:allow-listen", "core:event:allow-unlisten"]
+}

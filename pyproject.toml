@@ -11,6 +11,7 @@ requires-python = ">=3.13,<3.14"
 dependencies = ["fastapi==0.162.0", "pydantic>=2.12,<3", "uvicorn", "jsonschema==4.26.0"]
 
 [project.optional-dependencies]
+capabilities = ["mcp==2.3.0", "PyYAML==6.0.3", "pywin32==312; sys_platform == 'win32'"]
 models = ["pydantic-ai-slim[openai,anthropic]==2.65.0", "genai-prices==0.2.1"]
 code-mode = ["pydantic-monty==1.4.0"]
 knowledge = ["lancedb==0.41.0"]

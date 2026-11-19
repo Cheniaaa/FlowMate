@@ -9,7 +9,7 @@ from pydantic import TypeAdapter
 
 from flowmate.contracts.base import CommandMeta, Contract, DomainError, Id, Name
 from flowmate.contracts.events import AgentSaved, NewEvent
-from flowmate.contracts.execution import ScopeDependency
+from flowmate.contracts.execution import ResolvedMember, ScopeDependency
 from flowmate.contracts.settings import (
     AgentProfile,
     ModelConnection,
@@ -144,6 +144,23 @@ class SettingsService:
         return self._command("session.create", {"workspace_id": workspace_id, "title": title},
                              meta, Session, apply)
 
+    def archive_session(self,session_id,archived,meta):
+        def apply(tx):
+            row=tx.execute("SELECT document FROM sessions WHERE id=? AND kind='interaction'",(session_id,)).fetchone()
+            if row is None:
+                raise DomainError("not_found","交互会话不存在")
+            session=Session.model_validate_json(row[0])
+            if session.version != meta.expected_version:
+                raise DomainError("version_conflict","会话版本已变化，请刷新")
+            changed=session.model_copy(update={"version":session.version+1,"archived":archived})
+            tx.append_event(NewEvent(kind="session.updated",workspace_id=session.workspace_id,
+                session_id=session.id,payload=changed,causation_id=meta.command_id))
+            if archived:
+                from flowmate.runtime.followups import close_intents
+                close_intents(tx, session_id=session.id, reason="session_archived")
+            return changed
+        return self._command("session.archive",{"session_id":session_id,"archived":archived},meta,Session,apply)
+
     def _save_profile(self, kind: ProfileKind, profile: T, meta: CommandMeta) -> T:
         profile = type(profile).model_validate(profile.model_dump())
 
@@ -155,6 +172,10 @@ class SettingsService:
                 raise DomainError("version_conflict", "配置已改变，请读取当前版本")
             if isinstance(profile, AgentProfile) and profile.default_model_profile_id is not None:
                 tx.get_profile("model", profile.default_model_profile_id)
+            if isinstance(profile, AgentProfile) and profile.delegatable:
+                if profile.default_model_profile_id is None:
+                    raise DomainError("member_model_required", "可委派成员必须明确选择默认模型")
+                self.resolve_model(tx, profile.default_model_profile_id)
             if isinstance(profile, ModelProfile):
                 tx.get_connection(profile.connection_id)
                 if current is not None:
@@ -221,3 +242,20 @@ class SettingsService:
         model = tx.get_profile("model", model_id)
         connection = tx.get_connection(model.connection_id)
         return ModelMetadataResolver().resolve(connection, model)
+
+    @staticmethod
+    def resolve_members(tx, catalog, skill_versions):
+        from flowmate.models.pricing import pricing_reason, resolve_pricing
+
+        members = {}
+        for row in tx.execute("SELECT r.document FROM agent_profiles p JOIN agent_revisions r "
+                "ON r.profile_id=p.id AND r.version=p.current_version "
+                "WHERE json_extract(r.document,'$.delegatable')=1 ORDER BY p.id"):
+            profile = AgentProfile.model_validate_json(row[0])
+            model = SettingsService.resolve_model(tx, profile.default_model_profile_id)
+            pricing = resolve_pricing(model)
+            members[profile.id] = ResolvedMember(agent_profile=profile, model_profile=model,
+                model_pricing=pricing, pricing_unknown_reason=pricing_reason(model) if pricing is None else None,
+                tools={name: version for name, version in catalog.tools.items() if name in profile.allowed_tools},
+                skill_versions={id: skill_versions[id] for id in profile.skill_ids if id in skill_versions})
+        return members

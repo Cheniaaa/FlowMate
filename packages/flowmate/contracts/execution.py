@@ -1,11 +1,12 @@
 """运行限制；后续运行契约随使用点增加。"""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, model_validator
 
 from flowmate.contracts.base import Contract, Count, Id, Units, Version, identifier
 from flowmate.contracts.pricing import PricingSnapshot
+from flowmate.contracts.scopes import ScopeRef
 from flowmate.contracts.settings import AgentProfile, ResolvedModelProfile
 
 
@@ -15,12 +16,16 @@ class RunLimits(Contract):
     max_tasks: Count = 64
     deadline_seconds: float = Field(default=900.0, gt=0)
     max_cost_units: Units | None = None
+    max_total_tokens: Count | None = None
+    max_delegation_depth: Count = 4
+    max_parallel_agents: Count = 3
 
 
 TaskState = Literal[
     "queued", "running", "waiting_user", "waiting_approval", "waiting_children",
     "interrupted", "blocked_incompatible", "completed", "failed", "cancelled",
 ]
+RunKind = Literal["user", "managed", "follow_up", "maintenance"]
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
 
 
@@ -29,10 +34,34 @@ class ScopeDependency(Contract):
     epoch: Version
 
 
+class McpToolSnapshot(Contract):
+    server_id: Id
+    config_revision: Version
+    catalog_hash: str
+    original_name: str
+    destination: str
+
+
 class CatalogVersions(Contract):
     tools: dict[str, str] = Field(default_factory=dict)
     plugins: dict[str, str] = Field(default_factory=dict)
     agent_executor_id: str = "builtin.agent"
+    mcp_tools: dict[str, McpToolSnapshot] = Field(default_factory=dict)
+
+
+class ResolvedMember(Contract):
+    agent_profile: AgentProfile
+    model_profile: ResolvedModelProfile
+    model_pricing: PricingSnapshot | None
+    pricing_unknown_reason: str | None
+    tools: dict[str, str]
+    skill_versions: dict[Id, str]
+
+    @model_validator(mode="after")
+    def pricing_is_fixed(self):
+        if (self.model_pricing is None) == (self.pricing_unknown_reason is None):
+            raise ValueError("价格快照与unknown原因必须且只能提供一项")
+        return self
 
 
 class ConfigSnapshot(Contract):
@@ -45,6 +74,7 @@ class ConfigSnapshot(Contract):
     model_pricing: PricingSnapshot | None
     pricing_unknown_reason: str | None
     catalog: CatalogVersions
+    members: dict[Id, ResolvedMember] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def pricing_is_fixed(self):
@@ -53,22 +83,60 @@ class ConfigSnapshot(Contract):
         return self
 
 
+class SourceSelection(Contract):
+    resource_ids: list[Id] = Field(default_factory=list)
+    memory_scopes: list[ScopeRef] = Field(default_factory=list)
+    skill_versions: dict[Id, str] = Field(default_factory=dict)
+    excluded_source_ids: list[Id] = Field(default_factory=list)
+
+
+class TaskExecutionBinding(Contract):
+    execution_session_id: Id
+    interaction_session_id: Id | None
+    config: ConfigSnapshot
+    sources: SourceSelection
+    delegation_depth: Count
+    agent_work: "AgentWork | None" = None
+    input_artifacts: list["ArtifactRef"] = Field(default_factory=list)
+    input_result: "ResultInput | None" = None
+
+
 class StartRun(Contract):
     session_id: Id
     agent_profile_id: Id
     model_profile_id: Id
     text: str = Field(min_length=1)
-    resource_ids: list[Id] = Field(default_factory=list)
+    sources: SourceSelection = Field(default_factory=SourceSelection)
     limits: RunLimits = Field(default_factory=RunLimits)
+    allow_managed: bool = False
+    allow_follow_up: bool = False
+    source_result: Id | None = None
+
+
+class PendingUserCommand(Contract):
+    command_id: Id
+    session_id: Id
+    start: StartRun
+    state: Literal["queued", "applied", "cancelled"] = "queued"
+    created_seq: Version
+    config: ConfigSnapshot
+    scope_dependencies: list[ScopeDependency]
+    admission_generations: dict[Id, Version]
+    deadline_at: AwareDatetime
+    input_result: "ResultInput | None" = None
+    run_id: Id | None = None
+    reason: str | None = None
 
 
 class ExecutionContext(Contract):
     workspace_id: Id
     session_id: Id
+    interaction_session_id: Id | None
     run_id: Id
     task_id: Id
     activity_id: Id | None = None
     budget_id: Id
+    budget_group_id: Id
     scope_dependencies: list[ScopeDependency]
 
 
@@ -87,26 +155,48 @@ class RunOutput(Contract):
     handled_failures: list[FailureDisposition] = Field(default_factory=list)
 
 
+class AgentResult(RunOutput):
+    status: Literal["completed", "partial", "failed"]
+    structured_result: JsonValue
+    evidence_refs: list[Id] = Field(default_factory=list)
+    verification: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def status_matches_delivery(self):
+        if (self.status == "completed" and self.unresolved) or (self.status == "partial" and not self.unresolved):
+            raise ValueError("完整交付不能含未完成项，部分交付须保留未完成项")
+        return self
+
+
 class RunSnapshot(Contract):
     id: Id
     version: Version = 1
     workspace_id: Id
-    session_id: Id
+    interaction_session_id: Id | None
+    execution_session_id: Id
     root_task_id: Id
     budget_id: Id
+    budget_group_id: Id
+    kind: RunKind = "user"
     state: TaskState = "queued"
     config: ConfigSnapshot
     scope_dependencies: list[ScopeDependency]
     deadline_at: AwareDatetime
-    output: RunOutput | None = None
+    output: AgentResult | RunOutput | None = None
     reason: str | None = None
-    resource_ids: list[Id] = Field(default_factory=list)
+    sources: SourceSelection
+    allow_managed: bool = False
+    allow_follow_up: bool = False
+    yield_requested: bool = False
+    follow_up_closed: bool = False
+    admission_generations: dict[Id, Version] = Field(default_factory=dict)
 
 
 class TaskSnapshot(Contract):
     id: Id
     version: Version = 1
     run_id: Id
+    binding: TaskExecutionBinding
     parent_task_id: Id | None = None
     origin_task_id: Id | None = None
     kind: Literal["agent", "tool"]
@@ -133,13 +223,13 @@ class Checkpoint(Contract):
     tool_origin: Literal["agent", "user"] = "agent"
     consumed_steering_ids: list[Id] = Field(default_factory=list)
     context_manifest: dict[str, JsonValue] = Field(default_factory=dict)
-    output: RunOutput | None = None
+    output: AgentResult | RunOutput | None = None
     output_dependencies: list[ScopeDependency] = Field(default_factory=list)
 
 
 class ActivityIntent(Contract):
     kind: Literal["model", "tool"]
-    origin: Literal["agent", "user"] = "agent"
+    origin: Literal["agent", "user", "runtime"] = "agent"
     operation: str
     arguments: dict[str, JsonValue] = Field(default_factory=dict)
     dependencies: list[ScopeDependency] = Field(default_factory=list)
@@ -190,10 +280,12 @@ class ActivitySnapshot(Contract):
     intent: ActivityIntent
     request_digest: str | None = None
     reserved_units: Units = 0
+    reserved_tokens: Count = 0
     receipt: ActivityReceipt | None = None
     result_digest: str | None = None
     content_committed: bool = False
     pricing_snapshot: dict[str, JsonValue] | None = None
+    lease_generation: Version | None = None
 
 
 class ReservationEstimate(Contract):
@@ -229,6 +321,30 @@ class BudgetSnapshot(Contract):
     model_requests: Count = 0
     steps: Count = 0
     task_count: Count = 1
+    total_tokens: Count = 0
+    reserved_tokens: Count = 0
+
+
+class BudgetGroupSnapshot(Contract):
+    id: Id
+    version: Version = 1
+    limits: RunLimits
+    spent_units: Units = 0
+    reserved_units: Units = 0
+    steps: Count = 0
+    model_requests: Count = 0
+    task_count: Count = 1
+    total_tokens: Count = 0
+    reserved_tokens: Count = 0
+    deadline_at: AwareDatetime
+
+
+class BudgetAllocation(Contract):
+    run_id: Id
+    group_id: Id
+    version: Version = 1
+    limits: RunLimits
+    returned: bool = False
 
 
 class AccountingBudget(Contract):
@@ -238,6 +354,9 @@ class AccountingBudget(Contract):
     spent_units: Units
     reserved_units: Units
     model_requests: Count
+    budget_group_id: Id
+    total_tokens: Count = 0
+    reserved_tokens: Count = 0
 
 
 class AccountingActivity(Contract):
@@ -248,6 +367,7 @@ class AccountingActivity(Contract):
     attempt_id: Id
     state: Literal["prepared", "dispatched", "succeeded", "failed", "uncertain"]
     reserved_units: Units
+    reserved_tokens: Count = 0
     receipt: ActivityReceipt | None = None
     result_digest: str | None = None
 
@@ -277,19 +397,36 @@ class ToolResultPart(Contract):
     error: str | None = None
 
 
-class SubmitToolTask(Contract):
+class ToolWork(Contract):
+    kind: Literal["tool"] = "tool"
     name: str
     version: str
     arguments: dict[str, JsonValue]
+
+
+class AgentWork(Contract):
+    kind: Literal["agent"] = "agent"
+    profile_id: Id
+    goal: str = Field(min_length=1)
+    input_refs: list[Id] = Field(default_factory=list)
+    output_schema: dict[str, JsonValue]
+    success_criteria: list[str]
+
+
+class SubmitTask(Contract):
+    work: Annotated[ToolWork | AgentWork, Field(discriminator="kind")]
     wait_mode: Literal["wait", "background"] = "background"
-    lifetime: Literal["run_bound"] = "run_bound"
-    deadline_at: AwareDatetime | None = None
+    lifetime: Literal["run_bound", "managed"] = "run_bound"
+    limits: RunLimits = Field(default_factory=RunLimits)
+    sources: SourceSelection = Field(default_factory=SourceSelection)
+    allowed_tools: list[str] = Field(default_factory=list)
+    completion_policy: Literal["notify_only", "follow_up"] = "notify_only"
 
 
 class TaskHandle(Contract):
     run_id: Id
     task_id: Id
-    lifetime: Literal["run_bound"] = "run_bound"
+    lifetime: Literal["run_bound", "managed"] = "run_bound"
     submitted_state: TaskState = "queued"
 
 
@@ -298,6 +435,9 @@ class TaskSubmission(Contract):
     command_id: Id
     origin_task_id: Id
     args_hash: str
+    origin_run_id: Id
+    lifetime: Literal["run_bound", "managed"] = "run_bound"
+    completion_policy: Literal["notify_only", "follow_up"] = "notify_only"
 
 
 class ConsumerRef(Contract):
@@ -310,9 +450,11 @@ class ResultConsumption(Contract):
     id: Id = Field(default_factory=identifier)
     run_id: Id
     task_id: Id
+    execution_session_id: Id
     target_task_id: Id
     result_version: Version
     message_boundary: Count
+    inbox_entry_id: Id | None = None
 
 
 class WaitRecord(Contract):
@@ -375,7 +517,7 @@ class StepDecision(Contract):
                    "complete", "fail", "task_control"]
     intent: ActivityIntent | None = None
     intents: list[ActivityIntent] = Field(default_factory=list)
-    output: RunOutput | None = None
+    output: AgentResult | RunOutput | None = None
     reason: str | None = None
     checkpoint: Checkpoint | None = None
     messages: list[ModelMessage] = Field(default_factory=list)
@@ -399,6 +541,9 @@ class Question(Contract):
     dependencies: list[ScopeDependency] = Field(default_factory=list)
 
 
+ArtifactMediaType = Literal["text/plain", "text/markdown", "application/octet-stream"]
+
+
 class ArtifactRef(Contract):
     id: Id = Field(default_factory=identifier)
     version: Version = 1
@@ -406,13 +551,13 @@ class ArtifactRef(Contract):
     task_id: Id
     activity_id: Id
     dependencies: list[ScopeDependency]
-    media_type: Literal["text/plain", "text/markdown"]
+    media_type: ArtifactMediaType
 
 
 class StagedArtifact(Contract):
     ref: ArtifactRef
     blob_path: str
-    media_type: Literal["text/plain", "text/markdown"]
+    media_type: ArtifactMediaType
 
 
 class TaskResult(Contract):
@@ -423,6 +568,62 @@ class TaskResult(Contract):
     error: str | None = None
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     dependencies: list[ScopeDependency] = Field(default_factory=list)
+
+
+DeliveryState = Literal["pending", "delivered", "failed", "invalidated"]
+
+
+class SessionInboxEntry(Contract):
+    id: Id
+    version: Version = 1
+    source_event_id: Units
+    target_session_id: Id
+    result: TaskHandle
+    result_version: Version
+    delivery_state: DeliveryState = "pending"
+    viewed_at: AwareDatetime | None = None
+    dependencies: list[ScopeDependency]
+    attempts: Count = 0
+    last_error: str | None = None
+    source_valid: bool = True
+    consumers: list[ResultConsumption] = Field(default_factory=list)
+
+
+class ResultInput(Contract):
+    inbox_entry_id: Id
+    target_session_id: Id
+    source_event_id: Units
+    handle: TaskHandle
+    result_version: Version
+    dependencies: list[ScopeDependency]
+
+
+class FollowUpIntent(Contract):
+    id: Id = Field(default_factory=identifier)
+    source_result: Id
+    target_session_id: Id
+    budget_group_id: Id
+    policy_version: Version = 1
+    status: Literal["ready", "active", "paused", "closed"] = "ready"
+    origin_run_id: Id
+    run_id: Id | None = None
+    paused_task_ids: list[Id] = Field(default_factory=list)
+    reason: str | None = None
+
+
+class DeliveryReservation(Contract):
+    task_id: Id
+    target_session_id: Id
+    released: bool = False
+
+
+class AdmissionFence(Contract):
+    scope: ScopeRef
+    generation: Version = 1
+
+
+class StopAllReceipt(AdmissionFence):
+    cancelled_run_ids: list[Id]
 
 
 class TextSlice(Contract):
@@ -448,6 +649,7 @@ class ReceiptCommit(Contract):
     staged_artifacts: list[StagedArtifact] = Field(default_factory=list)
     source_observations: list[SourceObservation] = Field(default_factory=list)
     private_states: list[dict[str, JsonValue]] = Field(default_factory=list, repr=False)
+    context_summary: dict[str, JsonValue] | None = Field(default=None, repr=False)
 
 
 class RuntimeChange(Contract):
@@ -455,6 +657,8 @@ class RuntimeChange(Contract):
     tasks: list[TaskSnapshot] = Field(default_factory=list)
     activities: list[ActivitySnapshot] = Field(default_factory=list)
     budgets: list[BudgetSnapshot] = Field(default_factory=list)
+    budget_groups: list[BudgetGroupSnapshot] = Field(default_factory=list)
+    budget_allocations: list[BudgetAllocation] = Field(default_factory=list)
     checkpoints: list[Checkpoint] = Field(default_factory=list)
     messages: list[ModelMessage] = Field(default_factory=list)
     outbox: list[OutboxItem] = Field(default_factory=list)
@@ -464,3 +668,8 @@ class RuntimeChange(Contract):
     waits: list[WaitRecord] = Field(default_factory=list)
     consumptions: list[ResultConsumption] = Field(default_factory=list)
     joins: list[JoinDecision] = Field(default_factory=list)
+    delivery_reservations: list[DeliveryReservation] = Field(default_factory=list)
+    deliveries: list[SessionInboxEntry] = Field(default_factory=list)
+    admission_fences: list[AdmissionFence] = Field(default_factory=list)
+    pending_commands: list[PendingUserCommand] = Field(default_factory=list)
+    follow_up_intents: list[FollowUpIntent] = Field(default_factory=list)

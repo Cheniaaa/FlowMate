@@ -21,6 +21,10 @@ use windows_sys::Win32::{
         SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE},
 };
 
+#[cfg(test)]
+#[path = "t13_native_integration.rs"]
+mod t13_integration;
+
 pub fn permitted_origin(origin: &str, development: bool) -> bool {
     origin == if development { "http://127.0.0.1:5173" } else { "http://tauri.localhost" }
 }
@@ -176,7 +180,7 @@ struct Ready { port: u16, pid: u32, runtime_version: String }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct PendingCounts { pub pending_questions: u64, pub pending_approvals: u64 }
+pub struct PendingCounts { pub pending_questions: u64, pub pending_approvals: u64, pub pending_actions: u64, pub unviewed_results: u64 }
 
 #[derive(Default)]
 pub struct Notifications { latest: Option<PendingCounts>, changed: bool }
@@ -205,7 +209,7 @@ pub(crate) fn private_handler(store: Arc<CredentialStore>) -> Handler {
         match method {
             "credential.resolve" => {
                 let request: Resolve = serde_json::from_value(params).map_err(|_| "invalid_params")?;
-                Ok(json!({"value":store.resolve(&request.binding)?}))
+                Ok(json!({"value":store.resolve_bound(&request.binding)?}))
             }
             "private.protect" => {
                 let request: Protect = serde_json::from_value(params).map_err(|_| "invalid_params")?;
@@ -309,7 +313,7 @@ impl RuntimeHost {
                 }
             }),
             Arc::new(move || { job_on_close.lock().unwrap().take(); }));
-        let connection = Connection { base_url: String::new(), token: token.clone(), protocol_version: 2 };
+        let connection = Connection { base_url: String::new(), token: token.clone(), protocol_version: 3 };
         // 构造后任何启动失败都会走 Drop，既释放实例锁也终止整个 Job。
         let mut host = Self { _lock: lock, job, child, channel, credentials, notifications, connection, log, stopped: false };
         host.channel.event("startup", json!({"token":token,"data_dir":directory.to_string_lossy(),
@@ -372,18 +376,20 @@ pub(crate) mod tests {
     fn notification_snapshot_is_unknown_until_valid_event_and_coalesces_latest_counts() {
         let mut display = Notifications::default();
         assert_eq!(display.counts(), None); assert!(!display.take_changed());
-        display.receive(json!({"pending_questions":2,"pending_approvals":1})).unwrap();
-        assert_eq!(display.counts(), Some(PendingCounts { pending_questions: 2, pending_approvals: 1 }));
-        display.receive(json!({"pending_questions":1,"pending_approvals":0})).unwrap();
+        display.receive(json!({"pending_questions":2,"pending_approvals":1,"pending_actions":4,"unviewed_results":2})).unwrap();
+        assert_eq!(display.counts(), Some(PendingCounts { pending_questions: 2, pending_approvals: 1, pending_actions: 4, unviewed_results: 2 }));
+        display.receive(json!({"pending_questions":1,"pending_approvals":0,"pending_actions":1,"unviewed_results":0})).unwrap();
         assert!(display.take_changed()); assert!(!display.take_changed());
-        assert_eq!(display.counts(), Some(PendingCounts { pending_questions: 1, pending_approvals: 0 }));
-        display.receive(json!({"pending_questions":1,"pending_approvals":0})).unwrap();
+        assert_eq!(display.counts(), Some(PendingCounts { pending_questions: 1, pending_approvals: 0, pending_actions: 1, unviewed_results: 0 }));
+        display.receive(json!({"pending_questions":1,"pending_approvals":0,"pending_actions":1,"unviewed_results":0})).unwrap();
         assert!(!display.take_changed());
-        for params in [json!({"pending_questions":-1,"pending_approvals":0}), json!({"pending_questions":1.5,"pending_approvals":0}),
-            json!({"pending_questions":0,"pending_approvals":0,"run_id":"not-allowed"}), json!({"pending_questions":1})] {
+        for params in [json!({"pending_questions":-1,"pending_approvals":0,"pending_actions":0,"unviewed_results":0}),
+            json!({"pending_questions":0,"pending_approvals":0,"pending_actions":1.5,"unviewed_results":0}),
+            json!({"pending_questions":0,"pending_approvals":0,"pending_actions":0,"unviewed_results":0,"run_id":"not-allowed"}),
+            json!({"pending_questions":1,"pending_approvals":0}), json!({"pending_questions":1})] {
             assert_eq!(display.receive(params), Err("invalid_notification_counts"));
         }
-        assert_eq!(serde_json::to_value(display.counts()).unwrap(), json!({"pending_questions":1,"pending_approvals":0}));
+        assert_eq!(serde_json::to_value(display.counts()).unwrap(), json!({"pending_questions":1,"pending_approvals":0,"pending_actions":1,"unviewed_results":0}));
         display.clear(); assert!(display.take_changed()); assert_eq!(display.counts(), None);
     }
 
@@ -422,12 +428,12 @@ assert sys.argv[1:] == ['runtime', '--data-dir', startup['params']['data_dir']]
 assert os.path.samefile(os.getcwd(), os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 assert 'FLOWMATE_TEST_INHERITED' not in os.environ
 assert 'PATH' not in os.environ
-assert startup['protocol_version'] == 2 and startup['stream_seq'] == 1
-print(json.dumps(dict(protocol_version=2, stream_seq=1, request_id='fixture-counts', kind='event', method='notifications.changed', params=dict(pending_questions=2,pending_approvals=3))), flush=True)
-print(json.dumps(dict(protocol_version=2, stream_seq=2, request_id='fixture-ready', kind='event', method='ready', params=dict(port=31417, pid=os.getpid(), runtime_version='fixture-1'))), flush=True)
+assert startup['protocol_version'] == 3 and startup['stream_seq'] == 1
+print(json.dumps(dict(protocol_version=3, stream_seq=1, request_id='fixture-counts', kind='event', method='notifications.changed', params=dict(pending_questions=2,pending_approvals=3,pending_actions=7,unviewed_results=4))), flush=True)
+print(json.dumps(dict(protocol_version=3, stream_seq=2, request_id='fixture-ready', kind='event', method='ready', params=dict(port=31417, pid=os.getpid(), runtime_version='fixture-1'))), flush=True)
 request = json.loads(sys.stdin.buffer.readline())
 assert request['kind'] == 'request' and request['method'] == 'shutdown'
-print(json.dumps(dict(protocol_version=2, request_id=request['request_id'], kind='reply', method='shutdown', result=dict(stopping=True))), flush=True)
+print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind='reply', method='shutdown', result=dict(stopping=True))), flush=True)
 "#).unwrap();
         let runtime = DevelopmentRuntime::new(root.join(".venv/Scripts/python.exe"), source.clone()).unwrap();
         let data = directory.join("data");
@@ -435,9 +441,9 @@ print(json.dumps(dict(protocol_version=2, request_id=request['request_id'], kind
         command.env("FLOWMATE_TEST_INHERITED", "public-test-marker");
         let mut host = RuntimeHost::start_command(&data, &runtime.python, command, false, true,
             Arc::new(crate::credentials::tests::store()), Some(&runtime)).unwrap();
-        assert_eq!(serde_json::to_value(&host.connection).unwrap()["protocol_version"], 2,
+        assert_eq!(serde_json::to_value(&host.connection).unwrap()["protocol_version"], 3,
             "WebView API and private channel now both declare v2");
-        assert_eq!(host.notifications().lock().unwrap().counts(), Some(PendingCounts { pending_questions: 2, pending_approvals: 3 }));
+        assert_eq!(host.notifications().lock().unwrap().counts(), Some(PendingCounts { pending_questions: 2, pending_approvals: 3, pending_actions: 7, unviewed_results: 4 }));
         assert!(host.supervise()); assert!(!host.supervise());
         let logs = std::fs::read_to_string(data.join("desktop-host.jsonl")).unwrap();
         let ready: Value = serde_json::from_str(logs.lines().find(|line| line.contains("host_ready")).unwrap()).unwrap();
@@ -468,7 +474,7 @@ print(json.dumps(dict(protocol_version=2, request_id=request['request_id'], kind
         std::fs::create_dir_all(&app_data).unwrap();
         let legacy_database = app_data.join("flowmate.sqlite3");
         std::fs::write(&legacy_database, b"public-legacy-database-marker").unwrap();
-        let directory = app_data.join("data-v2");
+        let directory = app_data.join("data-v3");
         let mut host = start_isolated_development(&directory, &runtime, true).unwrap();
         let address = host.connection.base_url.strip_prefix("http://").unwrap();
         for (authorization, expected) in [
@@ -477,15 +483,15 @@ print(json.dumps(dict(protocol_version=2, request_id=request['request_id'], kind
         ] {
             let mut stream = TcpStream::connect(address).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            write!(stream, "GET /v2/health HTTP/1.1\r\nHost: {address}\r\nOrigin: http://127.0.0.1:5173\r\n{authorization}Connection: close\r\n\r\n").unwrap();
+            write!(stream, "GET /v3/health HTTP/1.1\r\nHost: {address}\r\nOrigin: http://127.0.0.1:5173\r\n{authorization}Connection: close\r\n\r\n").unwrap();
             let mut response = String::new();
             stream.read_to_string(&mut response).unwrap();
             assert!(response.starts_with(expected), "{response}");
             if expected == "HTTP/1.1 200" {
                 let body: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
                 assert!(body["runtime_version"].as_str().is_some_and(|version| !version.is_empty()));
-                assert_eq!(body["api_version"], 2);
-                assert_eq!(body["schema_version"], 2);
+                assert_eq!(body["api_version"], 3);
+                assert_eq!(body["schema_version"], 3);
             }
         }
         host.stop();
@@ -498,15 +504,15 @@ print(json.dumps(dict(protocol_version=2, request_id=request['request_id'], kind
     }
 
     #[test]
-    #[ignore = "requires the real .local/m1/bundle frozen runtime; explicit invocation fails if absent"]
+    #[ignore = "requires the real .local/m2/runtime frozen runtime; explicit invocation fails if absent"]
     fn packaged_runtime_start_serves_health_and_stops_real_frozen_exe() {
         use std::{io::Read, net::TcpStream};
         use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).unwrap();
-        let executable = root.join(".local/m1/bundle/flowmate-runtime/flowmate-runtime.exe");
+        let executable = root.join(".local/m2/runtime/flowmate-runtime/flowmate-runtime.exe");
         assert!(executable.is_file(), "real frozen runtime is required: {}", executable.display());
-        let directory = root.join(".local/m1/acceptance").join(format!("offline-fix-host-{}", uuid::Uuid::new_v4())).join("独立 数据");
+        let directory = root.join(".local/m2/acceptance").join(format!("frozen-host-{}", uuid::Uuid::new_v4())).join("独立 数据");
         println!("frozen runtime: {}; evidence: {}", executable.display(), directory.display());
         // 现有产物只证明CLI接缝，不作为本次修改后的来源同源/最终分发证据。
         let mut host = RuntimeHost::start(&directory, &executable, false, false).unwrap();
@@ -527,15 +533,15 @@ print(json.dumps(dict(protocol_version=2, request_id=request['request_id'], kind
         ] {
             let mut stream = TcpStream::connect(address).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            write!(stream, "GET /v2/health HTTP/1.1\r\nHost: {address}\r\nOrigin: http://tauri.localhost\r\n{authorization}Connection: close\r\n\r\n").unwrap();
+            write!(stream, "GET /v3/health HTTP/1.1\r\nHost: {address}\r\nOrigin: http://tauri.localhost\r\n{authorization}Connection: close\r\n\r\n").unwrap();
             let mut response = String::new();
             stream.read_to_string(&mut response).unwrap();
             assert!(response.starts_with(expected), "{response}");
             if expected == "HTTP/1.1 200" {
                 let body: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
                 assert!(body["runtime_version"].as_str().is_some_and(|version| !version.is_empty()));
-                assert_eq!(body["api_version"], 2);
-                assert_eq!(body["schema_version"], 2);
+                assert_eq!(body["api_version"], 3);
+                assert_eq!(body["schema_version"], 3);
             }
             health.push(response);
         }
@@ -572,9 +578,9 @@ print(json.dumps(dict(protocol_version=2, request_id=request['request_id'], kind
         let script = r#"
             $startup = [Console]::In.ReadLine() | ConvertFrom-Json
             $descendant = Start-Process -PassThru -WindowStyle Hidden -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 300'
-            [Console]::WriteLine((@{protocol_version=2;stream_seq=1;request_id='wrong-ready';kind='event';method='ready';params=@{port=31418;pid=$descendant.Id;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
+            [Console]::WriteLine((@{protocol_version=3;stream_seq=1;request_id='wrong-ready';kind='event';method='ready';params=@{port=31418;pid=$descendant.Id;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
             $shutdown = [Console]::In.ReadLine() | ConvertFrom-Json
-            [Console]::WriteLine((@{protocol_version=2;request_id=$shutdown.request_id;kind='reply';method='shutdown';result=@{stopping=$true}} | ConvertTo-Json -Depth 8 -Compress))
+            [Console]::WriteLine((@{protocol_version=3;request_id=$shutdown.request_id;kind='reply';method='shutdown';result=@{stopping=$true}} | ConvertTo-Json -Depth 8 -Compress))
         "#;
         let (directory, executable, command) = fixture(script);
         let error = RuntimeHost::start_command(&directory, &executable, command, false, true,
@@ -589,10 +595,10 @@ print(json.dumps(dict(protocol_version=2, request_id=request['request_id'], kind
         let script = r#"
             $ErrorActionPreference='Stop'
             $startup = [Console]::In.ReadLine() | ConvertFrom-Json
-            if ($startup.protocol_version -ne 2 -or $startup.stream_seq -ne 1 -or $startup.kind -ne 'event' -or $startup.method -ne 'startup' -or -not $startup.params.token) { exit 3 }
+            if ($startup.protocol_version -ne 3 -or $startup.stream_seq -ne 1 -or $startup.kind -ne 'event' -or $startup.method -ne 'startup' -or -not $startup.params.token) { exit 3 }
             $descendant = Start-Process -PassThru -WindowStyle Hidden -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 300'
             [IO.File]::WriteAllText((Join-Path $startup.params.data_dir 'fixture-descendant.pid'),[string]$descendant.Id)
-            [Console]::WriteLine((@{protocol_version=2;stream_seq=1;request_id='fixture-ready';kind='event';method='ready';params=@{port=31415;pid=$PID;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
+            [Console]::WriteLine((@{protocol_version=3;stream_seq=1;request_id='fixture-ready';kind='event';method='ready';params=@{port=31415;pid=$PID;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
             [Console]::In.ReadLine() | Out-Null
             exit 0
         "#;
@@ -633,10 +639,10 @@ print(json.dumps(dict(protocol_version=2, request_id=request['request_id'], kind
     fn stop_sends_shutdown_request_and_allows_reply_before_tree_close() {
         let script = r#"
             $startup = [Console]::In.ReadLine() | ConvertFrom-Json
-            [Console]::WriteLine((@{protocol_version=2;stream_seq=1;request_id='ready';kind='event';method='ready';params=@{port=31415;pid=$PID;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
+            [Console]::WriteLine((@{protocol_version=3;stream_seq=1;request_id='ready';kind='event';method='ready';params=@{port=31415;pid=$PID;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
             $shutdown = [Console]::In.ReadLine() | ConvertFrom-Json
             if ($shutdown.kind -ne 'request' -or $shutdown.method -ne 'shutdown') { exit 4 }
-            [Console]::WriteLine((@{protocol_version=2;request_id=$shutdown.request_id;kind='reply';method='shutdown';result=@{stopping=$true}} | ConvertTo-Json -Depth 8 -Compress))
+            [Console]::WriteLine((@{protocol_version=3;request_id=$shutdown.request_id;kind='reply';method='shutdown';result=@{stopping=$true}} | ConvertTo-Json -Depth 8 -Compress))
             [Console]::Out.Flush()
             [IO.File]::WriteAllText((Join-Path $startup.params.data_dir 'shutdown-replied'),'true')
         "#;
@@ -669,15 +675,15 @@ import asyncio, json, os
 from flowmate.host.channel import HostChannel
 from flowmate.host.diagnostics import make_diagnostic
 from flowmate.host.stdio import open_stdio
-from flowmate.host.protocol import HostEvent, SecretBinding, decode_frame
+from flowmate.host.protocol import HostEvent, ModelSecretBinding, decode_frame
 from flowmate.host.secrets import HostSecrets
 from flowmate.contracts.base import DomainError
 async def main():
     startup = decode_frame(sys.stdin.buffer.readline(), 16*1024*1024)
     assert startup.method == 'startup'
-    assert startup.protocol_version == 2 and startup.stream_seq == 1
+    assert startup.protocol_version == 3 and startup.stream_seq == 1
     assert set(startup.params) == {'token','data_dir','allowed_origins','desktop_diagnostics'}
-    binding = SecretBinding.model_validate_json(binding_json)
+    binding = ModelSecretBinding.model_validate_json(binding_json)
     async def register(params):
         assert params == {'scope':{'workspace_id':binding.connection_id,'session_id':None},'kind':'file','paths':[]}
         try:

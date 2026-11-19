@@ -5,12 +5,16 @@ use tauri_plugin_dialog::{DialogExt, FilePath};
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct Scope { pub workspace_id: String, pub session_id: Option<String> }
+pub struct Scope { pub kind: ScopeKind, pub workspace_id: String, pub session_id: Option<String> }
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeKind { Workspace, Session }
 impl Scope {
     pub fn validate(&self) -> Result<(), String> {
         if uuid::Uuid::parse_str(&self.workspace_id).is_err() || self.session_id.as_ref().is_some_and(|id| uuid::Uuid::parse_str(id).is_err()) {
             return Err("invalid_scope".into());
         }
+        if (self.kind == ScopeKind::Session) != self.session_id.is_some() { return Err("invalid_scope".into()); }
         Ok(())
     }
 }
@@ -195,10 +199,14 @@ impl Drop for DirectoryOperation {
 }
 
 async fn register_paths(channel: &Channel, scope: Scope, kind: &str, paths: Vec<PathBuf>) -> Result<Selection, String> {
+    register_paths_at(channel, scope, kind, paths, "resource.register").await
+}
+
+async fn register_paths_at(channel: &Channel, scope: Scope, kind: &str, paths: Vec<PathBuf>, method: &str) -> Result<Selection, String> {
     scope.validate()?;
     if paths.is_empty() { return Ok(Selection { resources: Vec::new() }); }
     let paths: Vec<&str> = paths.iter().map(|path| path.to_str().ok_or("invalid_native_path")).collect::<Result<_, _>>()?;
-    let result = channel.request("resource.register", serde_json::json!({"scope":scope,"kind":kind,"paths":paths}), Duration::from_secs(60)).await?;
+    let result = channel.request(method, serde_json::json!({"scope":scope,"kind":kind,"paths":paths}), Duration::from_secs(60)).await?;
     let selection: Selection = serde_json::from_value(result).map_err(|_| "invalid_resource_reply")?;
     if selection.resources.iter().any(|resource| resource.scope != scope || resource.version == 0 || uuid::Uuid::parse_str(&resource.id).is_err()) {
         return Err("invalid_resource_reply".into());
@@ -222,12 +230,35 @@ pub async fn select<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, channel
     register_paths(&channel, scope, match kind { SelectionKind::File => "file", SelectionKind::Directory => "directory" }, paths).await
 }
 
-pub async fn choose_export<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, channel: Channel, scope: Scope) -> Result<Selection, String> {
+pub async fn choose_export<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, channel: Channel, scope: Scope, binary: bool) -> Result<Selection, String> {
     scope.validate()?;
     let (sender, receiver) = tokio::sync::oneshot::channel();
     window.dialog().file().set_parent(window).save_file(move |value| { let _ = sender.send(paths(value.map(|value| vec![value]))); });
     let paths = receiver.await.map_err(|_| "dialog_failed")??;
-    register_paths(&channel, scope, "export", paths).await
+    register_paths(&channel, scope, if binary { "binary_export" } else { "export" }, paths).await
+}
+
+pub async fn select_skill<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, channel: Channel, scope: Scope, kind: SelectionKind) -> Result<Selection, String> {
+    scope.validate()?;
+    if scope.kind != ScopeKind::Workspace { return Err("invalid_scope".into()); }
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let dialog = window.dialog().file().set_parent(window);
+    match kind {
+        SelectionKind::File => dialog.pick_files(move |values| { let _ = sender.send(paths(values)); }),
+        SelectionKind::Directory => dialog.pick_folder(move |value| { let _ = sender.send(paths(value.map(|value| vec![value]))); }),
+    }
+    let selected = receiver.await.map_err(|_| "dialog_failed")??;
+    if selected.len() > 1 { return Err("select_one_skill_package".into()); }
+    register_paths_at(&channel, scope, match kind { SelectionKind::File => "file", SelectionKind::Directory => "directory" }, selected, "skills.register").await
+}
+
+pub async fn choose_skill_export<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, channel: Channel, scope: Scope) -> Result<Selection, String> {
+    scope.validate()?;
+    if scope.kind != ScopeKind::Workspace { return Err("invalid_scope".into()); }
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    window.dialog().file().set_parent(window).save_file(move |value| { let _ = sender.send(paths(value.map(|value| vec![value]))); });
+    let selected = receiver.await.map_err(|_| "dialog_failed")??;
+    register_paths_at(&channel, scope, "export", selected, "skills.register").await
 }
 
 #[cfg(test)]
@@ -236,7 +267,7 @@ mod tests {
     use serde_json::json;
     use std::{io::{BufRead, BufReader, Write}, net::{TcpListener, TcpStream}, sync::Arc};
 
-    fn scope() -> Scope { Scope { workspace_id: "00000000-0000-4000-8000-000000000001".into(), session_id: None } }
+    fn scope() -> Scope { Scope { kind: ScopeKind::Workspace, workspace_id: "00000000-0000-4000-8000-000000000001".into(), session_id: None } }
 
     fn meta() -> CommandMeta { CommandMeta { command_id: "00000000-0000-4000-8000-000000000003".into(), expected_version: None } }
     fn directory_result() -> serde_json::Value {
@@ -253,13 +284,13 @@ mod tests {
     fn receive(peer: &mut BufReader<TcpStream>, method: &str) -> serde_json::Value {
         let mut line = String::new(); peer.read_line(&mut line).unwrap();
         let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(frame["protocol_version"], 2);
+        assert_eq!(frame["protocol_version"], 3);
         assert!(frame["stream_seq"].as_u64().unwrap() > 0);
         assert_eq!(frame["method"], method);
         frame
     }
     fn reply(peer: &mut BufReader<TcpStream>, frame: &serde_json::Value, result: serde_json::Value) {
-        writeln!(peer.get_mut(), "{}", json!({"protocol_version":2,"request_id":frame["request_id"],"kind":"reply","method":frame["method"],"result":result})).unwrap();
+        writeln!(peer.get_mut(), "{}", json!({"protocol_version":3,"request_id":frame["request_id"],"kind":"reply","method":frame["method"],"result":result})).unwrap();
     }
     fn not_found(peer: &mut BufReader<TcpStream>) {
         let frame = receive(peer, "workspace.directory_command_status");
@@ -267,6 +298,36 @@ mod tests {
         reply(peer, &frame, json!({"status":"not_found","result":null}));
     }
     const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+    #[test]
+    fn skill_selection_uses_its_binary_host_profile_and_preserves_registered_reference() {
+        let (channel, mut peer) = pair();
+        let worker = std::thread::spawn(move || {
+            let frame = receive(&mut peer, "skills.register");
+            assert_eq!(frame["params"]["kind"], "file");
+            assert_eq!(frame["params"]["scope"], serde_json::to_value(scope()).unwrap());
+            assert_eq!(frame["params"]["paths"], json!(["C:\\Synthetic\\release-note.zip"]));
+            reply(&mut peer, &frame, json!({"resources":[{
+                "id":"00000000-0000-4000-8000-000000000002", "scope":scope(),
+                "label":"release-note.zip","version":1,"kind":"file","source_version":null
+            }]}));
+        });
+        let selected = tauri::async_runtime::block_on(register_paths_at(
+            &channel, scope(), "file", vec![PathBuf::from("C:\\Synthetic\\release-note.zip")], "skills.register")).unwrap();
+        assert_eq!(selected.resources.len(), 1);
+        assert_eq!(selected.resources[0].label, "release-note.zip");
+        worker.join().unwrap();
+        channel.close();
+    }
+
+    #[test]
+    fn cancelled_skill_selection_does_not_register_a_resource() {
+        let (channel, _peer) = pair();
+        let result = tauri::async_runtime::block_on(register_paths_at(
+            &channel, scope(), "export", Vec::new(), "skills.register")).unwrap();
+        assert!(result.resources.is_empty());
+        channel.close();
+    }
 
     #[test]
     fn workspace_directory_cancellation_does_not_create_or_retain_a_selection() {
@@ -384,7 +445,7 @@ mod tests {
         let (channel, mut peer) = pair();
         let worker = std::thread::spawn(move || {
             let frame = receive(&mut peer, "workspace.directory_command_status");
-            writeln!(peer.get_mut(), "{}", json!({"protocol_version":2,"request_id":frame["request_id"],"kind":"reply",
+            writeln!(peer.get_mut(), "{}", json!({"protocol_version":3,"request_id":frame["request_id"],"kind":"reply",
                 "method":frame["method"],"error":{"code":"scope_deleted"}})).unwrap();
         });
         let commands = Arc::new(WorkspaceDirectories::default());
@@ -427,8 +488,8 @@ mod tests {
             peer.read_line(&mut line).unwrap();
             let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(frame["method"], "resource.register");
-            assert_eq!(frame["params"], json!({"scope":{"workspace_id":"00000000-0000-4000-8000-000000000001","session_id":null},"kind":"file","paths":["C:\\public-fixture\\选择.md"]}));
-            writeln!(peer.get_mut(), "{}", json!({"protocol_version":2,"request_id":frame["request_id"],"kind":"reply","method":"resource.register","result":{"resources":[{"id":"00000000-0000-4000-8000-000000000002","scope":{"workspace_id":"00000000-0000-4000-8000-000000000001","session_id":null},"label":"选择.md","version":1,"kind":"file","source_version":null}]}})).unwrap();
+            assert_eq!(frame["params"], json!({"scope":{"kind":"workspace","workspace_id":"00000000-0000-4000-8000-000000000001","session_id":null},"kind":"file","paths":["C:\\public-fixture\\选择.md"]}));
+            writeln!(peer.get_mut(), "{}", json!({"protocol_version":3,"request_id":frame["request_id"],"kind":"reply","method":"resource.register","result":{"resources":[{"id":"00000000-0000-4000-8000-000000000002","scope":{"kind":"workspace","workspace_id":"00000000-0000-4000-8000-000000000001","session_id":null},"label":"选择.md","version":1,"kind":"file","source_version":null}]}})).unwrap();
         });
         let result = tauri::async_runtime::block_on(register_paths(&channel, scope(), "file", vec![PathBuf::from("C:\\public-fixture\\选择.md")]));
         let value = serde_json::to_value(result.unwrap()).unwrap();
@@ -496,7 +557,7 @@ async def main():
         'shutdown': lambda params: {'stopping':True}})
     await channel.start()
     await channel.event(HostEvent(request_id='scope-ready', method='ready',
-        params={'scope':{'workspace_id':workspace.id,'session_id':None}}))
+        params={'scope':{'kind':'workspace','workspace_id':workspace.id,'session_id':None}}))
     await channel.wait_closed()
     await channel.close()
     with store.transaction(write=False) as tx:

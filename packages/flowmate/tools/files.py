@@ -42,6 +42,12 @@ class FileRead:
 
 
 @dataclass(frozen=True)
+class FileSnapshot:
+    data: bytes
+    source_version: str
+
+
+@dataclass(frozen=True)
 class FileEntry:
     name: str
     relative_path: str
@@ -530,6 +536,15 @@ class NativeTextFiles:
         _range(offset, limit, self.max_read_chars)
         return self._read(anchor, relative_path, offset, limit, source_version, cancel)
 
+    def read_snapshot(self, anchor: FileAnchor, *, cancel=None) -> FileSnapshot:
+        """获准本机输入使用的有界原字节；复用同一身份句柄链，不追随链接。"""
+        _cancelled(cancel)
+        with _resource(self._kernel, anchor) as (handle, actual, size):
+            if actual.kind != "file":
+                raise DomainError("file_kind_invalid")
+            data = _read_bytes(self._kernel, handle, size, self.max_file_bytes, cancel)
+            return FileSnapshot(data=data, source_version=hashlib.sha256(data).hexdigest())
+
     def list_files(
         self, anchor: FileAnchor, *, cursor: str | None = None, limit: int = 100,
         cancel: Callable[[], bool] | None = None,
@@ -598,12 +613,13 @@ class NativeTextFiles:
             results.append(self._read(anchor, "", 0, 0, None, cancel))
         return results
 
-    def capture_export_target(self, path: Path) -> ExportTarget:
+    def capture_export_target(self, path: Path, *, binary=False) -> ExportTarget:
         """只用于用户明确选择的保存目标；现有目标 hash 不授予源读取权限。"""
         path = _local_path(path)
         if not path.name:
             raise DomainError("file_path_invalid")
-        self._extension(path)
+        if not binary:
+            self._extension(path)
         with ExitStack() as stack:
             _, parent, _ = _open_chain(self._kernel, stack, path.parent, _READ_ATTRIBUTES)
             if parent.kind != "directory":
@@ -620,11 +636,12 @@ class NativeTextFiles:
             return ExportTarget(parent, path.name, actual.identity, hashlib.sha256(raw).hexdigest())
 
     def export_payload(
-        self, target: ExportTarget, text: str, *, expected_target_hash: str | None = None,
+        self, target: ExportTarget, content: str | bytes, *, expected_target_hash: str | None = None,
     ) -> bytes:
         if len(_components(target.name)) != 1 or target.parent.kind != "directory":
             raise DomainError("file_path_invalid")
-        self._extension(target.name)
+        if isinstance(content, str):
+            self._extension(target.name)
         if (target.identity is None) != (target.content_hash is None):
             raise DomainError("file_target_invalid")
         if target.identity is not None and (
@@ -633,12 +650,14 @@ class NativeTextFiles:
             raise DomainError("file_target_invalid")
         if target.identity is not None and expected_target_hash != target.content_hash:
             raise DomainError("file_overwrite_confirmation_required")
-        if not isinstance(text, str):
+        if not isinstance(content, (str, bytes)):
             raise DomainError("file_encoding_invalid")
-        if len(text) > self.max_file_bytes:
+        if len(content) > self.max_file_bytes:
             raise DomainError("file_too_large")
+        if isinstance(content, bytes):
+            return content
         try:
-            payload = text.encode("utf-8")
+            payload = content.encode("utf-8")
         except UnicodeEncodeError:
             raise DomainError("file_encoding_invalid") from None
         if len(payload) > self.max_file_bytes:

@@ -177,9 +177,9 @@ class ExportPublication:
         self._persist(checked)
         return checked
 
-    def publish(self, ctx: ExecutionContext, target: ExportTarget, text: str, *,
+    def publish(self, ctx: ExecutionContext, target: ExportTarget, content: str | bytes, *,
                 expected_target_hash: str | None) -> FileApplyReceipt:
-        payload = self.files.export_payload(target, text, expected_target_hash=expected_target_hash)
+        payload = self.files.export_payload(target, content, expected_target_hash=expected_target_hash)
         digest = hashlib.sha256(payload).hexdigest()
         with self._lock:
             activity = self._activity(ctx.activity_id)

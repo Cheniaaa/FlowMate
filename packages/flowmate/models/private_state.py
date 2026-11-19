@@ -188,8 +188,8 @@ class PrivateStateCodec:
         actual = context_for(tx, ctx.task_id)
         if ctx.model_copy(update={"activity_id": None}) != actual:
             raise DomainError("owner_mismatch", "私有续接上下文不属于真实任务")
-        run = load(tx, RunSnapshot, ctx.run_id)
-        if profile != run.config.model_profile:
+        task = load(tx, TaskSnapshot, ctx.task_id)
+        if profile != task.binding.config.model_profile:
             raise DomainError("blocked_incompatible", "私有续接须使用当前Run固定模型配置")
         check_scopes(tx, ctx.scope_dependencies)
         if ctx.activity_id is not None:
@@ -205,14 +205,14 @@ class PrivateStateCodec:
         run = load(tx, RunSnapshot, metadata.run_id)
         task = load(tx, TaskSnapshot, metadata.task_id)
         activity = load(tx, ActivitySnapshot, metadata.source_activity_id)
-        if ((run.workspace_id, run.session_id) != (metadata.workspace_id, metadata.session_id)
+        if ((run.workspace_id, task.binding.execution_session_id) != (metadata.workspace_id, metadata.session_id)
                 or task.run_id != run.id
                 or (activity.run_id, activity.task_id) != (run.id, task.id)
                 or activity.intent.kind != "model"
                 or activity.state not in ({"dispatched"} if publishing else {"dispatched", "succeeded"})):
             raise DomainError("private_state_invalid", "私有续接不属于已派发模型活动")
-        _match_profile(metadata, run.config.model_profile)
-        if ReplayCompatibility.from_profile(run.config.model_profile) != ReplayCompatibility.from_profile(profile):
+        _match_profile(metadata, task.binding.config.model_profile)
+        if ReplayCompatibility.from_profile(task.binding.config.model_profile) != ReplayCompatibility.from_profile(profile):
             raise DomainError("blocked_incompatible", "私有续接的协议、型号、目的地或adapter不兼容")
         if publishing and (metadata.run_id, metadata.task_id, metadata.source_activity_id) != (
                 ctx.run_id, ctx.task_id, ctx.activity_id):
@@ -223,7 +223,7 @@ class PrivateStateCodec:
                          *(activity.intent.dependencies if publishing else [])]
         check_scopes(tx, dependencies)
         PolicyService.check_run_sources(tx, ctx, metadata.source_dependencies,
-                                       source_run_id=metadata.run_id)
+                                       source_run_id=metadata.run_id,source_task_id=metadata.task_id)
         return dependencies
 
     def _metadata(self, ctx, profile, message):
@@ -353,7 +353,7 @@ class PrivateStateCodec:
                 or len({state.id for state in envelopes}) != len(envelopes)
                 or set(references) != {state.id for state in envelopes}):
             raise DomainError("private_state_invalid", "私有候选与本次消息引用必须一一对应")
-        profile = load(tx, RunSnapshot, ctx.run_id).config.model_profile
+        profile = load(tx, TaskSnapshot, ctx.task_id).binding.config.model_profile
         self._owner(tx, ctx, profile)
         by_ref = {message.private_ref: message for message in messages if message.private_ref is not None}
         pending = []

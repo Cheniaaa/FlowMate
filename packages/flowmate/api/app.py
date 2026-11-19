@@ -17,6 +17,16 @@ def create_app(runtime, connection_policy, *, host):
     app = FastAPI(docs_url=None, redoc_url=None)
     app.add_middleware(Authentication, policy=connection_policy)
     app.include_router(router(runtime))
+    from flowmate.api.memory import router as memory_router
+    app.include_router(memory_router(runtime))
+    from flowmate.api.capabilities import router as capabilities_router
+    app.include_router(capabilities_router(runtime))
+    from flowmate.api.mcp import router as mcp_router
+    app.include_router(mcp_router(runtime.mcp, publisher=runtime.mcp_tools))
+    from flowmate.api.execution_environments import router as environments_router
+    from flowmate.api.skill_execution import router as script_router
+    app.include_router(environments_router(runtime))
+    app.include_router(script_router(runtime))
 
     def failure(code, message, status, *, retryable=False, related_ids=()):
         return JSONResponse(ErrorEnvelope(error=ErrorBody(code=code, safe_message=message,

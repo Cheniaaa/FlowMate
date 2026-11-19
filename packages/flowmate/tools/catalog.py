@@ -2,24 +2,34 @@
 
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from threading import Lock
 from typing import Literal
 
 from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from flowmate.contracts.base import Contract, DomainError, Name
-from flowmate.contracts.execution import ScopeDependency, SourceObservation, StagedArtifact
+from flowmate.contracts.execution import (
+    CatalogVersions,
+    McpToolSnapshot,
+    ScopeDependency,
+    SourceObservation,
+    StagedArtifact,
+)
+from flowmate.policy.contracts import Purpose
 
 
 class ToolSpec(Contract):
     name: Name
     version: Name
+    description: str | None = None
+    mcp: McpToolSnapshot | None = None
     input_schema: dict[str, JsonValue]
     result_schema: dict[str, JsonValue]
     background_supported: bool
     cancellation: Literal["cooperative", "best_effort", "none"]
     retry_class: Literal["read_only", "idempotent", "never"]
-    required_purposes: list[Literal["read", "model_send", "export"]] = Field(default_factory=list)
+    required_purposes: list[Purpose] = Field(default_factory=list)
     requires_approval: bool = False
     model_visible: bool = True
 
@@ -39,20 +49,30 @@ class ToolOutcome(Contract):
 class BoundTool:
     spec: ToolSpec
     handler: Callable[..., Awaitable[ToolOutcome]]
-    input_model: type[BaseModel]
-    result_model: type[BaseModel]
+    input_model: type[BaseModel] | None
+    result_model: type[BaseModel] | None
     resolve_dependencies: Callable | None
+    namespace: str | None = None
+    input_validator: Callable | None = None
+    result_validator: Callable | None = None
+    deferred_dispatch: bool = False
 
-    def validate_input(self, value):
+    def validate_input(self, value) -> dict[str, JsonValue]:
         try:
-            return self.input_model.model_validate_json(
-                json.dumps(value, allow_nan=False), strict=True, extra="forbid",
-            )
+            encoded = json.dumps(value, allow_nan=False)
+            if self.input_validator is not None:
+                value = json.loads(encoded)
+                if not isinstance(value, dict):
+                    raise ValueError
+                return self.input_validator(value)
+            return self.input_model.model_validate_json(encoded, strict=True, extra="forbid").model_dump(mode="json")
         except (ValidationError, ValueError, TypeError):
             raise DomainError("tool_arguments_invalid", "工具参数不符合声明Schema") from None
 
-    def validate_result(self, value):
+    def validate_result(self, value) -> JsonValue:
         try:
+            if self.result_validator is not None:
+                return self.result_validator(json.loads(json.dumps(value, allow_nan=False)))
             result = self.result_model.model_validate_json(
                 json.dumps(value, allow_nan=False), strict=True, extra="forbid",
             )
@@ -64,26 +84,53 @@ class BoundTool:
 class ToolCatalog:
     def __init__(self):
         self._tools = {}
+        self._write_lock = Lock()
 
     def register(self, spec, handler, *, input_model, result_model, resolve_dependencies=None):
-        if spec.name in self._tools:
-            raise DomainError("tool_duplicate", "同名工具不能隐式替换")
         if (spec.input_schema != input_model.model_json_schema(mode="validation")
                 or spec.result_schema != result_model.model_json_schema(mode="serialization")):
             raise DomainError("tool_schema_mismatch", "工具Schema与实际校验器不一致")
         if spec.required_purposes and resolve_dependencies is None:
             raise DomainError("tool_dependencies_required", "涉及资料用途的工具须声明来源解析器")
-        self._tools[spec.name] = BoundTool(spec.model_copy(deep=True), handler, input_model,
-                                          result_model, resolve_dependencies)
+        with self._write_lock:
+            if spec.name in self._tools:
+                raise DomainError("tool_duplicate", "同名工具不能隐式替换")
+            self._tools = {**self._tools, spec.name: BoundTool(spec.model_copy(deep=True), handler,
+                input_model, result_model, resolve_dependencies)}
+
+    def publish_namespace(self, namespace: str, tools: list[BoundTool]) -> None:
+        replacements = {}
+        for tool in tools:
+            owner, _, key = tool.spec.name.rpartition(".")
+            if owner != namespace or not key:
+                raise DomainError("tool_namespace_mismatch", "工具与发布的命名空间不符")
+            if tool.spec.name in replacements:
+                raise DomainError("tool_duplicate", "目录中有工具名称冲突")
+            if tool.spec.required_purposes and tool.resolve_dependencies is None:
+                raise DomainError("tool_dependencies_required", "涉及资料用途的工具须声明来源解析器")
+            replacements[tool.spec.name] = replace(tool, spec=tool.spec.model_copy(deep=True), namespace=namespace)
+        with self._write_lock:
+            retained = {name: tool for name, tool in self._tools.items() if tool.namespace != namespace}
+            if retained.keys() & replacements.keys():
+                raise DomainError("tool_duplicate", "不能替换其他提供方的工具")
+            self._tools = retained | replacements
 
     def get(self, name, version):
         tool = self._tools.get(name)
         if tool is None or tool.spec.version != version:
+            if name.startswith("mcp."):
+                raise DomainError("blocked_incompatible", "任务固定的 MCP 工具版本已不可用")
             raise DomainError("tool_unavailable", "固定版本的工具未装配")
         return tool
 
     def snapshot(self):
         return {name: tool.spec.version for name, tool in self._tools.items()}
+
+    def execution_snapshot(self):
+        tools = self._tools
+        return CatalogVersions(tools={name: tool.spec.version for name, tool in tools.items()},
+            mcp_tools={name: tool.spec.mcp.model_copy(deep=True) for name, tool in tools.items()
+                if tool.spec.mcp is not None})
 
     def specs(self, *, model_only=True):
         return [tool.spec.model_copy(deep=True) for tool in self._tools.values()

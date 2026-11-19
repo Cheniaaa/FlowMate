@@ -6,6 +6,9 @@ import ConnectionSettings from './ConnectionSettings';
 import WindowSettings from './WindowSettings';
 import ResourceSettings from './ResourceSettings';
 import { createRuntimeStore } from '../../state/runtime-store';
+import MemorySettings from './MemorySettings';
+import ExecutionEnvironments from './ExecutionEnvironments';
+import type { MemoryScope } from '../../api/memory';
 
 export interface EditorLifecycle {
   onBusyChange?: (busy: boolean) => void;
@@ -14,7 +17,7 @@ export interface EditorLifecycle {
   onViewReady?: () => void;
   guard?: (action: () => void) => void;
 }
-export default function Settings({ client, section = 'models', onClose, runtimeStore, onSectionChange, onReturnToQuick }: { client: RuntimeClient; section?: SettingsSection; onClose?: () => void; runtimeStore?: ReturnType<typeof createRuntimeStore>; onSectionChange?: (section: SettingsSection) => void; onReturnToQuick?: () => Promise<void> }) {
+export default function Settings({ client, section = 'models', onClose, runtimeStore, onSectionChange, onReturnToQuick, onReturnToMemory, memoryScope }: { client: RuntimeClient; section?: SettingsSection; onClose?: () => void; runtimeStore?: ReturnType<typeof createRuntimeStore>; onSectionChange?: (section: SettingsSection) => void; onReturnToQuick?: () => Promise<void>; onReturnToMemory?: () => void; memoryScope?: MemoryScope }) {
   const store = useMemo(() => runtimeStore ?? createRuntimeStore(client), [client, runtimeStore]);
   const [tab, setTab] = useState(section);
   const [busy, setBusy] = useState(false);
@@ -62,7 +65,7 @@ export default function Settings({ client, section = 'models', onClose, runtimeS
     <header className="settings-header"><div><h1>设置</h1><p>管理连接、助理和本机偏好</p></div>
       <button ref={closeButton} className="settings-close" aria-label="关闭设置" disabled={busy} onClick={() => guard(() => onClose?.())}>×</button>
     </header><div className="settings-body"><nav className="settings-tabs" aria-label="设置类别">
-      {([['models', '模型与连接'], ['assistant', '助理设置'], ['resources', '资料与授权'], ['windows', '窗口与快捷键']] as const).map(([id, label]) => <button key={id} disabled={busy} aria-pressed={tab === id} onClick={() => guard(() => { setGeneration(value => value + 1); setTab(id); onSectionChange?.(id); })}>{label}</button>)}
+      {([['models', '模型与连接'], ['assistant', '助理设置'], ['resources', '资料与授权'], ['memory', '记忆与上下文'], ['environments', '运行环境'], ['windows', '窗口与快捷键']] as const).map(([id, label]) => <button key={id} disabled={busy} aria-pressed={tab === id} onClick={() => guard(() => { setGeneration(value => value + 1); setTab(id); onSectionChange?.(id); })}>{label}</button>)}
     </nav>
     <div className="settings-content" onChangeCapture={event => { const target = event.target as HTMLElement; const form = target.closest('form'); if (form && !target.hasAttribute('data-settings-search')) dirty.current.add(form); }}>
       {confirming && <section className="dirty-confirmation" aria-label="未保存设置"><h2>有未保存的设置</h2><p>保存成功后继续，或明确放弃本次更改。密钥不会写入浏览器存储。</p>
@@ -73,10 +76,13 @@ export default function Settings({ client, section = 'models', onClose, runtimeS
       <div key={`${tab}:${generation}`}>
         {tab === 'models' && <ConnectionSettings client={client} {...lifecycle} />}
         {tab === 'assistant' && <AssistantSettings client={client} {...lifecycle} />}
-        {tab === 'resources' && <ResourceSettings client={client} store={store} />}
+        {tab === 'resources' && <ResourceSettings client={client} store={store} {...lifecycle} />}
         {tab === 'windows' && <WindowSettings {...lifecycle} />}
+        {tab === 'memory' && <MemorySettings client={client} store={store} initialScope={memoryScope} {...lifecycle} />}
+        {tab === 'environments' && <ExecutionEnvironments client={client} store={store} {...lifecycle} />}
       </div>
-    </div></div><footer className="settings-footer"><span>配置修改仅对新运行生效</span>{returnError && <span role="alert">{returnError}</span>}
+    </div></div><footer className="settings-footer"><span>{tab === 'environments' ? '环境变更需重新检测，旧运行不会自动切换' : tab === 'memory' ? '记忆策略不代替模型发送授权' : '配置修改仅对新运行生效'}</span>{returnError && <span role="alert">{returnError}</span>}
+      {onReturnToMemory && <button disabled={busy} onClick={() => guard(onReturnToMemory)}>返回记忆与成长</button>}
       {onReturnToQuick && <button disabled={busy} onClick={() => guard(() => { setBusy(true); setReturnError(''); void onReturnToQuick().catch(() => setReturnError('返回快捷小窗失败，请重试')).finally(() => setBusy(false)); })}>返回快捷小窗</button>}
       <button disabled={busy} onClick={() => guard(() => onClose?.())}>完成</button></footer>
   </section></div>;

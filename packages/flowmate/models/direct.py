@@ -23,12 +23,12 @@ from flowmate.contracts.execution import (
     Usage,
 )
 from flowmate.host.diagnostics import make_diagnostic, write_diagnostic
-from flowmate.host.protocol import SecretBinding
+from flowmate.host.protocol import ModelSecretBinding
 from flowmate.models.contracts import ModelEvent, ModelOutcome, ModelRequest, ProjectionEstimate
 from flowmate.models.pricing import calculate_units
 from flowmate.models.tool_names import wire_names
 from flowmate.models.wire import GuardTransport, WireEvidence, strict_json
-from flowmate.runtime.transitions import check_dispatch, check_scopes, context_for, load, utc_now
+from flowmate.runtime.transitions import check_dispatch, context_for, load, utc_now
 from flowmate.tools.catalog import ToolCatalog
 
 
@@ -77,15 +77,16 @@ class ModelGateway:
             task = load(tx, TaskSnapshot, ctx.task_id)
             if (activity.run_id != run.id or activity.task_id != task.id
                     or activity.attempt_id != request.attempt_id or activity.intent.kind != "model"
-                    or run.config.model_profile != request.profile):
+                    or task.binding.config.model_profile != request.profile):
                 raise DomainError("model_binding_mismatch", "模型请求与运行快照不一致")
             if initial and activity.state != "prepared":
                 raise DomainError("already_dispatched", "模型活动不能重复发送")
             check_dispatch(tx, run, task, self.clock())
             for message in request.messages:
-                origin = tx.execute("SELECT run_id FROM messages WHERE id=?", (message.id,)).fetchone()
+                origin = tx.execute("SELECT run_id,task_id FROM messages WHERE id=?", (message.id,)).fetchone()
                 self.policy.check_run_sources(tx, ctx, message.source_dependencies,
-                    source_run_id=origin[0] if origin is not None else ctx.run_id)
+                    source_run_id=origin[0] if origin is not None else ctx.run_id,
+                    source_task_id=origin[1] if origin is not None else ctx.task_id)
             self.policy.check_run_sources(tx, ctx, dependencies)
             decision = self.policy.check_tx(tx, ctx, dependencies, "model_send", request.profile.endpoint)
             if not decision.allowed:
@@ -103,7 +104,7 @@ class ModelGateway:
             *(part.name for message in request.messages for part in message.parts if isinstance(part, ToolCallPart))])
         projection = RequestProjection(messages=await self._messages(ctx, request, names),
             parameters=ModelRequestParameters(function_tools=[ToolDefinition(name=names[tool.name],
-                description=tool.name, parameters_json_schema=tool.input_schema) for tool in request.tools],
+                description=tool.description or tool.name, parameters_json_schema=tool.input_schema) for tool in request.tools],
                 allow_text_output=True), settings={"max_tokens": request.max_output_tokens, "max_retries": 0,
                     "timeout": request.profile.request_timeout_seconds})
         await projection.serialize(request.profile, self._sdk)
@@ -113,14 +114,15 @@ class ModelGateway:
         with self.policy.store.transaction(write=False) as tx:
             if ctx.model_copy(update={"activity_id": None}) != context_for(tx, ctx.task_id):
                 raise DomainError("owner_mismatch", "估算不属于当前真实任务")
-            if request.profile != load(tx, RunSnapshot, ctx.run_id).config.model_profile:
+            if request.profile != load(tx, TaskSnapshot, ctx.task_id).binding.config.model_profile:
                 raise DomainError("model_binding_mismatch", "估算必须使用Run固定配置")
             dependencies = [*ctx.scope_dependencies,
                 *(dependency for message in request.messages for dependency in message.source_dependencies)]
             for message in request.messages:
-                origin = tx.execute("SELECT run_id FROM messages WHERE id=?", (message.id,)).fetchone()
+                origin = tx.execute("SELECT run_id,task_id FROM messages WHERE id=?", (message.id,)).fetchone()
                 self.policy.check_run_sources(tx, ctx, message.source_dependencies,
-                    source_run_id=origin[0] if origin is not None else ctx.run_id)
+                    source_run_id=origin[0] if origin is not None else ctx.run_id,
+                    source_task_id=origin[1] if origin is not None else ctx.task_id)
             decision = self.policy.check_tx(tx, ctx, dependencies, "model_send", request.profile.endpoint)
             if not decision.allowed:
                 raise DomainError(decision.reason or "grant_required", "估算输入缺少有效外发授权")
@@ -276,10 +278,10 @@ class ModelGateway:
             if request.profile.secret_ref is None:
                 raise DomainError("credential_missing", "模型凭据尚未配置")
             with self.policy.store.transaction(write=False) as tx:
-                run = load(tx, RunSnapshot, ctx.run_id)
+                task = load(tx, TaskSnapshot, ctx.task_id)
                 for tool in request.tools:
                     if (not tool.model_visible or self.catalog.get(tool.name, tool.version).spec != tool
-                            or run.config.catalog.tools.get(tool.name) != tool.version):
+                            or task.binding.config.catalog.tools.get(tool.name) != tool.version):
                         raise DomainError("tool_unavailable", "模型工具Schema不属于当前Run目录")
             names = wire_names([*[tool.name for tool in request.tools],
                 *(part.name for message in request.messages for part in message.parts if isinstance(part, ToolCallPart))])
@@ -287,22 +289,26 @@ class ModelGateway:
             projection = await self._project(ctx, request)
             if request.projection_digest is not None and projection.estimate().projection_digest != request.projection_digest:
                 raise DomainError("projection_changed", "模型输入在准备后发生变化，请重新准备请求")
-            key = (await self.secrets.resolve(SecretBinding(connection_id=request.profile.connection_id,
+            key = (await self.secrets.resolve(ModelSecretBinding(connection_id=request.profile.connection_id,
                 connection_version=request.profile.connection_version, protocol=request.profile.protocol,
                 endpoint=request.profile.endpoint,
                 secret_ref=request.profile.secret_ref))).decode("utf-8")
             headers = {}
-            pricing = run.config.model_pricing
-            def dispatch(request):
-                # 完整授权展开范围仍在同一派发事务复核，但不写成永久正文来源。
+            pricing = task.binding.config.model_pricing
+            def dispatch(dispatch_request):
+                # 按实际输入重新展开授权闭包；未观察元信息不能冻结成旧正文epoch。
+                # 显式正文依赖及grant epoch仍由Policy在原派发事务严格复核。
                 def authorize(tx):
-                    check_scopes(tx, dependencies)
-                return before_send(request, authorize=authorize)
+                    decision = self.policy.check_tx(tx, ctx, provenance, "model_send", request.profile.endpoint)
+                    if not decision.allowed:
+                        raise DomainError(decision.reason or "model_send_denied", "模型输入缺少有效外发授权",
+                                          related_ids=tuple(decision.missing_grants))
+                return before_send(dispatch_request, authorize=authorize)
             guard = GuardTransport(self.transport or httpx2.AsyncHTTPTransport(retries=0),
                 profile=request.profile, ctx=ctx, attempt_id=request.attempt_id,
                 max_output_tokens=request.max_output_tokens, pricing=pricing, headers=headers,
                 dependencies=provenance, before_send=dispatch,
-                check=lambda: self._check(ctx, request, dependencies, cancel), evidence=evidence)
+                check=lambda: self._check(ctx, request, provenance, cancel), evidence=evidence)
             timeout = min(request.profile.request_timeout_seconds, (deadline - self.clock()).total_seconds())
             client = httpx2.AsyncClient(transport=ProjectionTransport(projection, guard), timeout=timeout,
                 follow_redirects=False, trust_env=False)
@@ -368,7 +374,7 @@ class ModelGateway:
                         raise DomainError("invalid_response", "模型工具参数无效") from None
                     calls.add(part.tool_call_id)
                     parts.append(ToolCallPart(name=internal_name, call_id=part.tool_call_id,
-                                               arguments=args.model_dump(mode="json")))
+                                               arguments=args))
                     part = replace(part, tool_name=internal_name)
                 elif isinstance(part, ThinkingPart) and request.profile.capabilities.thinking:
                     if part.content:

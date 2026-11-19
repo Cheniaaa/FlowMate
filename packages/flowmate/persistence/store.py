@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from flowmate.config import APPLICATION_ID, SCHEMA_VERSION
-from flowmate.contracts.base import DomainError
+from flowmate.contracts.base import DomainError, identifier
 from flowmate.contracts.events import NewEvent, RunEvent
 from flowmate.contracts.settings import AgentProfile, ModelConnection, ModelProfile
 from flowmate.persistence.events import apply_event
@@ -157,6 +157,9 @@ class Store:
                 for statement in schema.split(";"):
                     if statement.strip():
                         connection.execute(statement)
+                user_scope_id = identifier()
+                connection.execute("INSERT INTO scopes(id,kind) VALUES (?,'user_global')", (user_scope_id,))
+                connection.execute("INSERT INTO local_identity VALUES (1,?)", (user_scope_id,))
                 connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             connection.commit()
@@ -181,6 +184,9 @@ class Store:
         """清理不能等待外部读者无限释放快照；繁忙时保留待清理事实。"""
         connection = self._connect()
         try:
+            # 先以正常连接策略加入 WAL，避免首次访问与最后连接关闭的 exclusive 清理锁竞争。
+            # 此读操作不保留事务；随后 checkpoint 仍不等待持有旧快照的读者。
+            connection.execute("PRAGMA main.user_version").fetchone()
             connection.execute("PRAGMA busy_timeout = 0")
             return connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
         finally:

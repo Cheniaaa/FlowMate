@@ -1,9 +1,9 @@
 import { useRef, type FormEvent, type ReactNode } from 'react';
 import Button from '../../components/Button';
 
-export default function Composer({ value, onChange, onSubmit, disabled, steering, blockedReason, toolbar }: {
+export default function Composer({ value, onChange, onSubmit, disabled, steering, queueing = false, blockedReason, toolbar }: {
   value: string; onChange: (value: string) => void; onSubmit: (event: FormEvent) => void; disabled: boolean; steering: boolean; blockedReason?: string;
-  toolbar?: ReactNode;
+  toolbar?: ReactNode; queueing?: boolean;
 }) {
   const composing = useRef(false);
   return <form className="composer" onSubmit={event => { if (disabled || !value.trim()) event.preventDefault(); else onSubmit(event); }}>
@@ -17,7 +17,7 @@ export default function Composer({ value, onChange, onSubmit, disabled, steering
         if (!disabled && value.trim() && !event.repeat) event.currentTarget.form!.requestSubmit();
       }} />
     <footer>{toolbar}
-      <Button type="submit" className="button--primary" disabled={disabled}>{steering ? '补充指令' : '发送'}</Button></footer>
-    <p className="composer-hint"><span>{blockedReason ?? (steering ? '补充会在下一个安全步骤处理' : '只有明确选中的资料才会用于本次任务')}</span><span>Enter 发送 · Shift+Enter 换行</span></p>
+      <Button type="submit" className="button--primary" disabled={disabled}>{steering ? '补充指令' : queueing ? '排队发送' : '发送'}</Button></footer>
+    <p className="composer-hint"><span>{blockedReason ?? (steering ? '补充会在下一个安全步骤处理' : queueing ? '新目标先保存到队列，自动总结在安全边界让出' : '只有明确选中的资料才会用于本次任务')}</span><span>Enter 发送 · Shift+Enter 换行</span></p>
   </form>;
 }

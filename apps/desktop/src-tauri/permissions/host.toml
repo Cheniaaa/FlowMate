@@ -1,7 +1,7 @@
 [[permission]]
 identifier = "host-main"
 description = "主窗口与小窗的连接、停机和原生选择；不含凭据或任意路径入口。"
-commands.allow = ["runtime_connection", "stop_runtime", "select_resources", "choose_export_target"]
+commands.allow = ["runtime_connection", "stop_runtime", "select_resources", "choose_export_target", "select_skill_package", "choose_skill_export_target"]
 
 [[permission]]
 identifier = "host-settings"

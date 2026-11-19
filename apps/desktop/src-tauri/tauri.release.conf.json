@@ -2,6 +2,6 @@
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
     "active": true,
-    "resources": { "../../../.local/m1/bundle/flowmate-runtime/": "runtime/" }
+    "resources": { "../../../.local/m2/runtime/flowmate-runtime/": "runtime/" }
   }
 }

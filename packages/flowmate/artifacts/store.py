@@ -52,11 +52,16 @@ class ArtifactStore:
         return decision.dependencies
 
     def stage_text(self, ctx, text, media_type, dependencies):
-        if ctx.activity_id is None:
-            raise DomainError("activity_required", "产物必须属于实际Activity")
         if not isinstance(text, str) or media_type not in {"text/plain", "text/markdown"}:
             raise DomainError("artifact_type_invalid", "只支持文本产物")
-        data = text.encode("utf-8")
+        return self._stage(ctx, text.encode("utf-8"), media_type, dependencies)
+
+    def stage_binary(self, ctx, data: bytes, dependencies):
+        return self._stage(ctx, data, "application/octet-stream", dependencies)
+
+    def _stage(self, ctx, data, media_type, dependencies):
+        if ctx.activity_id is None:
+            raise DomainError("activity_required", "产物必须属于实际Activity")
         if len(data) > self.config.max_file_bytes:
             raise DomainError("artifact_too_large", "产物超过配置大小限制")
         # 暂存与回收共享写事务：引用提交前的有效内容不能被孤儿回收误删。
@@ -107,10 +112,11 @@ class ArtifactStore:
         tx.execute("DELETE FROM artifact_staging WHERE id=?", (ref.id,))
         return ref
 
-    def reference(self, ctx, artifact_id, *, tx=None, for_user=False):
+    def reference(self, ctx, artifact_id, *, tx=None, for_user=False, artifact_version=None, content_hash=None):
         if tx is None:
             with self.store.transaction(write=False) as tx:
-                return self.reference(ctx, artifact_id, tx=tx, for_user=for_user)
+                return self.reference(ctx, artifact_id, tx=tx, for_user=for_user,
+                    artifact_version=artifact_version, content_hash=content_hash)
         actual = context_for(tx, ctx.task_id)
         if actual != ctx.model_copy(update={"activity_id": None}):
             raise DomainError("owner_mismatch", "产物访问上下文归属不一致")
@@ -119,12 +125,23 @@ class ArtifactStore:
         if row is None:
             raise DomainError("artifact_not_found", "产物引用不存在")
         owner = load(tx, RunSnapshot, row[0])
-        if (owner.workspace_id, owner.session_id) != (ctx.workspace_id, ctx.session_id):
+        if (owner.workspace_id, owner.interaction_session_id) != (ctx.workspace_id, ctx.interaction_session_id):
             raise DomainError("artifact_scope_mismatch", "产物不在当前上下文范围")
         ref = ArtifactRef.model_validate_json(row[1])
+        if for_user:
+            memory_dependencies = [dependency for dependency in ref.dependencies if tx.execute(
+                "SELECT 1 FROM scopes WHERE id=? AND kind='memory'", (dependency.scope_id,)).fetchone()]
+            check_scopes(tx, memory_dependencies)
         if not for_user:
-            self.policy.check_run_sources(tx, ctx, ref.dependencies, source_run_id=owner.id)
+            self.policy.artifact_input(tx, ctx, ref, artifact_version=artifact_version, content_hash=content_hash)
+            self.policy.check_run_sources(tx, ctx, ref.dependencies,
+                source_run_id=owner.id,source_task_id=ref.task_id)
         return ref
+
+    def _text(self, ref):
+        if ref.media_type == "application/octet-stream":
+            raise DomainError("artifact_not_text", "此产物须按文件保存")
+        return self._bytes(ref).decode("utf-8")
 
     def read(self, ctx, artifact_id, offset=0, limit=40000, *, for_user=False):
         if type(offset) is not int or offset < 0 or type(limit) is not int or not (
@@ -133,17 +150,17 @@ class ArtifactStore:
             raise DomainError("artifact_range_invalid", "产物读取范围无效")
         ref = self.reference(ctx, artifact_id, for_user=for_user)
         if not for_user:
-            self._allow(self.policy.check(ctx, ref.dependencies, "read"))
-        text = self._bytes(ref).decode("utf-8")
+            self._allow(self.policy.check(ctx, ref.dependencies, "read", artifact_id=ref.id))
+        text = self._text(ref)
         if offset > len(text):
             raise DomainError("artifact_range_invalid", "产物读取位置超出内容")
         end = min(len(text), offset + limit)
         return TextSlice(text=text[offset:end], start=offset, end=end,
                          total_chars=len(text), source_version=ref.content_hash)
 
-    def export(self, ctx, artifact_id, selection, expected_target_hash=None):
-        ref = self.reference(ctx, artifact_id)
-        self._allow(self.policy.check(ctx, ref.dependencies, "read"))
+    def export(self, ctx, artifact_id, selection, expected_target_hash=None, *, artifact_version, content_hash):
+        ref = self.reference(ctx, artifact_id, artifact_version=artifact_version, content_hash=content_hash)
+        self._allow(self.policy.check(ctx, ref.dependencies, "read", artifact_id=ref.id))
         selection = self.policy.resource(ctx, selection.id)
         if selection.kind != "export" or selection.export_target is None:
             raise DomainError("export_target_invalid", "导出需要可信保存选择")
@@ -156,8 +173,8 @@ class ArtifactStore:
         info = selection.export_target
         target = ExportTarget(parent=FileAnchor(info.parent_path, info.parent_identity, "directory"),
                               name=info.name, identity=info.target_identity, content_hash=info.content_hash)
-        result = self.publication.publish(ctx, target, self._bytes(ref).decode("utf-8"),
-                                          expected_target_hash=expected_target_hash)
+        content = self._bytes(ref) if ref.media_type == "application/octet-stream" else self._text(ref)
+        result = self.publication.publish(ctx, target, content, expected_target_hash=expected_target_hash)
         return ExportReceipt(activity_id=ctx.activity_id, target_ref=selection.id,
                               content_hash=result.content_hash,
                               state="applied" if result.confirmed else "uncertain")

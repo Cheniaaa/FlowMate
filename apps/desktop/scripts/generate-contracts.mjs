@@ -16,7 +16,7 @@ function withoutDiscriminator(value) {
 }
 
 export async function generateContracts(document) {
-  if (document.schema_version !== 2) throw new Error('不支持的公共 Schema 版本');
+  if (document.schema_version !== 3) throw new Error('不支持的公共 Schema 版本');
   const ajv = new Ajv2020({ code: { source: true, esm: true }, strict: true, inlineRefs: false,
     coerceTypes: false, useDefaults: false, removeAdditional: false });
   addFormats(ajv);
@@ -38,7 +38,9 @@ export async function generateContracts(document) {
   const source = standaloneCode(ajv, exports);
   const [bundle] = await build({ configFile: false, logLevel: 'silent',
     plugins: [{ name: 'flowmate-standalone', resolveId(id) { if (id === entry) return entry; }, load(id) { if (id === entry) return source; } }],
-    build: { write: false, minify: false, lib: { entry, formats: ['es'] } },
+    build: { write: false, minify: false,
+      rolldownOptions: { cwd: fileURLToPath(new URL('../', import.meta.url)) },
+      lib: { entry, formats: ['es'] } },
   });
   return {
     'contracts.ts': banner + namespaces.join('\n'),

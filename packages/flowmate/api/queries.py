@@ -11,11 +11,15 @@ from flowmate.api.contracts import (
     InboxApproval,
     InboxItem,
     InboxQuestion,
+    MemberLane,
     MessageView,
     NavigationView,
     Page,
     PageCursor,
+    PendingAction,
+    PendingActionCommand,
     RunDetail,
+    TaskCenterItem,
     TraceItem,
     WorkspaceNavigation,
     WorkspaceSnapshot,
@@ -26,13 +30,20 @@ from flowmate.contracts.base import DomainError
 from flowmate.contracts.events import RunEvent
 from flowmate.contracts.execution import (
     ActivitySnapshot,
+    AdmissionFence,
     ArtifactRef,
+    BudgetAllocation,
+    BudgetGroupSnapshot,
     BudgetSnapshot,
+    Checkpoint,
     JoinFact,
+    ModelMessage,
     Question,
     ResultConsumption,
     RunSnapshot,
+    SessionInboxEntry,
     TaskSnapshot,
+    TaskSubmission,
     WaitRecord,
 )
 from flowmate.contracts.settings import (
@@ -42,7 +53,14 @@ from flowmate.contracts.settings import (
     Session,
     Workspace,
 )
-from flowmate.policy.contracts import Approval, DataUseGrant, ResourceRecord, ResourceRef
+from flowmate.policy.contracts import (
+    Approval,
+    DataUseGrant,
+    ResourceRecord,
+    ResourceRef,
+    ToolInvocation,
+)
+from flowmate.runtime.recovery import CONDITION_WAITING_TASKS_SQL
 from flowmate.runtime.transitions import load
 
 
@@ -61,7 +79,7 @@ def session(tx, id):
     row = tx.execute("SELECT * FROM sessions WHERE id=?", (id,)).fetchone()
     if row is None:
         raise DomainError("not_found", "会话不存在")
-    return Session.model_validate(dict(row))
+    return Session.model_validate_json(row["document"])
 
 
 def _page(tx, model, key, sql, parameters, *, limit=100, cursor=None, decode=None,
@@ -116,8 +134,8 @@ def workspaces(tx, **paging):
 
 def sessions(tx, id, **paging):
     workspace(tx, id)
-    return _page(tx, Session, f"sessions:{id}", "SELECT * FROM sessions WHERE workspace_id=?", [id],
-                 decode=lambda row: Session.model_validate({name: row[name] for name in Session.model_fields}), keys=("id",), **paging)
+    return _page(tx, Session, f"sessions:{id}", "SELECT * FROM sessions WHERE workspace_id=? AND kind='interaction'", [id],
+                 keys=("id",), **paging)
 
 
 def profiles(tx, kind, *, connection_id=None, **paging):
@@ -137,12 +155,14 @@ def run_items(tx, run_id, kind, **paging):
     load(tx, RunSnapshot, run_id)
     if kind == "messages":
         return _page(tx, MessageView, f"messages:{run_id}", "SELECT document,event_id,event_index FROM messages "
-                     "WHERE run_id=? ORDER BY event_id,event_index", [run_id], decode=message_view, keys=("event_id", "event_index"), **paging)
+                     "WHERE run_id=? AND execution_session_id=(SELECT interaction_session_id FROM runs WHERE id=?) "
+                     "ORDER BY event_id,event_index", [run_id,run_id], decode=message_view, keys=("event_id", "event_index"), **paging)
     model = {"tasks": TaskSnapshot, "activities": ActivityView, "artifacts": ArtifactRef,
              "questions": Question, "approvals": Approval, "waits": WaitRecord,
              "consumptions": ResultConsumption, "joins": JoinFact}[kind]
     decode = (lambda row: activity_view(ActivitySnapshot.model_validate_json(row["document"]))) if kind == "activities" else None
-    return _page(tx, model, f"{kind}:{run_id}", f"SELECT id,document FROM {kind} WHERE run_id=? ORDER BY id", [run_id],
+    owner_key = "consumer_run_id" if kind == "consumptions" else "run_id"
+    return _page(tx, model, f"{kind}:{run_id}", f"SELECT id,document FROM {kind} WHERE {owner_key}=? ORDER BY id", [run_id],
                  decode=decode, **paging)
 
 
@@ -151,16 +171,17 @@ def message_view(row):
 
 
 def messages(tx, id, **paging):
-    session(tx, id)
+    if session(tx, id).kind != "interaction":
+        raise DomainError("not_found","交互会话不存在")
     return _page(tx, MessageView, f"session_messages:{id}", "SELECT m.document,m.event_id,m.event_index FROM messages m "
-                 "JOIN runs r ON r.id=m.run_id WHERE r.session_id=? ORDER BY m.event_id,m.event_index", [id],
+                 "WHERE m.execution_session_id=? ORDER BY m.event_id,m.event_index", [id],
                    decode=message_view, keys=("event_id", "event_index"), **paging)
 
 
 def session_runs(tx, id, **paging):
     session(tx, id)
     return _page(tx, RunSnapshot, f"session_runs:{id}",
-                 "SELECT id,document FROM runs WHERE session_id=? ORDER BY id", [id], **paging)
+                  "SELECT id,document FROM runs WHERE interaction_session_id=? ORDER BY id", [id], **paging)
 
 
 def command_status(tx, session_id, command_id):
@@ -168,7 +189,24 @@ def command_status(tx, session_id, command_id):
     row = tx.previous_command(command_id)
     if row is None or row["session_id"] != session_id:
         return CommandStatus(status="not_found", result=None)
-    return CommandStatus(status="confirmed", result=json.loads(row["response"]))
+    pending = tx.execute("SELECT document FROM pending_user_commands WHERE command_id=? AND session_id=?",
+        (command_id, session_id)).fetchone()
+    return CommandStatus(status="confirmed", result=json.loads(pending[0] if pending else row["response"]))
+
+
+def pending_commands(tx, session_id, **paging):
+    from flowmate.contracts.execution import PendingUserCommand
+    session(tx, session_id)
+    return _page(tx, PendingUserCommand, f"session_commands:{session_id}",
+        "SELECT command_id AS id,document FROM pending_user_commands WHERE session_id=? ORDER BY command_id",
+        [session_id], **paging)
+
+
+def follow_up_intents(tx, session_id, **paging):
+    from flowmate.contracts.execution import FollowUpIntent
+    session(tx, session_id)
+    return _page(tx, FollowUpIntent, f"session_followups:{session_id}",
+        "SELECT id,document FROM follow_up_intents WHERE target_session_id=? ORDER BY id", [session_id], **paging)
 
 
 def resources(tx, id, session_id=None, **paging):
@@ -197,34 +235,180 @@ def run_detail(tx, id):
         budget=budget, cost_summary=cost_summary(tx, run, budget), context_usage=context_usage(tx, run), watermark=watermark(tx))
 
 
-def global_tasks(tx, **paging):
-    return _page(tx, RunSnapshot, "global_tasks", "SELECT id,document FROM runs", [], **paging)
+def member_lanes(tx, run_id):
+    """泳道来自实际AgentTask；工具沿真实parent边归属，顺序来自持久Activity。"""
+    load(tx, RunSnapshot, run_id)
+    tasks = {task.id: task for row in tx.execute(
+        "SELECT document FROM tasks WHERE run_id=? ORDER BY rowid", (run_id,))
+        for task in [TaskSnapshot.model_validate_json(row[0])]}
+    lanes = {task.id: MemberLane(task=task, profile=task.binding.config.agent_profile, activities=[], handoffs=[])
+        for task in tasks.values() if task.kind == "agent"}
+
+    def owner(id):
+        task = tasks[id]
+        while task.kind != "agent" and task.parent_task_id is not None:
+            task = tasks[task.parent_task_id]
+        return lanes.get(task.id)
+
+    for row in tx.execute("SELECT document FROM activities WHERE run_id=? ORDER BY rowid", (run_id,)):
+        activity = ActivitySnapshot.model_validate_json(row[0])
+        lane = owner(activity.task_id)
+        if lane is not None:
+            lane.activities.append(activity_view(activity))
+    for row in tx.execute("SELECT document FROM task_submissions WHERE origin_run_id=? ORDER BY rowid", (run_id,)):
+        submission = TaskSubmission.model_validate_json(row[0])
+        lane = owner(submission.origin_task_id)
+        if lane is not None:
+            lane.handoffs.append(submission.handle)
+    return list(lanes.values())
+
+
+def budget_group(tx, run_id):
+    run = load(tx, RunSnapshot, run_id)
+    return load(tx, BudgetGroupSnapshot, run.budget_group_id)
+
+
+def budget_allocation(tx, run_id):
+    load(tx, RunSnapshot, run_id)
+    return load(tx, BudgetAllocation, run_id)
+
+
+def task_center(tx,workspace_id=None,state_filter=None,run_kind=None,**paging):
+    if workspace_id is not None:
+        workspace(tx,workspace_id)
+    sql=("SELECT r.id,r.document,t.document AS root_document, "
+         "(SELECT state FROM delivery_outbox d WHERE json_extract(d.document,'$.result.run_id')=r.id "
+         "ORDER BY source_event_id DESC LIMIT 1) AS delivery_state "
+         "FROM runs r JOIN tasks t ON t.id=r.root_task_id WHERE (? IS NULL OR r.workspace_id=?) "
+         "AND (? IS NULL OR r.state=?) AND (? IS NULL OR r.kind=?)")
+    def decode(row):
+        run=RunSnapshot.model_validate_json(row["document"])
+        invalid=tx.execute("SELECT document FROM session_inbox WHERE json_extract(document,'$.result.run_id')=?",
+                          (run.id,)).fetchall()
+        from flowmate.runtime.delivery import visible_entry
+        if any(not visible_entry(tx,SessionInboxEntry.model_validate_json(item[0])).source_valid for item in invalid):
+            run=run.model_copy(update={"output":None})
+        pending=tx.execute("SELECT count(*) FROM ("+_inbox_source()+") p WHERE p.run_id=?", (run.id,)).fetchone()[0]
+        root=TaskSnapshot.model_validate_json(row["root_document"])
+        return TaskCenterItem(run=run,root=root,pending_count=pending,
+            delivery_state=row["delivery_state"],origin_task_id=root.origin_task_id)
+    return _page(tx,TaskCenterItem,f"task_center:{workspace_id}:{state_filter}:{run_kind}",sql,
+                 [workspace_id,workspace_id,state_filter,state_filter,run_kind,run_kind],decode=decode,**paging)
+
+
+def session_inbox(tx,session_id,**paging):
+    if session(tx,session_id).kind != "interaction":
+        raise DomainError("not_found","交互结果入口不存在")
+    from flowmate.runtime.delivery import visible_entry
+    return _page(tx,SessionInboxEntry,f"session_inbox:{session_id}",
+        "SELECT id,document FROM session_inbox WHERE target_session_id=?",[session_id],
+        decode=lambda row:visible_entry(tx,SessionInboxEntry.model_validate_json(row["document"])),**paging)
+
+
+def admission(tx,scope):
+    from flowmate.policy.service import _scope
+    from flowmate.runtime.transitions import admission_generations
+    _scope(tx,scope)
+    if scope.kind == "user_global" or (scope.kind == "session" and session(tx,scope.session_id).kind != "interaction"):
+        raise DomainError("invalid_scope","准入入口只接受项目或交互会话范围")
+    return AdmissionFence(scope=scope,generation=admission_generations(tx,scope.workspace_id,scope.session_id)[
+        scope.session_id or scope.workspace_id])
+
+
+def _inbox_source():
+    return ("SELECT q.id,q.document,r.workspace_id,r.interaction_session_id AS session_id,q.run_id,'question' AS kind FROM questions q "
+            "JOIN runs r ON r.id=q.run_id WHERE q.status='pending' UNION ALL "
+            "SELECT a.id,a.document,r.workspace_id,r.interaction_session_id AS session_id,a.run_id,'approval' AS kind FROM approvals a "
+            "JOIN runs r ON r.id=a.run_id WHERE a.status='pending' UNION ALL "
+            "SELECT r.id,r.document,r.workspace_id,r.interaction_session_id AS session_id,r.id AS run_id, "
+            "CASE WHEN json_extract(r.document,'$.reason') IN ('scope_revoked','budget_exceeded','token_limit','request_limit','step_limit','task_limit',"
+            "'pricing_unknown','allocation_exceeded','managed_not_authorized','result_capacity','context_authorization_required',"
+            "'outside_run_scope','grant_required','session_archived','admission_stopped') "
+            "OR r.state='blocked_incompatible' THEN 'blocked' ELSE 'recovery' END AS kind "
+            "FROM runs r WHERE r.state IN ('interrupted','blocked_incompatible') OR "
+            "(r.state='waiting_user' AND json_extract(r.document,'$.reason')<>'question' AND NOT EXISTS "
+            f"(SELECT 1 FROM ({CONDITION_WAITING_TASKS_SQL}) waiting WHERE waiting.id=r.root_task_id)) UNION ALL "
+            "SELECT t.id,t.document,r.workspace_id,r.interaction_session_id AS session_id,r.id AS run_id,'recovery' AS kind "
+            f"FROM ({CONDITION_WAITING_TASKS_SQL}) t JOIN runs r ON r.id=t.run_id UNION ALL "
+            "SELECT d.id,d.document,r.workspace_id,r.interaction_session_id AS session_id,r.id AS run_id,'delivery_failed' AS kind "
+            "FROM delivery_outbox d JOIN runs r ON r.id=json_extract(d.document,'$.result.run_id') WHERE d.state='failed'")
 
 
 def inbox(tx, **paging):
-    sql = ("SELECT q.id,q.document,r.workspace_id,r.session_id,q.run_id,'question' AS kind FROM questions q "
-           "JOIN runs r ON r.id=q.run_id WHERE q.status='pending' UNION ALL "
-           "SELECT a.id,a.document,r.workspace_id,r.session_id,a.run_id,'approval' AS kind FROM approvals a "
-           "JOIN runs r ON r.id=a.run_id WHERE a.status='pending'")
+    sql=_inbox_source()
     def decode(row):
         ids = {name: row[name] for name in ("id", "workspace_id", "session_id", "run_id")}
         if row["kind"] == "question":
             return InboxQuestion(**ids, question=Question.model_validate_json(row["document"]))
-        return InboxApproval(**ids, approval=Approval.model_validate_json(row["document"]))
+        if row["kind"] == "approval":
+            return InboxApproval(**ids, approval=Approval.model_validate_json(row["document"]))
+        run=load(tx,RunSnapshot,row["run_id"])
+        condition = (TaskSnapshot.model_validate_json(row["document"]) if
+            row["kind"] != "delivery_failed" and row["id"] != run.id else None)
+        actions=[PendingActionCommand(kind="view_task",target_id=run.id,expected_version=None)]
+        if run.state not in {"completed","failed","cancelled"}:
+            actions.append(PendingActionCommand(kind="cancel_run",target_id=run.id,expected_version=run.version))
+        if row["kind"] == "delivery_failed":
+            from flowmate.runtime.delivery import visible_entry
+            entry=visible_entry(tx,SessionInboxEntry.model_validate_json(row["document"]))
+            if entry.source_valid:
+                actions.append(PendingActionCommand(kind="retry_delivery",target_id=entry.id,expected_version=entry.version))
+            version,reason=entry.version,entry.last_error
+        else:
+            from flowmate.runtime.transitions import check_admission, check_scopes, utc_now
+            unsafe=tx.execute("SELECT 1 FROM activities WHERE run_id=? AND (state='uncertain' OR "
+                "(json_extract(document,'$.receipt') IS NOT NULL AND json_extract(document,'$.content_committed')=0)) LIMIT 1",
+                (run.id,)).fetchone()
+            valid=True
+            try:
+                check_scopes(tx,run.scope_dependencies)
+                check_admission(tx,run)
+                for message in tx.execute("SELECT document FROM messages WHERE run_id=?",(run.id,)):
+                    check_scopes(tx,ModelMessage.model_validate_json(message[0]).source_dependencies)
+                for checkpoint_row in tx.execute("SELECT c.document FROM checkpoints c JOIN tasks t ON t.id=c.task_id "
+                        "WHERE t.run_id=? AND t.state NOT IN ('completed','failed','cancelled')",(run.id,)):
+                    checkpoint=Checkpoint.model_validate_json(checkpoint_row[0])
+                    check_scopes(tx,checkpoint.output_dependencies)
+                    if checkpoint.tool_call is not None:
+                        check_scopes(tx,ToolInvocation.model_validate(checkpoint.tool_call).dependencies)
+            except DomainError as error:
+                if error.code not in {"scope_revoked","admission_stopped"}:
+                    raise
+                valid=False
+            archived=tx.execute("SELECT archived FROM sessions WHERE id=?",(run.interaction_session_id,)).fetchone()
+            busy=(run.execution_session_id == run.interaction_session_id and tx.execute(
+                "SELECT 1 FROM session_leases WHERE session_id=? AND run_id IS NOT NULL AND run_id<>?",
+                (run.interaction_session_id,run.id)).fetchone() is not None)
+            if run.kind == "follow_up" and run.reason == "yield_to_user":
+                valid = valid and tx.execute("SELECT 1 FROM follow_up_intents WHERE "
+                    "json_extract(document,'$.run_id')=? AND json_extract(document,'$.status')='paused'",
+                    (run.id,)).fetchone() is not None and not tx.execute(
+                    "SELECT 1 FROM pending_user_commands WHERE session_id=? AND state='queued'",
+                    (run.interaction_session_id,)).fetchone()
+            if (row["kind"] == "recovery" and not unsafe and valid and run.deadline_at>utc_now()
+                    and (condition is None or condition.deadline_at is None or condition.deadline_at>utc_now())
+                    and not busy and not (archived is not None and archived[0] and run.execution_session_id==run.interaction_session_id)):
+                actions.append(PendingActionCommand(kind="resume",target_id=run.id,expected_version=run.version))
+            if tx.execute("SELECT 1 FROM activities WHERE run_id=? AND state='uncertain' AND "
+                    "json_extract(document,'$.intent.operation')='artifacts.export'",(run.id,)).fetchone():
+                actions.append(PendingActionCommand(kind="inspect_export_recovery",target_id=run.id,expected_version=None))
+            version,reason = ((condition.version,condition.reason) if condition is not None else
+                              (run.version,run.reason or "runtime_recovery"))
+        return PendingAction(**ids,kind=row["kind"],task_id=condition.id if condition is not None else run.root_task_id,
+            version=version,reason=reason,allowed_actions=actions)
     return _page(tx, InboxItem, "global_inbox", sql, [], decode=decode, **paging)
 
 
 def _pending_count(tx, workspace_id=None):
-    return sum(tx.execute(f"SELECT count(*) FROM {kind} q JOIN runs r ON r.id=q.run_id "
-        "WHERE q.status='pending' AND (? IS NULL OR r.workspace_id=?)", (workspace_id, workspace_id)).fetchone()[0]
-        for kind in ("questions", "approvals"))
+    return tx.execute("SELECT count(*) FROM ("+_inbox_source()+") p WHERE (? IS NULL OR workspace_id=?)",
+                      (workspace_id,workspace_id)).fetchone()[0]
 
 
 def recent_sessions(tx, **paging):
     # 最近创建会话使用不可变创建事件位置倒序，续页不因新消息重新排序。
     return _page(tx, Session, "recent_sessions", "SELECT s.*,-e.event_id AS event_id FROM sessions s "
-        "JOIN events e ON e.session_id=s.id WHERE json_extract(e.document,'$.kind')='session.created'", [],
-        keys=("event_id",), decode=lambda row: Session.model_validate({name: row[name] for name in Session.model_fields}), **paging)
+        "JOIN events e ON e.session_id=s.id WHERE s.kind='interaction' AND json_extract(e.document,'$.kind')='session.created'", [],
+        keys=("event_id",), **paging)
 
 
 def navigation(tx, *, limit=100, cursor=None):

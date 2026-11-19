@@ -9,11 +9,27 @@ from fastapi.responses import StreamingResponse
 from pydantic import TypeAdapter
 
 from flowmate import __version__
+from flowmate.agents.checkpoint import CONTROL_TOOLS
 from flowmate.api import contracts as api
 from flowmate.api import queries
 from flowmate.contracts.base import CommandMeta, DomainError, Id
-from flowmate.contracts.execution import RunSnapshot, StartRun, TaskHandle, TaskResult, TaskSnapshot
+from flowmate.contracts.execution import (
+    AdmissionFence,
+    BudgetAllocation,
+    BudgetGroupSnapshot,
+    RunKind,
+    RunSnapshot,
+    SessionInboxEntry,
+    StartRun,
+    StopAllReceipt,
+    SubmitTask,
+    TaskResult,
+    TaskSnapshot,
+    TaskState,
+    TaskSubmission,
+)
 from flowmate.contracts.publication import PublicationView
+from flowmate.contracts.scopes import ScopeRef
 from flowmate.contracts.settings import (
     AgentProfile,
     ModelCandidate,
@@ -29,10 +45,10 @@ from flowmate.policy.contracts import (
     GrantCommand,
     ResourceRecord,
     ResourceRef,
-    ScopeRef,
     ScopeState,
 )
 from flowmate.runtime.transitions import context_for, load
+from flowmate.tools.catalog import ToolSpec
 
 
 def body(model):
@@ -43,11 +59,15 @@ def body(model):
 
 
 def router(runtime):
-    route = APIRouter(prefix="/v2")
+    route = APIRouter(prefix="/v3")
 
     @route.get("/health", response_model=api.Health)
     async def health():
         return api.Health(runtime_version=__version__)
+
+    @route.get("/tools", response_model=list[ToolSpec])
+    async def tools():
+        return [spec for spec in runtime.catalog.specs() if spec.name not in CONTROL_TOOLS]
 
     @route.get("/navigation", response_model=api.NavigationView)
     async def navigation(limit: int = 100, cursor: str | None = None):
@@ -59,10 +79,11 @@ def router(runtime):
         with runtime.store.transaction(write=False) as tx:
             return queries.recent_sessions(tx, limit=limit, cursor=cursor)
 
-    @route.get("/tasks", response_model=api.Page[RunSnapshot])
-    async def global_tasks(limit: int = 100, cursor: str | None = None):
+    @route.get("/tasks", response_model=api.Page[api.TaskCenterItem])
+    async def global_tasks(limit: int = 100, cursor: str | None = None, workspace_id: Id | None = None,
+                           state: TaskState | None = None, kind: RunKind | None = None):
         with runtime.store.transaction(write=False) as tx:
-            return queries.global_tasks(tx, limit=limit, cursor=cursor)
+            return queries.task_center(tx,workspace_id,state,kind,limit=limit,cursor=cursor)
 
     @route.get("/inbox", response_model=api.Page[api.InboxItem])
     async def inbox(limit: int = 100, cursor: str | None = None):
@@ -73,6 +94,11 @@ def router(runtime):
     async def export_recovery(id: Id):
         runtime.service.snapshot(id)
         return await asyncio.to_thread(runtime.artifacts.publication.list_for_run, id)
+
+    @route.get("/runs/{id}/member-lanes", response_model=list[api.MemberLane])
+    async def member_lanes(id: Id):
+        with runtime.store.transaction(write=False) as tx:
+            return queries.member_lanes(tx, id)
 
     @route.post("/export-recovery/{id}/restore", response_model=PublicationView)
     async def restore_export(id: Id, meta=body(CommandMeta)):
@@ -119,7 +145,7 @@ def router(runtime):
 
     @route.delete("/workspaces/{id}", response_model=DeletionReceipt)
     async def delete_workspace(id: Id, meta=body(CommandMeta)):
-        receipt = runtime.lifecycle.delete(ScopeRef(workspace_id=id), meta)
+        receipt = runtime.lifecycle.delete(ScopeRef(kind="workspace",workspace_id=id), meta)
         await asyncio.to_thread(runtime.lifecycle.collect_content)
         return receipt
 
@@ -143,6 +169,44 @@ def router(runtime):
     async def session(id: Id):
         with runtime.store.transaction(write=False) as tx:
             return queries.session(tx, id)
+
+    @route.post("/sessions/{id}/archive", response_model=api.Session)
+    async def archive_session(id: Id,command=body(api.Command[api.ArchiveSession])):
+        return runtime.settings.archive_session(id,command.data.archived,command.meta)
+
+    @route.get("/sessions/{id}/admission",response_model=AdmissionFence)
+    async def session_admission(id: Id):
+        with runtime.store.transaction(write=False) as tx:
+            session=queries.session(tx,id)
+            return queries.admission(tx,ScopeRef(kind="session",workspace_id=session.workspace_id,session_id=id))
+
+    @route.get("/workspaces/{id}/admission",response_model=AdmissionFence)
+    async def workspace_admission(id: Id):
+        with runtime.store.transaction(write=False) as tx:
+            return queries.admission(tx,ScopeRef(kind="workspace",workspace_id=id))
+
+    @route.post("/sessions/{id}/stop-all",response_model=StopAllReceipt)
+    async def stop_session(id: Id,meta=body(CommandMeta)):
+        with runtime.store.transaction(write=False) as tx:
+            session=queries.session(tx,id)
+        return runtime.service.stop_all(ScopeRef(kind="session",workspace_id=session.workspace_id,session_id=id),meta)
+
+    @route.post("/workspaces/{id}/stop-all",response_model=StopAllReceipt)
+    async def stop_workspace(id: Id,meta=body(CommandMeta)):
+        return runtime.service.stop_all(ScopeRef(kind="workspace",workspace_id=id),meta)
+
+    @route.get("/sessions/{id}/results",response_model=api.Page[SessionInboxEntry])
+    async def results(id: Id,limit: int=100,cursor: str | None=None):
+        with runtime.store.transaction(write=False) as tx:
+            return queries.session_inbox(tx,id,limit=limit,cursor=cursor)
+
+    @route.post("/results/{id}/view",response_model=SessionInboxEntry)
+    async def view_result(id: Id,meta=body(CommandMeta)):
+        return runtime.delivery.mark_viewed(id,meta)
+
+    @route.post("/results/{id}/retry",response_model=SessionInboxEntry)
+    async def retry_result(id: Id,meta=body(CommandMeta)):
+        return runtime.delivery.retry(id,meta)
 
     @route.get("/sessions/{id}/commands/{command_id}", response_model=api.CommandStatus)
     async def command_status(id: Id, command_id: Id):
@@ -208,6 +272,20 @@ def router(runtime):
     async def start(id: Id, command=body(api.Command[api.StartRequest])):
         return runtime.service.start(StartRun(session_id=id, **command.data.model_dump()), command.meta)
 
+    @route.post("/sessions/{id}/commands", response_model=api.PendingUserCommand, status_code=202)
+    async def enqueue_user(id: Id, command=body(api.Command[api.StartRequest])):
+        return runtime.service.enqueue_user(StartRun(session_id=id, **command.data.model_dump()), command.meta)
+
+    @route.get("/sessions/{id}/commands", response_model=api.Page[api.PendingUserCommand])
+    async def pending_commands(id: Id, limit: int = 50, cursor: str | None = None):
+        with runtime.store.transaction(write=False) as tx:
+            return queries.pending_commands(tx, id, limit=limit, cursor=cursor)
+
+    @route.get("/sessions/{id}/follow-ups", response_model=api.Page[api.FollowUpIntent])
+    async def follow_up_intents(id: Id, limit: int = 50, cursor: str | None = None):
+        with runtime.store.transaction(write=False) as tx:
+            return queries.follow_up_intents(tx, id, limit=limit, cursor=cursor)
+
     @route.post("/runs/{id}/steering")
     async def steer(id: Id, command=body(api.Command[api.Steering])):
         return runtime.service.steer(id, command.data.text, command.meta)
@@ -246,13 +324,31 @@ def router(runtime):
         with runtime.store.transaction(write=False) as tx:
             return load(tx, TaskSnapshot, id)
 
+    @route.post("/tasks/{id}/submit", response_model=TaskSubmission, status_code=202)
+    async def submit_task(id: Id, command=body(api.Command[SubmitTask])):
+        with runtime.store.transaction(write=False) as tx:
+            ctx = context_for(tx, id)
+        return runtime.tasks.submit(ctx, command.data, command.meta)
+
+    @route.get("/runs/{id}/budget-group", response_model=BudgetGroupSnapshot)
+    async def budget_group(id: Id):
+        with runtime.store.transaction(write=False) as tx:
+            return queries.budget_group(tx, id)
+
+    @route.get("/runs/{id}/allocation", response_model=BudgetAllocation)
+    async def allocation(id: Id):
+        with runtime.store.transaction(write=False) as tx:
+            return queries.budget_allocation(tx, id)
+
     @route.get("/tasks/{id}/result", response_model=TaskResult)
     async def task_result(id: Id):
         with runtime.store.transaction(write=False) as tx:
             task = load(tx, TaskSnapshot, id)
             run = load(tx, RunSnapshot, task.run_id)
             ctx = context_for(tx, run.root_task_id)
-        return runtime.tasks.view(ctx, TaskHandle(run_id=run.id, task_id=task.id))
+            from flowmate.runtime.tasks import handle_for
+            handle = handle_for(tx, task)
+        return runtime.tasks.view(ctx, handle)
 
     @route.get("/runs/{id}/trace")
     async def trace(id: Id, limit: int = 100, cursor: str | None = None):

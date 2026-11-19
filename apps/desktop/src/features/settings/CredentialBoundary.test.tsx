@@ -8,7 +8,7 @@ import { connection, model, page } from '../../test/fixtures';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 2 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 3 });
 
 describe('main 内设置凭据边界', () => {
   it('同一连接的两个模型共用一次凭据保存，模型命令不含地址或 Key', async () => {
@@ -79,7 +79,7 @@ describe('main 内设置凭据边界', () => {
     expect(body.data.version).toBe(1);
     expect(body.data.secret_ref).not.toBe(connection.id);
     expect(JSON.stringify(body)).not.toContain('public-test-key-not-a-secret');
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith('save_credential', { binding: { connection_id: connection.id, connection_version: 2, protocol: connection.protocol, endpoint: 'https://new.example.invalid/v1', secret_ref: body.data.secret_ref }, value: 'public-test-key-not-a-secret' });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('save_credential', { binding: { kind: 'model', connection_id: connection.id, connection_version: 2, protocol: connection.protocol, endpoint: 'https://new.example.invalid/v1', secret_ref: body.data.secret_ref }, value: 'public-test-key-not-a-secret' });
     expect(screen.queryByText('public-test-key-not-a-secret')).toBeNull();
   });
   it('HTTP 配置保存失败仍清空 Key，且不写系统凭据', async () => {

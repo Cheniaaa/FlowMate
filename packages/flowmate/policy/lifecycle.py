@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from contextlib import nullcontext
 
 from flowmate.contracts.base import CommandMeta, DomainError
 from flowmate.contracts.events import NewEvent
@@ -17,6 +18,7 @@ from flowmate.contracts.execution import (
     TaskSnapshot,
     WaitRecord,
 )
+from flowmate.contracts.scopes import ScopeRef
 from flowmate.policy.contracts import (
     Approval,
     CleanupSummary,
@@ -24,7 +26,6 @@ from flowmate.policy.contracts import (
     DeletionReceipt,
     LifecycleChange,
     PolicyChange,
-    ScopeRef,
     ScopeState,
 )
 from flowmate.policy.service import _document, _policy_event
@@ -35,6 +36,12 @@ def _where(scope):
     # 会话删除绝不匹配 workspace 级共享记录。
     if scope.session_id is not None:
         return "session_id=?", (scope.session_id,)
+    return "workspace_id=?", (scope.workspace_id,)
+
+
+def _run_where(scope):
+    if scope.session_id is not None:
+        return "interaction_session_id=?", (scope.session_id,)
     return "workspace_id=?", (scope.workspace_id,)
 
 
@@ -63,29 +70,57 @@ def _save_command(tx, meta, fingerprint, result):
 def apply_deletion(tx, receipt, event_id):
     """由 reducer 在围栏和计费归档之后调用；本函数不另开事务或发送事件。"""
     scope = receipt.scope
+    # 删除来源前先消除其派生记忆正文，保留无内容 tombstone 抑制迟到提案。
+    from flowmate.memory.lifecycle import invalidate_sources
+    invalidate_sources(tx)
+    from flowmate.skills.service import SkillService
+    SkillService.invalidate_sources(tx)
     where, params = _where(scope)
-    runs = f"SELECT id FROM runs WHERE {where}"
+    run_where, run_params = _run_where(scope)
+    runs = f"SELECT id FROM runs WHERE {run_where}"
+    from flowmate.context.summary_store import delete_scope_tx
+    delete_scope_tx(tx, scope)
+    sessions_where = "id=?" if scope.session_id else "workspace_id=?"
+    for table, column in (("follow_up_intents", "target_session_id"), ("pending_user_commands", "session_id")):
+        tx.execute(f"DELETE FROM {table} WHERE {column} IN (SELECT id FROM sessions WHERE {sessions_where})", params)
+    private_sessions = [row[0] for row in tx.execute(
+        f"SELECT DISTINCT execution_session_id FROM tasks WHERE run_id IN ({runs}) "
+        "AND execution_session_id IN (SELECT id FROM sessions WHERE kind='execution')",run_params)]
+    for table in ("delivery_outbox","session_inbox"):
+        tx.execute(f"DELETE FROM {table} WHERE target_session_id IN "
+            "(SELECT interaction_session_id FROM runs WHERE id IN ("+runs+"))",run_params)
+    tx.execute(f"DELETE FROM delivery_reservations WHERE task_id IN (SELECT id FROM tasks WHERE run_id IN ({runs}))",run_params)
     tx.execute("INSERT OR IGNORE INTO content_cleanup(content_hash) "
-               f"SELECT content_hash FROM artifacts WHERE run_id IN ({runs})", params)
+               f"SELECT content_hash FROM artifacts WHERE run_id IN ({runs})", run_params)
     tx.execute("INSERT OR IGNORE INTO content_cleanup(content_hash) "
                f"SELECT content_hash FROM artifact_staging WHERE {where}", params)
     tx.execute(f"DELETE FROM artifact_staging WHERE {where}", params)
-    for table in ("private_states", "questions", "approvals", "waits", "consumptions", "joins",
+    tx.execute(f"DELETE FROM consumptions WHERE consumer_run_id IN ({runs})",run_params)
+    tx.execute(f"DELETE FROM session_leases WHERE run_id IN ({runs})",run_params)
+    tx.execute(f"DELETE FROM budget_allocations WHERE run_id IN ({runs})",run_params)
+    for table in ("private_states", "questions", "approvals", "waits", "joins",
                   "task_submissions", "artifacts", "messages", "outbox", "activities"):
-        tx.execute(f"DELETE FROM {table} WHERE run_id IN ({runs})", params)
+        tx.execute(f"DELETE FROM {table} WHERE run_id IN ({runs})", run_params)
     tx.execute(f"DELETE FROM checkpoints WHERE task_id IN (SELECT id FROM tasks WHERE run_id IN ({runs}))",
-               params)
+               run_params)
     # 父子实体同一 DELETE，运行的 root_task/budget 外键在提交时验证。
-    tx.execute(f"DELETE FROM tasks WHERE run_id IN ({runs})", params)
-    tx.execute(f"DELETE FROM budgets WHERE run_id IN ({runs})", params)
-    tx.execute(f"DELETE FROM runs WHERE {where}", params)
+    tx.execute(f"DELETE FROM tasks WHERE run_id IN ({runs})", run_params)
+    tx.execute(f"DELETE FROM budgets WHERE run_id IN ({runs})", run_params)
+    tx.execute(f"DELETE FROM runs WHERE {run_where}", run_params)
     tx.execute("INSERT OR IGNORE INTO deleted_commands(command_id,request_hash) "
                f"SELECT command_id,request_hash FROM commands WHERE {where}", params)
     for table in ("grants", "resources", "commands"):
         tx.execute(f"DELETE FROM {table} WHERE {where}", params)
     # 无内容的删除审计保留，供 tombstone 重放核对所属范围；其它历史内容全部移除。
     tx.execute(f"DELETE FROM events WHERE {where} AND event_id<>? "
-               "AND json_extract(document,'$.kind')<>'scope.deleted'", (*params, event_id))
+                "AND json_extract(document,'$.kind')<>'scope.deleted'", (*params, event_id))
+    for id in private_sessions:
+        tx.execute("INSERT OR IGNORE INTO content_cleanup(content_hash) "
+                   "SELECT content_hash FROM artifact_staging WHERE session_id=?",(id,))
+        tx.execute("DELETE FROM artifact_staging WHERE session_id=?",(id,))
+        for table in ("grants","resources","commands","events"):
+            tx.execute(f"DELETE FROM {table} WHERE session_id=?",(id,))
+        tx.execute("DELETE FROM sessions WHERE id=?",(id,))
     if scope.session_id is not None:
         tx.execute("DELETE FROM sessions WHERE id=?", (scope.session_id,))
     else:
@@ -117,7 +152,36 @@ def _dependent_runs(tx, grant_id):
             affected.update(row[0] for row in tx.execute(
                 f"SELECT DISTINCT {owner} FROM {table} item{join}, json_each(item.document,?) dep "
                 "WHERE json_extract(dep.value,'$.scope_id')=?", (path, grant_id)))
+    affected.update(row[0] for row in tx.execute("SELECT DISTINCT r.id FROM runs r,"
+        "json_each(r.document,'$.sources.skill_versions') pin WHERE pin.key=?", (grant_id,)))
     return affected
+
+
+def invalidate_skill(tx, skill_id):
+    """固定 pin 是取消围栏，不把可用集合冒充所有 Task 的已用正文。"""
+    _interrupt_dependents(tx, skill_id)
+
+
+def _interrupt_dependents(tx, source_id, causation_id=None):
+    for run_id in sorted(_dependent_runs(tx, source_id)):
+        run = _document(tx, "runs", RunSnapshot, run_id)
+        if run.state in TERMINAL:
+            continue
+        stopped = stop_run(tx, run, "interrupted", "scope_revoked")
+        approvals = [bump(Approval.model_validate_json(row[0]), status="superseded")
+            for row in tx.execute("SELECT document FROM approvals WHERE run_id=? "
+                "AND status IN ('pending','approved')", (run_id,))]
+        if approvals:
+            _policy_event(tx, "approval.decided", PolicyChange(approvals=approvals),
+                ScopeRef(kind="session" if run.interaction_session_id else "workspace",
+                    workspace_id=run.workspace_id, session_id=run.interaction_session_id), causation_id=causation_id)
+        waits = [bump(WaitRecord.model_validate_json(row[0]), state="cancelled")
+            for row in tx.execute("SELECT document FROM waits WHERE run_id=? AND state<>'cancelled'", (run_id,))]
+        questions = [bump(Question.model_validate_json(row[0]), status="cancelled")
+            for row in tx.execute("SELECT document FROM questions WHERE run_id=? AND status='pending'", (run_id,))]
+        if waits or questions:
+            emit(tx, stopped, stopped.root_task_id, "task.stepped",
+                RuntimeChange(waits=waits, questions=questions), causation_id)
 
 
 def _deletion_boundary(tx):
@@ -126,10 +190,11 @@ def _deletion_boundary(tx):
 
 
 class ScopeLifecycle:
-    def __init__(self, store, policy, artifacts):
+    def __init__(self, store, policy, artifacts, *, skill_exports=None):
         self.store = store
         self.policy = policy
         self.artifacts = artifacts
+        self.skill_exports = skill_exports
 
     def revoke(self, grant_id, meta) -> ScopeState:
         meta = CommandMeta.model_validate(meta.model_dump())
@@ -145,27 +210,9 @@ class ScopeLifecycle:
                 saved = bump(saved, epoch=saved.epoch + 1, status="revoked")
                 _policy_event(tx, "grant.revoked", PolicyChange(grants=[saved]), saved.scope,
                               causation_id=meta.command_id)
-            for run_id in sorted(_dependent_runs(tx, grant_id)):
-                run = _document(tx, "runs", RunSnapshot, run_id)
-                if run.state in TERMINAL:
-                    continue
-                stopped = stop_run(tx, run, "interrupted", "scope_revoked")
-                approvals = [bump(Approval.model_validate_json(row[0]), status="superseded")
-                    for row in tx.execute("SELECT document FROM approvals WHERE run_id=? "
-                                          "AND status IN ('pending','approved')", (run_id,))]
-                if approvals:
-                    _policy_event(tx, "approval.decided", PolicyChange(approvals=approvals),
-                                  ScopeRef(workspace_id=run.workspace_id, session_id=run.session_id),
-                                  causation_id=meta.command_id)
-                waits = [bump(WaitRecord.model_validate_json(row[0]), state="cancelled")
-                    for row in tx.execute("SELECT document FROM waits WHERE run_id=? AND state<>'cancelled'",
-                                          (run_id,))]
-                questions = [bump(Question.model_validate_json(row[0]), status="cancelled")
-                    for row in tx.execute("SELECT document FROM questions WHERE run_id=? AND status='pending'",
-                                          (run_id,))]
-                if waits or questions:
-                    emit(tx, stopped, stopped.root_task_id, "task.stepped",
-                         RuntimeChange(waits=waits, questions=questions), meta.command_id)
+            from flowmate.skills.service import SkillService
+            SkillService.invalidate_sources(tx)
+            _interrupt_dependents(tx, grant_id, meta.command_id)
             state = ScopeState(id=saved.id, scope=saved.scope, epoch=saved.epoch, status="revoked")
             _policy_event(tx, "scope.revoked", LifecycleChange(scopes=[state]), saved.scope,
                           causation_id=meta.command_id)
@@ -174,31 +221,39 @@ class ScopeLifecycle:
 
     def delete(self, scope: ScopeRef, meta: CommandMeta) -> DeletionReceipt:
         scope = ScopeRef.model_validate(scope.model_dump())
+        if scope.kind == "user_global":
+            raise DomainError("invalid_scope","全局记忆不能通过工作区删除入口处理")
         meta = CommandMeta.model_validate(meta.model_dump())
         scope_ids = [scope.session_id or scope.workspace_id]
-        with self.artifacts.publication.deletion_guard(scope_ids):
+        with self.artifacts.publication.deletion_guard(scope_ids), (
+            self.skill_exports.operation_guard() if self.skill_exports is not None else nullcontext()
+        ):
             with self.store.transaction() as tx:
                 receipt = self._delete(tx, scope, meta)
             self.artifacts.publication.forget_scope(scope_ids)
+            self._collect_skill_exports()
             return receipt
 
     def delete_session(self, session_id: str, meta: CommandMeta) -> DeletionReceipt:
         """HTTP 会话边界不推测 workspace；命令核对和删除共用写事务。"""
         meta = CommandMeta.model_validate(meta.model_dump())
-        with self.artifacts.publication.deletion_guard([session_id]):
+        with self.artifacts.publication.deletion_guard([session_id]), (
+            self.skill_exports.operation_guard() if self.skill_exports is not None else nullcontext()
+        ):
             with self.store.transaction() as tx:
                 previous = tx.previous_command(meta.command_id)
                 if previous is not None:
                     if previous["session_id"] != session_id:
                         raise DomainError("command_conflict", "同一命令不能更改操作或目标")
-                    scope = ScopeRef(workspace_id=previous["workspace_id"], session_id=session_id)
+                    scope = ScopeRef(kind="session",workspace_id=previous["workspace_id"], session_id=session_id)
                 else:
                     row = tx.execute("SELECT workspace_id FROM sessions WHERE id=?", (session_id,)).fetchone()
                     if row is None:
                         raise DomainError("not_found", "会话不存在")
-                    scope = ScopeRef(workspace_id=row[0], session_id=session_id)
+                    scope = ScopeRef(kind="session",workspace_id=row[0], session_id=session_id)
                 receipt = self._delete(tx, scope, meta)
             self.artifacts.publication.forget_scope([session_id])
+            self._collect_skill_exports()
             return receipt
 
     def _delete(self, tx, scope, meta):
@@ -228,23 +283,34 @@ class ScopeLifecycle:
         if meta.expected_version != entity["version"]:
             raise DomainError("version_conflict", "删除范围版本已改变")
         where, params = _where(scope)
+        if self.skill_exports is not None:
+            target_refs = {row[0] for row in tx.execute(
+                f"SELECT id FROM resources WHERE {where} AND json_extract(document,'$.kind')='export'", params)}
+            self.skill_exports.check_deletion(target_refs)
         owners = {id: scope}
         if scope.session_id is None:
-            owners.update((row[0], ScopeRef(workspace_id=scope.workspace_id, session_id=row[0]))
+            owners.update((row[0], ScopeRef(kind="session",workspace_id=scope.workspace_id, session_id=row[0]))
                           for row in tx.execute("SELECT id FROM sessions WHERE workspace_id=?", params))
         for owned in ("resources", "grants"):
-            owners.update((row[0], ScopeRef(workspace_id=row[1], session_id=row[2])) for row in tx.execute(
+            owners.update((row[0], ScopeRef(kind="session" if row[2] else "workspace",workspace_id=row[1], session_id=row[2])) for row in tx.execute(
                 f"SELECT id,workspace_id,session_id FROM {owned} WHERE {where}", params))
+        run_where, run_params = _run_where(scope)
+        for row in tx.execute("SELECT DISTINCT s.id,s.workspace_id FROM sessions s JOIN tasks t "
+                              "ON t.execution_session_id=s.id WHERE s.kind='execution' "
+                              f"AND t.run_id IN (SELECT id FROM runs WHERE {run_where})",run_params):
+            owners[row[0]] = ScopeRef(kind="session",workspace_id=row[1],session_id=row[0])
         scopes = []
         for scope_id in sorted(owners):
             epoch = tx.execute("SELECT epoch FROM scopes WHERE id=?", (scope_id,)).fetchone()[0] + 1
             scopes.append(ScopeState(id=scope_id, scope=owners[scope_id], epoch=epoch, status="deleted"))
         receipt = DeletionReceipt(scope=scope, epoch=next(item.epoch for item in scopes if item.id == id))
         budgets, activities = [], []
-        runs = f"SELECT id FROM runs WHERE {where}"
-        for row in tx.execute(f"SELECT document FROM budgets WHERE run_id IN ({runs})", params):
+        runs = f"SELECT id FROM runs WHERE {run_where}"
+        for row in tx.execute(f"SELECT document FROM budgets WHERE run_id IN ({runs})", run_params):
             budget = BudgetSnapshot.model_validate_json(row[0])
-            budgets.append(AccountingBudget(**budget.model_dump(include=AccountingBudget.model_fields.keys())))
+            group_id = tx.execute("SELECT budget_group_id FROM runs WHERE id=?", (budget.run_id,)).fetchone()[0]
+            budgets.append(AccountingBudget(**budget.model_dump(include=AccountingBudget.model_fields.keys()),
+                                            budget_group_id=group_id))
             for item in tx.execute("SELECT document FROM activities WHERE run_id=?", (budget.run_id,)):
                 activity = ActivitySnapshot.model_validate_json(item[0])
                 archived = activity.receipt
@@ -254,7 +320,7 @@ class ScopeLifecycle:
                                                           "source_dependencies": [], "source_observations": []})
                 activities.append(AccountingActivity(
                     **activity.model_dump(include={"id", "version", "run_id", "attempt_id", "state",
-                                                   "reserved_units", "result_digest"}),
+                                                    "reserved_units", "reserved_tokens", "result_digest"}),
                     budget_id=budget.id, receipt=archived))
         tx.append_event(NewEvent(kind="scope.deleted", workspace_id=scope.workspace_id,
             session_id=scope.session_id, causation_id=meta.command_id,
@@ -263,7 +329,18 @@ class ScopeLifecycle:
         _save_command(tx, meta, fingerprint, receipt)
         return receipt
 
+    def _collect_skill_exports(self):
+        if self.skill_exports is not None:
+            with self.skill_exports.operation_guard():
+                with self.store.transaction(write=False) as tx:
+                    targets = {row[0] for row in tx.execute(
+                        "SELECT id FROM resources WHERE json_extract(document,'$.kind')='export'")}
+                self.skill_exports.forget_missing_targets(targets)
+
     def collect_content(self) -> CleanupSummary:
+        self._collect_skill_exports()
+        from flowmate.skills.service import SkillService
+        SkillService(self.store).cleanup_deleted()
         deleted = 0
         with self.store.transaction() as tx:
             # stage/publish 和 unlink 使用同一 SQLite 写锁，不会删除刚写入但尚未登记的 blob/tmp。
@@ -284,7 +361,7 @@ class ScopeLifecycle:
                     tx.execute("DELETE FROM artifact_staging WHERE id=?", (row["id"],))
             protected.update(row[0] for row in tx.execute(
                 "SELECT DISTINCT a.content_hash FROM artifacts a JOIN runs r ON r.id=a.run_id "
-                "JOIN scopes w ON w.id=r.workspace_id JOIN scopes s ON s.id=r.session_id "
+                "JOIN scopes w ON w.id=r.workspace_id JOIN scopes s ON s.id=r.execution_session_id "
                 "WHERE w.status='active' AND s.status='active'"))
             candidates = {row[0] for row in tx.execute("SELECT content_hash FROM content_cleanup")}
             candidates.update(path.stem for path in self.artifacts.root.glob("*.blob"))

@@ -5,7 +5,8 @@ import { windowError } from '../../api/windows';
 import type { WorkspacePage } from '../../generated/contracts';
 import type { createRuntimeStore } from '../../state/runtime-store';
 import ResourcePanel from '../chat/ResourcePanel';
-export default function ResourceSettings({ client, store }: { client: RuntimeClient; store: ReturnType<typeof createRuntimeStore> }) {
+import type { EditorLifecycle } from './Settings';
+export default function ResourceSettings({ client, store, ...lifecycle }: { client: RuntimeClient; store: ReturnType<typeof createRuntimeStore> } & EditorLifecycle) {
   const commands = useSyncExternalStore(store.subscribe, store.getCommandsSnapshot);
   const projection = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [workspaces, setWorkspaces] = useState<WorkspacePage>();
@@ -30,7 +31,7 @@ export default function ResourceSettings({ client, store }: { client: RuntimeCli
   return <><h2>资料与授权</h2><label>授权所属项目 <select value={workspaceDeleted ? '' : workspaceId} onChange={event => setWorkspaceId(event.target.value)}>{availableWorkspaces.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
     {workspaces?.next_cursor && <button onClick={async () => { try { const next = await client.workspaces({ cursor: workspaces.next_cursor! }); setWorkspaces({ ...next, items: Object.values(mergeVersioned(Object.fromEntries(workspaces.items.map(item => [item.id, item])), next.items)) }); } catch (error) { setError(windowError(error)); } }}>更多项目</button>}
     {error && <p role="alert">{error}</p>}
-    {workspaceId && !workspaceDeleted && <ResourcePanel client={client} workspaceId={workspaceId} sessionId={null} refreshKey={grantRevision} isRevokePending={() => commands.length > 0} onGrantsLoaded={items => store.update(state => mergeGrants(state, items))} onRevoke={(id, meta) => {
+    {workspaceId && !workspaceDeleted && <ResourcePanel {...lifecycle} client={client} workspaceId={workspaceId} sessionId={null} refreshKey={grantRevision} isRevokePending={() => commands.length > 0} onGrantsLoaded={items => store.update(state => mergeGrants(state, items))} onRevoke={(id, meta) => {
       if (commands.some(command => command.status === 'unconfirmed')) return Promise.reject(new Error('请先核对上一条撤销命令，不能用新命令重复提交'));
       return store.dispatch({ type: 'revoke', args: [id, meta] });
     }} />}

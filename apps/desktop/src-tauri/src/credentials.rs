@@ -17,13 +17,46 @@ pub enum ModelProtocol { OpenaiCompatible, Anthropic }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SecretBinding {
+pub struct ModelSecretBinding {
     pub connection_id: String,
     pub connection_version: u64,
     pub protocol: ModelProtocol,
     pub endpoint: String,
     pub secret_ref: String,
 }
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct McpDestination {
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub cwd: Option<String>,
+    pub url: Option<String>,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransport { Stdio, Http }
+
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpPurpose { Env, HttpToken }
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct McpSecretBinding {
+    pub server_id: String,
+    pub config_revision: u64,
+    pub transport: McpTransport,
+    pub destination: McpDestination,
+    pub purpose: McpPurpose,
+    pub env_name: Option<String>,
+    pub secret_ref: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SecretBinding { Model(ModelSecretBinding), Mcp(McpSecretBinding) }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -46,9 +79,9 @@ impl Default for CredentialStore {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Record { binding: SecretBinding, value: Option<String> }
+struct Record { binding: Value, value: Option<String> }
 
-impl SecretBinding {
+impl ModelSecretBinding {
     fn validate(&self) -> Result<(), &'static str> {
         if self.connection_version == 0 || uuid::Uuid::parse_str(&self.connection_id).is_err() {
             return Err("invalid_binding");
@@ -68,6 +101,37 @@ impl SecretBinding {
         // version 是保存审计值；同一目的地的轮换不能阻断旧 Run。
         self.connection_id == other.connection_id && self.protocol == other.protocol
             && self.endpoint == other.endpoint && self.secret_ref == other.secret_ref
+    }
+}
+
+impl McpSecretBinding {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.config_revision == 0 || uuid::Uuid::parse_str(&self.server_id).is_err() {
+            return Err("invalid_binding");
+        }
+        let destination = &self.destination;
+        match self.transport {
+            McpTransport::Http => {
+                if destination.command.is_some() || !destination.args.is_empty() || destination.cwd.is_some()
+                    || self.purpose != McpPurpose::HttpToken || self.env_name.is_some() {
+                    return Err("invalid_binding");
+                }
+                // 与模型现有 URL 边界相同，但 MCP 的 revision 匹配单独严格处理。
+                ModelSecretBinding { connection_id: self.server_id.clone(), connection_version: self.config_revision,
+                    protocol: ModelProtocol::OpenaiCompatible, endpoint: destination.url.clone().ok_or("invalid_binding")?,
+                    secret_ref: self.secret_ref.clone() }.validate()
+            }
+            McpTransport::Stdio => {
+                if destination.command.as_ref().is_none_or(|value| value.trim().is_empty() || value.contains('\0'))
+                    || destination.url.is_some() || self.purpose != McpPurpose::Env
+                    || self.env_name.as_ref().is_none_or(|value| value.is_empty() || value.contains(['=', '\0']))
+                    || destination.args.iter().any(|value| value.contains('\0'))
+                    || destination.cwd.as_ref().is_some_and(|value| value.contains('\0')) {
+                    return Err("invalid_binding");
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -98,16 +162,19 @@ impl CredentialStore {
             result.map(Some)
         }
     }
-    pub fn save(&self, binding: &SecretBinding, value: &str) -> Result<SecretStatus, &'static str> {
+    pub fn save(&self, binding: &ModelSecretBinding, value: &str) -> Result<SecretStatus, &'static str> {
         binding.validate()?;
         let target = self.target(&binding.secret_ref)?;
         if value.is_empty() { return Err("credential_empty"); }
         if value.len() > CRED_MAX_CREDENTIAL_BLOB_SIZE as usize { return Err("credential_too_large"); }
         let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
-        if self.read(&target)?.is_some_and(|record| !record.binding.same_destination(binding)) {
+        if self.read(&target)?.is_some_and(|record|
+            !serde_json::from_value::<ModelSecretBinding>(record.binding)
+                .is_ok_and(|stored| stored.same_destination(binding))) {
             return Err("credential_binding_mismatch");
         }
-        let record = Record { binding: binding.clone(), value: Some(value.into()) };
+        // 模型记录保持原格式；wire 的 kind 不写入旧模型记录，不迁移或猜测数据。
+        let record = Record { binding: serde_json::to_value(binding).map_err(|_| "invalid_binding")?, value: Some(value.into()) };
         self.write(&target, &record)?;
         Ok(SecretStatus { secret_ref: binding.secret_ref.clone(), configured: true })
     }
@@ -123,26 +190,58 @@ impl CredentialStore {
         if unsafe { CredWriteW(&credential, 0) } == 0 { return Err("credential_write_failed"); }
         Ok(())
     }
-    pub fn resolve(&self, binding: &SecretBinding) -> Result<String, &'static str> {
+    pub fn resolve(&self, binding: &ModelSecretBinding) -> Result<String, &'static str> {
         binding.validate()?;
         let target = self.target(&binding.secret_ref)?;
         let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
         let record = self.read(&target)?.ok_or("credential_missing")?;
-        if !record.binding.same_destination(binding) { return Err("credential_binding_mismatch"); }
+        if !serde_json::from_value::<ModelSecretBinding>(record.binding)
+            .is_ok_and(|stored| stored.same_destination(binding)) { return Err("credential_binding_mismatch"); }
         record.value.ok_or("credential_missing")
+    }
+    pub fn save_bound(&self, binding: &SecretBinding, value: &str) -> Result<SecretStatus, &'static str> {
+        let SecretBinding::Mcp(mcp) = binding else {
+            let SecretBinding::Model(model) = binding else { unreachable!() };
+            return self.save(model, value);
+        };
+        mcp.validate()?;
+        if value.is_empty() { return Err("credential_empty"); }
+        if value.len() > CRED_MAX_CREDENTIAL_BLOB_SIZE as usize { return Err("credential_too_large"); }
+        let target = self.target(&mcp.secret_ref)?;
+        let expected = serde_json::to_value(binding).map_err(|_| "invalid_binding")?;
+        let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
+        if self.read(&target)?.is_some_and(|record| record.binding != expected) {
+            return Err("credential_binding_mismatch");
+        }
+        self.write(&target, &Record { binding: expected, value: Some(value.into()) })?;
+        Ok(SecretStatus { secret_ref: mcp.secret_ref.clone(), configured: true })
+    }
+    pub fn resolve_bound(&self, binding: &SecretBinding) -> Result<String, &'static str> {
+        match binding {
+            SecretBinding::Model(model) => self.resolve(model),
+            SecretBinding::Mcp(mcp) => {
+                mcp.validate()?;
+                let target = self.target(&mcp.secret_ref)?;
+                let expected = serde_json::to_value(binding).map_err(|_| "invalid_binding")?;
+                let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
+                let record = self.read(&target)?.ok_or("credential_missing")?;
+                if record.binding != expected { return Err("credential_binding_mismatch"); }
+                record.value.ok_or("credential_missing")
+            }
+        }
     }
     pub fn status(&self, secret_ref: &str) -> Result<SecretStatus, &'static str> {
         let target = self.target(secret_ref)?;
         let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
         let record = self.read(&target)?;
-        if record.as_ref().is_some_and(|record| record.binding.secret_ref != secret_ref) { return Err("credential_invalid"); }
+        if record.as_ref().is_some_and(|record| record.binding["secret_ref"].as_str() != Some(secret_ref)) { return Err("credential_invalid"); }
         Ok(SecretStatus { secret_ref: secret_ref.into(), configured: record.is_some_and(|record| record.value.is_some()) })
     }
     pub fn clear(&self, secret_ref: &str) -> Result<SecretStatus, &'static str> {
         let target = self.target(secret_ref)?;
         let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
         if let Some(mut record) = self.read(&target)? {
-            if record.binding.secret_ref != secret_ref { return Err("credential_invalid"); }
+            if record.binding["secret_ref"].as_str() != Some(secret_ref) { return Err("credential_invalid"); }
             // 删除密钥内容但保留非秘密 binding 墓碑，重启后也不能把旧 ref 带去新 endpoint。
             if record.value.take().is_some() { self.write(&target, &record)?; }
         }
@@ -211,6 +310,7 @@ pub fn unprotect(context: &Value, value: &ProtectedValue) -> Result<Vec<u8>, &'s
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use super::ModelSecretBinding as SecretBinding;
     use serde_json::json;
     pub(crate) const KEY: &str = "public-test-key-not-a-secret";
 
@@ -384,5 +484,52 @@ pub(crate) mod tests {
             reopened.save(&binding, &value).unwrap();
             assert_eq!(store.resolve(&binding).unwrap(), value, "resave iteration {sequence}");
         }
+    }
+
+    fn mcp_binding() -> Value {
+        json!({"kind":"mcp", "server_id":"00000000-0000-4000-8000-000000000002",
+            "config_revision":1, "transport":"http",
+            "destination":{"command":null,"args":[],"cwd":null,"url":"http://127.0.0.1:9000/mcp"},
+            "purpose":"http_token","env_name":null,"secret_ref":"synthetic-mcp-ref"})
+    }
+
+    #[test]
+    fn mcp_binding_has_no_model_fallback_and_pins_full_revision() {
+        let store = store();
+        let payload = mcp_binding();
+        let binding: crate::credentials::SecretBinding = serde_json::from_value(payload.clone()).unwrap();
+        let _cleanup = Cleanup(&store, "synthetic-mcp-ref".into());
+        store.save_bound(&binding, KEY).unwrap();
+        assert_eq!(store.resolve_bound(&binding).unwrap(), KEY);
+        for (field, value) in [
+            ("config_revision", json!(2)), ("server_id", json!(uuid::Uuid::new_v4().to_string())),
+            ("destination", json!({"command":null,"args":[],"cwd":null,"url":"http://127.0.0.1:9001/mcp"})),
+        ] {
+            let mut changed = payload.clone(); changed[field] = value;
+            let changed: crate::credentials::SecretBinding = serde_json::from_value(changed).unwrap();
+            assert_eq!(store.resolve_bound(&changed).unwrap_err(), "credential_binding_mismatch");
+            assert_eq!(store.save_bound(&changed, KEY).unwrap_err(), "credential_binding_mismatch");
+        }
+        let model: crate::credentials::SecretBinding = serde_json::from_value(json!({
+            "kind":"model", "connection_id":"00000000-0000-4000-8000-000000000001",
+            "connection_version":1,"protocol":"openai_compatible",
+            "endpoint":"http://127.0.0.1:9000/mcp","secret_ref":"synthetic-mcp-ref"
+        })).unwrap();
+        assert_eq!(store.resolve_bound(&model).unwrap_err(), "credential_binding_mismatch");
+        assert_eq!(store.save_bound(&model, KEY).unwrap_err(), "credential_binding_mismatch");
+        store.clear("synthetic-mcp-ref").unwrap();
+        assert_eq!(store.resolve_bound(&binding).unwrap_err(), "credential_missing");
+    }
+
+    #[test]
+    fn model_record_encoding_is_unchanged_and_wire_requires_explicit_kind() {
+        let store = store();
+        let model = binding();
+        let _cleanup = Cleanup(&store, model.secret_ref.clone());
+        store.save(&model, KEY).unwrap();
+        let record = store.read(&store.target(&model.secret_ref).unwrap()).unwrap().unwrap();
+        let stored = serde_json::to_value(record).unwrap();
+        assert!(stored["binding"].get("kind").is_none());
+        assert!(serde_json::from_value::<crate::credentials::SecretBinding>(stored["binding"].clone()).is_err());
     }
 }

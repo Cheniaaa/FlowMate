@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-select-skill-package"
+description = "Enables the select_skill_package command without any pre-configured scope."
+commands.allow = ["select_skill_package"]
+
+[[permission]]
+identifier = "deny-select-skill-package"
+description = "Denies the select_skill_package command without any pre-configured scope."
+commands.deny = ["select_skill_package"]

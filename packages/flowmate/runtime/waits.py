@@ -9,12 +9,11 @@ from flowmate.contracts.execution import (
     OutboxItem,
     RunSnapshot,
     RuntimeChange,
-    TaskHandle,
     TaskSnapshot,
     WaitOutcome,
     WaitRecord,
 )
-from flowmate.runtime.tasks import _target
+from flowmate.runtime.tasks import _target, handle_for
 from flowmate.runtime.transitions import bump, emit, load, pending_outbox, utc_now
 
 
@@ -49,11 +48,11 @@ def _resolve(tx, wait, now):
     return changed
 
 
-def resolve_waits(tx, now, *, run_id, target_task_id=None):
-    sql, params = "SELECT document FROM waits WHERE state='pending' AND run_id=?", (run_id,)
+def resolve_waits(tx, now, *, run_id=None, target_task_id=None):
     if target_task_id is not None:
-        sql += " AND target_task_id=?"
-        params += (target_task_id,)
+        sql, params = "SELECT document FROM waits WHERE state='pending' AND target_task_id=?", (target_task_id,)
+    else:
+        sql, params = "SELECT document FROM waits WHERE state='pending' AND run_id=?", (run_id,)
     return [_resolve(tx, WaitRecord.model_validate_json(row[0]), now)
             for row in tx.execute(sql, params).fetchall()]
 
@@ -115,7 +114,7 @@ class WaitService:
         with self.store.transaction() as tx:
             wait = self._resolve(tx, load(tx, WaitRecord, wait_id), self.clock())
             return WaitOutcome(kind=wait.state, result_version=wait.result_version,
-                result_ref=TaskHandle(run_id=wait.run_id, task_id=wait.target_task_id)
+                result_ref=handle_for(tx, load(tx, TaskSnapshot, wait.target_task_id))
                 if wait.state == "ready" else None)
 
     @staticmethod

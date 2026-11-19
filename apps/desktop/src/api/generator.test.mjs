@@ -6,7 +6,7 @@ import { generateContracts } from '../../scripts/generate-contracts.mjs';
 describe('独立根 Schema 生成', () => {
   it('本地 $defs 与 nullable union 保留；重复名称仅位于各根 namespace', async () => {
     const schema = { $schema: 'https://json-schema.org/draft/2020-12/schema', $defs: { Item: { type: 'object', properties: { value: { type: 'string', minLength: 1, maxLength: 1 } }, required: ['value'], additionalProperties: false } }, type: 'object', properties: { item: { anyOf: [{ $ref: '#/$defs/Item' }, { type: 'null' }] } }, required: ['item'], additionalProperties: false };
-    const generated = await generateContracts({ schema_version: 2, roots: { First: { mode: 'serialization', schema }, Second: { mode: 'serialization', schema } } });
+    const generated = await generateContracts({ schema_version: 3, roots: { First: { mode: 'serialization', schema }, Second: { mode: 'serialization', schema } } });
     expect(generated['contracts.ts']).toContain('namespace FirstSchema');
     expect(generated['contracts.ts']).toContain('namespace SecondSchema');
     expect(generated['contracts.ts']).toMatch(/Item \| null/);
@@ -31,7 +31,7 @@ describe('独立根 Schema 生成', () => {
       type: 'object', properties: { left: { $ref: '#/$defs/Node' }, right: { $ref: '#/$defs/Node' } },
       required: ['left', 'right'], additionalProperties: false,
     } }]));
-    const generated = await generateContracts({ schema_version: 2, roots });
+    const generated = await generateContracts({ schema_version: 3, roots });
     const validators = await import(/* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(generated['validators.js']).toString('base64')}`);
     expect(validators.TextTree({ left: { value: '🙂', children: [{ value: '文' }] }, right: { value: 'x' } })).toBe(true);
     expect(validators.NumberTree({ left: { value: 1, children: [{ value: 2 }] }, right: { value: 3 } })).toBe(true);

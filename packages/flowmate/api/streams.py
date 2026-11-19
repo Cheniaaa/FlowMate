@@ -33,6 +33,7 @@ class EventStream:
                 run = load(tx, RunSnapshot, ctx.run_id)
                 task = load(tx, TaskSnapshot, ctx.task_id)
                 return ((activity.run_id, activity.task_id, run.workspace_id) == (ctx.run_id, ctx.task_id, ctx.workspace_id)
+                    and task.binding.execution_session_id == run.interaction_session_id
                     and activity.state == "dispatched" and can_publish(tx, run, task,
                         [*ctx.scope_dependencies, *activity.intent.dependencies]))
             except DomainError:
@@ -88,7 +89,10 @@ class EventStream:
                                 continue
                             event = RunEvent.model_validate_json(json.dumps({**json.loads(row["document"]),
                                 "event_id": str(row["event_id"]), "seq": row["seq"]}))
-                            durable = DurableEvent(event_id=event.event_id, event=public_event(event))
+                            owner = tx.execute("SELECT execution_session_id FROM tasks WHERE id=?",
+                                               (event.task_id,)).fetchone()
+                            durable = DurableEvent(event_id=event.event_id, event=public_event(
+                                event,owner[0] if owner is not None else None,tx=tx))
                         yield durable
                     continue
                 while listener.queue:

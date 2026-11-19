@@ -7,14 +7,15 @@ from typing import Literal
 from pydantic import Field, ValidationError
 
 from flowmate.contracts.base import CommandMeta, Contract, DomainError, Id, Name
+from flowmate.contracts.scopes import ScopeRef
 from flowmate.contracts.workspaces import WorkspaceDirectoryResult
-from flowmate.policy.contracts import ExportTargetInfo, NativeSelection, ScopeRef
+from flowmate.policy.contracts import ExportTargetInfo, NativeSelection
 from flowmate.settings import SettingsService
 
 
 class _ResourceSelection(Contract):
     scope: ScopeRef
-    kind: Literal["file", "directory", "export"]
+    kind: Literal["file", "directory", "export", "binary_export"]
     paths: list[str] = Field(min_length=1)
 
 
@@ -47,7 +48,7 @@ class HostResources:
                 raise DomainError("native_selection_kind", "项目必须关联目录")
             workspace = self.settings._create_workspace(tx, request.name, request.meta)
             directory = self.policy.register_selection_tx(tx, NativeSelection(
-                scope=ScopeRef(workspace_id=workspace.id), kind="directory",
+                scope=ScopeRef(kind="workspace",workspace_id=workspace.id), kind="directory",
                 canonical_path=anchor.canonical_path, file_identity=anchor.identity))
             workspace = self.settings._set_workspace_directory(tx, workspace.id, directory.id,
                 request.meta.model_copy(update={"expected_version": workspace.version}))
@@ -83,8 +84,8 @@ class HostResources:
         def capture():
             selections = []
             for path in request.paths:
-                if request.kind == "export":
-                    target = self.files.capture_export_target(Path(path))
+                if request.kind in {"export", "binary_export"}:
+                    target = self.files.capture_export_target(Path(path), binary=request.kind == "binary_export")
                     selections.append(NativeSelection(scope=request.scope, kind="export",
                         canonical_path=str(Path(target.parent.canonical_path) / target.name),
                         file_identity=target.identity or target.parent.identity,

@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { applyDeletion, emptyProjection, mergeApprovals, mergeGrants, mergeMessages, mergeQuestions, mergeResources, mergeRunDetail, mergeRunSnapshot, mergeSessions, mergeWorkspaces, orderedMessageIds, readSse, reduceStream, resetWorkspace } from './events';
 import type { ModelMessage, StreamEvent, RunDetail, RunSnapshot, WorkspaceSnapshot } from '../generated/contracts';
-import { connection, event as publicEvent, grant, limits, page, resource, run as fullRun, runDetailSummary } from '../test/fixtures';
+import { connection, contextUsage, event as publicEvent, grant, limits, page, resource, run as fullRun, runDetailSummary } from '../test/fixtures';
 
 const id = '00000000-0000-4000-8000-000000000001';
 const activityId = '00000000-0000-4000-8000-000000000002';
-const run = (version: number, state = 'running') => ({ id, version, state, session_id: id, workspace_id: id, resource_ids: [id], scope_dependencies: [{ scope_id: id, epoch: 1 }] }) as RunSnapshot;
+const run = (version: number, state: RunSnapshot['state'] = 'running'): RunSnapshot => ({ ...fullRun, id, version, state, sources: { ...fullRun.sources, resource_ids: [id] }, scope_dependencies: [{ scope_id: id, epoch: 1 }] });
 const activity = (version = 1, state = 'dispatched') => ({ id: activityId, version, run_id: id, state, dependencies: [{ scope_id: id, epoch: 1 }] });
 function durable(cursor: string, payload: object, kind = 'task.stepped'): StreamEvent {
   payload = kind === 'grant.revoked' ? { resources: [], grants: [], approvals: [], ...payload }
-    : { runs: [], tasks: [], activities: [], budgets: [], messages: [], artifacts: [], questions: [], waits: [], consumptions: [], joins: [], ...payload };
+    : { runs: [], tasks: [], activities: [], budgets: [], messages: [], artifacts: [], questions: [], waits: [], consumptions: [], joins: [], pending_commands: [], follow_up_intents: [], ...payload };
   return { kind: 'durable', event_id: cursor, event: { kind, event_id: cursor, payload, run_id: id } } as StreamEvent;
 }
 const delta = (index: number, text: string): StreamEvent => ({ kind: 'delta', activity_id: activityId, index, text });
@@ -41,7 +41,7 @@ describe('资源和完整授权的快照恢复', () => {
 
   it('重建合并已有较新版本和已加载尾页，revoked 不能由旧快照复活，跨工作区不混合', () => {
     const tail = { ...resource, id: activityId, label: '已加载尾页' };
-    const foreign = { ...resource, id: '00000000-0000-4000-8000-000000000013', scope: { workspace_id: activityId, session_id: null } };
+    const foreign = { ...resource, id: '00000000-0000-4000-8000-000000000013', scope: { kind: 'workspace' as const, workspace_id: activityId, session_id: null } };
     const revoked = { ...grant, version: 2, epoch: 2, status: 'revoked' as const };
     let state = mergeResources(emptyProjection(), [{ ...resource, version: 2, label: '新名称' }, tail, foreign]);
     state = mergeGrants(state, [revoked]);
@@ -53,7 +53,7 @@ describe('资源和完整授权的快照恢复', () => {
   });
 
   it('snapshot 及迟到分页均不能越过 session/workspace 删除围栏，共享资源不随单 session 删除', () => {
-    const scoped = { ...resource, id: activityId, scope: { workspace_id: id, session_id: activityId } };
+    const scoped = { ...resource, id: activityId, scope: { kind: 'session' as const, workspace_id: id, session_id: activityId } };
     const scopedGrant = { ...grant, id: activityId, scope: scoped.scope, resource_ids: [scoped.id] as [string] };
     let state = applyDeletion(emptyProjection(), { scope: scoped.scope, epoch: 2, status: 'deleted' });
     state = resetWorkspace(state, snapshot([resource, scoped], [grant, scopedGrant]));
@@ -109,7 +109,7 @@ describe('持久投影与暂态预览', () => {
     expect(state.previews[activityId]).toBeUndefined();
     expect(reduceStream(state, delta(2, 'late')).previews[activityId]).toBeUndefined();
   });
-  it.each(['cancelled', 'completed', 'failed'])('终态 %s 清理且围栏迟到 delta，旧版本不能复活', terminal => {
+  it.each(['cancelled', 'completed', 'failed'] as const)('终态 %s 清理且围栏迟到 delta，旧版本不能复活', terminal => {
     let state = reduceStream(started(), delta(0, '旧文本'));
     expect(state.previews[activityId]).toEqual({ 0: '旧文本' });
     state = reduceStream(state, durable('9007199254740994', { runs: [run(4, terminal)] }, 'run.cancelled'));
@@ -119,19 +119,19 @@ describe('持久投影与暂态预览', () => {
   it('撤权清除受影响预览，保留用户历史，拒绝旧 activity delta', () => {
     let state = reduceStream(started(), delta(0, '旧文本'));
     expect(state.previews[activityId]).toEqual({ 0: '旧文本' });
-    state = reduceStream(state, durable('9007199254740994', { grants: [{ id, version: 2, epoch: 2, status: 'revoked', scope: { workspace_id: id, session_id: id }, resource_ids: [id] }] }, 'grant.revoked'));
+    state = reduceStream(state, durable('9007199254740994', { grants: [{ id, version: 2, epoch: 2, status: 'revoked', scope: { kind: 'session', workspace_id: id, session_id: id }, resource_ids: [id] }] }, 'grant.revoked'));
     expect(reduceStream(state, delta(1, '迟到')).previews).toEqual({});
   });
   it('撤权后迟到的旧 Activity 不能绕过围栏；新授权的 Activity 不被旧 grant 永久封锁', () => {
     let state = reduceStream(emptyProjection(), durable('10', { runs: [run(3)] }));
-    state = reduceStream(state, durable('12', { grants: [{ id, version: 2, epoch: 2, status: 'revoked', scope: { workspace_id: id, session_id: id }, resource_ids: [id] }] }, 'grant.revoked'));
+    state = reduceStream(state, durable('12', { grants: [{ id, version: 2, epoch: 2, status: 'revoked', scope: { kind: 'session', workspace_id: id, session_id: id }, resource_ids: [id] }] }, 'grant.revoked'));
     state = reduceStream(state, durable('11', { activities: [activity()] }));
     expect(reduceStream(state, delta(0, 'late')).previews).toEqual({});
     const nextId = '00000000-0000-4000-8000-000000000003';
     state = reduceStream(state, durable('13', { activities: [{ ...activity(), id: nextId, dependencies: [] }] }));
     state = reduceStream(state, { kind: 'delta', activity_id: nextId, index: 0, text: 'new' });
     expect(state.previews[nextId]).toEqual({ 0: 'new' });
-    state = reduceStream(state, durable('12', { grants: [{ id, version: 2, epoch: 2, status: 'revoked', scope: { workspace_id: id, session_id: id }, resource_ids: [id] }] }, 'grant.revoked'));
+    state = reduceStream(state, durable('12', { grants: [{ id, version: 2, epoch: 2, status: 'revoked', scope: { kind: 'session', workspace_id: id, session_id: id }, resource_ids: [id] }] }, 'grant.revoked'));
     expect(state.previews[nextId]).toEqual({ 0: 'new' });
   });
   it('快照 reset 丢弃旧预览；迟到 RunDetail 不能覆盖更高版本', () => {
@@ -158,18 +158,19 @@ describe('RunDetail 权威摘要与乱序查询', () => {
   const detail = (watermark: string, version = 1): RunDetail => ({ ...runDetailSummary, run: { ...fullRun, version },
     tasks: page([]), activities: page([]), messages: page([]), artifacts: page([]), questions: page([]), approvals: page([]), waits: page([]),
     consumptions: page([]), joins: page([]), budget: { id: fullRun.budget_id, version, run_id: id, limits, spent_units: '0', reserved_units: '0',
-      model_requests: 1, steps: 1, task_count: 1 }, watermark });
+      model_requests: 1, steps: 1, task_count: 1, total_tokens: 0, reserved_tokens: 0 }, watermark });
   it('直接保留完整成本与最近 manifest 摘要，不从空的消息/Activity 首页推断费用或容量', () => {
     const current: RunDetail = { ...detail('30', 2), cost_summary: { ...runDetailSummary.cost_summary,
       calculated_units: '9007199254740993', unknown_request_count: 8, pending_request_count: 3 },
-      context_usage: { activity_id: activityId, state: 'dispatched', omitted_group_count: 5, omitted_message_count: 12, reason_counts: { outside_run_scope: 2, capacity: 3 } } };
+      context_usage: { ...contextUsage, activity_id: activityId, state: 'dispatched', omitted_group_count: 5, omitted_message_count: 12,
+        reason_counts: { outside_run_scope: 2, capacity: 3 }, compaction_state: 'committed', summary_count: 2, compacted_message_count: 20 } };
     let state = mergeRunDetail(emptyProjection(), current);
     state = mergeRunDetail(state, detail('29', 2));
     state = mergeRunDetail(state, detail('30', 1));
     expect(state.runSummaries[id].cost_summary).toEqual(current.cost_summary);
     expect(state.runSummaries[id].context_usage).toEqual(current.context_usage);
     expect(state.cursor).toBe('0');
-    state = applyDeletion(state, { scope: { workspace_id: id, session_id: id }, epoch: 2, status: 'deleted' });
+    state = applyDeletion(state, { scope: { kind: 'session', workspace_id: id, session_id: id }, epoch: 2, status: 'deleted' });
     expect(state.runSummaries[id]).toBeUndefined();
   });
 });
@@ -177,7 +178,7 @@ describe('RunDetail 权威摘要与乱序查询', () => {
 describe('删除scope不可复活围栏', () => {
   const uuid = (suffix: number) => `00000000-0000-4000-8000-${String(suffix).padStart(12, '0')}`;
   function detail(suffix: number, workspace_id = id): RunDetail {
-    const run = { ...fullRun, id: uuid(suffix), workspace_id, session_id: uuid(suffix + 1),
+    const run = { ...fullRun, id: uuid(suffix), workspace_id, interaction_session_id: uuid(suffix + 1), execution_session_id: uuid(suffix + 1),
       root_task_id: uuid(suffix + 2), budget_id: uuid(suffix + 3), state: 'running' as const };
     const activity = { id: uuid(suffix + 4), version: 1, run_id: run.id, task_id: run.root_task_id,
       kind: 'model', operation: 'model', state: 'dispatched', error: null, usage: null, actual_units: null, dependencies: [] };
@@ -189,15 +190,15 @@ describe('删除scope不可复活围栏', () => {
       artifacts: page([{ id: uuid(suffix + 6), version: 1, task_id: run.root_task_id, activity_id: activity.id,
         content_hash: 'a'.repeat(64), dependencies: [], media_type: 'text/plain' }]),
       questions: page([{ id: uuid(suffix + 7), version: 1, run_id: run.id, task_id: run.root_task_id }]),
-      approvals: page([{ id: uuid(suffix + 8), version: 1, run_id: run.id, workspace_id, session_id: run.session_id }]),
+      approvals: page([{ id: uuid(suffix + 8), version: 1, run_id: run.id, workspace_id, session_id: run.interaction_session_id! }]),
       waits: page([]), consumptions: page([]), joins: page([]),
       budget: { id: run.budget_id, version: 1, run_id: run.id, limits, spent_units: '0', reserved_units: '0',
-        model_requests: 0, steps: 0, task_count: 1 }, watermark: '11' } as unknown as RunDetail;
+        model_requests: 0, steps: 0, task_count: 1, total_tokens: 0, reserved_tokens: 0 }, watermark: '11' } as unknown as RunDetail;
   }
   function snapshot(details: RunDetail[], watermark = '10'): WorkspaceSnapshot {
     return { workspace: { id: details[0].run.workspace_id, version: 1, name: '工作区', directory_resource_id: null },
-      sessions: page(details.map(({ run }) => ({ id: run.session_id, version: 1, workspace_id: run.workspace_id,
-        title: '会话', agent_profile_id: id }))), active_runs: page(details.map(item => item.run)),
+      sessions: page(details.map(({ run }) => ({ id: run.interaction_session_id!, version: 1, workspace_id: run.workspace_id,
+        title: '会话', agent_profile_id: id, kind: 'interaction' as const, archived: false }))), active_runs: page(details.map(item => item.run)),
       pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark };
   }
   function lifecycle(scope: { workspace_id: string; session_id: string | null }, epoch = 2,
@@ -205,16 +206,16 @@ describe('删除scope不可复活围栏', () => {
     const status = kind === 'scope.deleted' ? 'deleted' : 'revoked';
     return { kind: 'durable', event_id: '20', event: { ...publicEvent, kind, event_id: '20', workspace_id: scope.workspace_id,
       session_id: scope.session_id, run_id: null, seq: null, payload: {
-        scopes: [{ id: scope.session_id ?? scope.workspace_id, scope, epoch, status }],
-        deletions: status === 'deleted' ? [{ scope, epoch, status }] : [],
+        scopes: [{ id: scope.session_id ?? scope.workspace_id, scope: { ...scope, kind: scope.session_id === null ? 'workspace' : 'session' }, epoch, status }],
+        deletions: status === 'deleted' ? [{ scope: { ...scope, kind: scope.session_id === null ? 'workspace' : 'session' }, epoch, status }] : [],
       } } };
   }
   function late(details: RunDetail): StreamEvent {
     return { kind: 'durable', event_id: '21', event: { ...publicEvent, kind: 'task.stepped', event_id: '21',
-      workspace_id: details.run.workspace_id, session_id: details.run.session_id, run_id: details.run.id,
+      workspace_id: details.run.workspace_id, session_id: details.run.interaction_session_id!, run_id: details.run.id,
       payload: { runs: [{ ...details.run, version: 99 }], tasks: details.tasks.items, activities: details.activities.items,
         messages: details.messages.items, artifacts: details.artifacts.items, questions: details.questions.items,
-        budgets: [details.budget], waits: [], consumptions: [], joins: [] } } };
+        budgets: [details.budget], waits: [], consumptions: [], joins: [], pending_commands: [], follow_up_intents: [] } } };
   }
   function installed(details: RunDetail[]) {
     return details.reduce(mergeRunDetail, resetWorkspace(emptyProjection(), snapshot(details)));
@@ -224,7 +225,7 @@ describe('删除scope不可复活围栏', () => {
     let state = installed([first, other]);
     for (const item of [first, other]) state = reduceStream(state, { kind: 'delta',
       activity_id: item.activities.items[0].id, index: 0, text: '预览' });
-    state = reduceStream(state, lifecycle({ workspace_id: id, session_id: first.run.session_id }));
+    state = reduceStream(state, lifecycle({ workspace_id: id, session_id: first.run.interaction_session_id! }));
     for (const [kind, removed, kept] of [
       ['runs', first.run.id, other.run.id], ['tasks', first.run.root_task_id, other.run.root_task_id],
       ['activities', first.activities.items[0].id, other.activities.items[0].id], ['budgets', first.budget.id, other.budget.id],
@@ -234,21 +235,21 @@ describe('删除scope不可复活围栏', () => {
       expect(state[kind][removed]).toBeUndefined();
       expect(state[kind][kept]).toBeDefined();
     }
-    expect(state.sessions[first.run.session_id]).toBeUndefined();
+    expect(state.sessions[first.run.interaction_session_id!]).toBeUndefined();
     expect(state.messageSessions[first.messages.items[0].id]).toBeUndefined();
     expect(state.entityScopes[first.messages.items[0].id]).toBeUndefined();
     expect(state.fencedActivities[first.activities.items[0].id]).toBeUndefined();
     expect(state.previews[first.activities.items[0].id]).toBeUndefined();
     expect(state.previews[other.activities.items[0].id]).toEqual({ 0: '预览' });
-    expect(state.deletedSessions[first.run.session_id]).toBe(2);
+    expect(state.deletedSessions[first.run.interaction_session_id!]).toBe(2);
   });
   it('更高event/version的迟到durable、RunDetail、RunSnapshot及消息也不能重建已删session', () => {
     const first = detail(100);
-    let state = reduceStream(installed([first]), lifecycle({ workspace_id: id, session_id: first.run.session_id }));
+    let state = reduceStream(installed([first]), lifecycle({ workspace_id: id, session_id: first.run.interaction_session_id! }));
     state = reduceStream(state, late(first));
     state = mergeRunDetail(state, { ...first, watermark: '99' });
     state = mergeRunSnapshot(state, { ...first.run, version: 100 });
-    state = mergeMessages(state, first.run.session_id, first.messages.items);
+    state = mergeMessages(state, first.run.interaction_session_id!, first.messages.items);
     state = reduceStream(state, { kind: 'delta', activity_id: first.activities.items[0].id, index: 1, text: '迟到' });
     expect(state.runs).toEqual({});
     expect(state.messages).toEqual({});
@@ -258,14 +259,14 @@ describe('删除scope不可复活围栏', () => {
   });
   it('resetWorkspace保留删除tombstone，旧快照及随后消息不能恢复已删session', () => {
     const first = detail(100), other = detail(200);
-    let state = reduceStream(installed([first, other]), lifecycle({ workspace_id: id, session_id: first.run.session_id }));
+    let state = reduceStream(installed([first, other]), lifecycle({ workspace_id: id, session_id: first.run.interaction_session_id! }));
     state = resetWorkspace(state, snapshot([first, other], '99'));
-    state = mergeMessages(state, first.run.session_id, first.messages.items);
-    expect(state.sessions[first.run.session_id]).toBeUndefined();
+    state = mergeMessages(state, first.run.interaction_session_id!, first.messages.items);
+    expect(state.sessions[first.run.interaction_session_id!]).toBeUndefined();
     expect(state.runs[first.run.id]).toBeUndefined();
     expect(state.messages).toEqual({});
     expect(state.runs[other.run.id]).toBeDefined();
-    expect(state.deletedSessions[first.run.session_id]).toBe(2);
+    expect(state.deletedSessions[first.run.interaction_session_id!]).toBe(2);
   });
   it('workspace删除在跨workspace重置后仍围栏旧快照，而不删除另一workspace', () => {
     const first = detail(100), other = detail(200, uuid(900));
@@ -276,26 +277,26 @@ describe('删除scope不可复活围栏', () => {
     expect(state.runs[other.run.id]).toBeDefined();
     state = resetWorkspace(state, snapshot([other], '21'));
     state = resetWorkspace(state, snapshot([first], '99'));
-    state = mergeMessages(state, first.run.session_id, first.messages.items);
+    state = mergeMessages(state, first.run.interaction_session_id!, first.messages.items);
     expect(state.runs[other.run.id]).toBeDefined();
     expect(state.workspaces[id]).toBeUndefined();
     expect(state.messages[first.messages.items[0].id]).toBeUndefined();
     expect(state.deletedWorkspaces[id]).toBe(2);
   });
   it('首个Run前删除的scope仍能拒绝迟到实体，重复旧epoch不降低tombstone', () => {
-    const first = detail(100), scope = { workspace_id: id, session_id: first.run.session_id };
+    const first = detail(100), scope = { workspace_id: id, session_id: first.run.interaction_session_id! };
     let state = reduceStream(emptyProjection(), lifecycle(scope, 3));
     state = reduceStream(state, lifecycle(scope, 2));
     state = reduceStream(state, late(first));
-    state = mergeMessages(state, first.run.session_id, first.messages.items);
-    expect(state.deletedSessions[first.run.session_id]).toBe(3);
+    state = mergeMessages(state, first.run.interaction_session_id!, first.messages.items);
+    expect(state.deletedSessions[first.run.interaction_session_id!]).toBe(3);
     expect(state.runs).toEqual({});
     expect(state.messages).toEqual({});
   });
   it('scope.revoked只清除受影响预览，用户历史保留', () => {
     const first = detail(100);
     let state = reduceStream(installed([first]), { kind: 'delta', activity_id: first.activities.items[0].id, index: 0, text: '预览' });
-    state = reduceStream(state, lifecycle({ workspace_id: id, session_id: first.run.session_id }, 2, 'scope.revoked'));
+    state = reduceStream(state, lifecycle({ workspace_id: id, session_id: first.run.interaction_session_id! }, 2, 'scope.revoked'));
     expect(state.messages[first.messages.items[0].id]).toBeDefined();
     expect(state.runs[first.run.id]).toBeDefined();
     expect(state.previews).toEqual({});
@@ -304,8 +305,8 @@ describe('删除scope不可复活围栏', () => {
   it('归属索引只保留scope身份，不复制运行配置或内容', () => {
     const first = detail(100);
     const state = installed([first]);
-    expect(state.entityScopes[first.run.id]).toEqual({ workspace_id: id, session_id: first.run.session_id });
-    expect(state.entityScopes[first.messages.items[0].id]).toEqual({ workspace_id: id, session_id: first.run.session_id });
+    expect(state.entityScopes[first.run.id]).toEqual({ workspace_id: id, session_id: first.run.interaction_session_id! });
+    expect(state.entityScopes[first.messages.items[0].id]).toEqual({ workspace_id: id, session_id: first.run.interaction_session_id! });
   });
   it('其它workspace快照水位已经越过删除事件时仍记录tombstone，拒绝旧workspace快照', () => {
     const first = detail(100), other = detail(200, uuid(900));
@@ -322,14 +323,14 @@ describe('删除scope不可复活围栏', () => {
     if (event.kind !== 'durable' || !('runs' in event.event.payload)) throw new Error('测试事件类别错误');
     event.event.payload.runs = [];
     let state = reduceStream(emptyProjection(), event);
-    state = reduceStream(state, lifecycle({ workspace_id: id, session_id: first.run.session_id }));
+    state = reduceStream(state, lifecycle({ workspace_id: id, session_id: first.run.interaction_session_id! }));
     expect(state.activities).toEqual({});
     expect(state.artifacts).toEqual({});
     expect(state.entityScopes).toEqual({});
   });
   it('迟到Snapshot中缺少Run归属的待办不重建；随后活跃scope的真实RunDetail仍可补齐', () => {
     const first = detail(100), other = detail(200);
-    let state = reduceStream(emptyProjection(), lifecycle({ workspace_id: id, session_id: first.run.session_id }));
+    let state = reduceStream(emptyProjection(), lifecycle({ workspace_id: id, session_id: first.run.interaction_session_id! }));
     const stale = snapshot([first, other], '19');
     stale.active_runs.items = [];
     stale.pending_questions.items = [first.questions.items[0], other.questions.items[0]];
@@ -341,18 +342,18 @@ describe('删除scope不可复活围栏', () => {
   });
   it('页面/创建/decision/grant响应共用scope合并边界，不能在删除后重建实体', () => {
     const first = detail(100), other = detail(200);
-    let state = reduceStream(installed([first, other]), lifecycle({ workspace_id: id, session_id: first.run.session_id }));
+    let state = reduceStream(installed([first, other]), lifecycle({ workspace_id: id, session_id: first.run.interaction_session_id! }));
     state = mergeSessions(state, snapshot([first, other]).sessions.items);
     state = mergeQuestions(state, [...first.questions.items, ...other.questions.items]);
     state = mergeApprovals(state, [...first.approvals.items, ...other.approvals.items]);
-    const resources = [first, other].map(item => ({ id: item.run.session_id, version: 1,
-      scope: { workspace_id: id, session_id: item.run.session_id }, label: '资料', kind: 'file' as const, source_version: null }));
+    const resources = [first, other].map(item => ({ id: item.run.interaction_session_id!, version: 1,
+      scope: { kind: 'session' as const, workspace_id: id, session_id: item.run.interaction_session_id! }, label: '资料', kind: 'file' as const, source_version: null }));
     state = mergeResources(state, resources);
     state = mergeGrants(state, resources.map(resource => ({ id: resource.id, version: 1, epoch: 1, status: 'active' as const,
-      scope: resource.scope, resource_ids: [resource.id] as [string], purposes: ['read'], destination: null })));
+      scope: resource.scope, resource_ids: [resource.id] as [string], memory_scopes: [], mcp_versions: {}, purposes: ['read'], destination: null })));
     for (const kind of ['sessions', 'resources', 'grants'] as const) {
-      expect(state[kind][first.run.session_id]).toBeUndefined();
-      expect(state[kind][other.run.session_id]).toBeDefined();
+      expect(state[kind][first.run.interaction_session_id!]).toBeUndefined();
+      expect(state[kind][other.run.interaction_session_id!]).toBeDefined();
     }
     expect(state.questions[first.questions.items[0].id]).toBeUndefined();
     expect(state.approvals[first.approvals.items[0].id]).toBeUndefined();
@@ -397,7 +398,7 @@ describe('fetch SSE parser', () => {
 
 describe('会话消息的服务端顺序', () => {
   const historyProjection = () => ({ ...emptyProjection(), sessions: { [id]: {
-    id, version: 1, workspace_id: id, title: '会话', agent_profile_id: id,
+    id, version: 1, workspace_id: id, title: '会话', agent_profile_id: id, kind: 'interaction' as const, archived: false,
   } } });
   const message = (suffix: number, role: ModelMessage['role'], event_id: string, event_index: number): ModelMessage => ({
     id: `00000000-0000-4000-8000-${String(suffix).padStart(12, '0')}`, role, parts: [{ kind: 'text', text: `${role}-${suffix}` }],
@@ -409,12 +410,12 @@ describe('会话消息的服务端顺序', () => {
   const currentAssistant = message(6, 'assistant', '9007199254740994', 0);
   function messagesEvent(event_id: string, seq: number, messages: ModelMessage[]): StreamEvent {
     return { kind: 'durable', event_id, event: { ...publicEvent, kind: 'task.stepped', event_id, seq,
-      payload: { runs: [], tasks: [], activities: [], budgets: [], messages, artifacts: [], questions: [], waits: [], consumptions: [], joins: [] } } };
+      payload: { runs: [], tasks: [], activities: [], budgets: [], messages, artifacts: [], questions: [], waits: [], consumptions: [], joins: [], pending_commands: [], follow_up_intents: [] } } };
   }
   function detail(messages: ModelMessage[], watermark: string): RunDetail {
     const empty = { ...page([]), watermark };
     return { ...runDetailSummary, run: fullRun, tasks: empty, activities: empty, messages: { ...page(messages), watermark }, artifacts: empty, questions: empty, approvals: empty, waits: empty, consumptions: empty, joins: empty,
-      budget: { id, version: 1, run_id: id, limits, spent_units: '0', reserved_units: '0', model_requests: 0, steps: 0, task_count: 1 }, watermark };
+      budget: { id, version: 1, run_id: id, limits, spent_units: '0', reserved_units: '0', model_requests: 0, steps: 0, task_count: 1, total_tokens: 0, reserved_tokens: 0 }, watermark };
   }
   it('正常 user → assistant 的提交不因 object spread 反序', () => {
     let state = reduceStream(emptyProjection(), messagesEvent('9007199254740993', 1, [currentUser]));

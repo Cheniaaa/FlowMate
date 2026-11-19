@@ -1,11 +1,11 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { ApiError, RuntimeClient, commandMeta } from '../api/client';
 import { mergeRunDetail, mergeRunSnapshot } from '../api/events';
-import { event, grant, id, limits, page, publication, resource, run, runDetailSummary, secondId } from '../test/fixtures';
+import { contextUsage, event, grant, id, limits, page, publication, resource, run, runDetailSummary, secondId } from '../test/fixtures';
 import { createRuntimeStore, type UiCommand } from './runtime-store';
 import type { RunDetail } from '../generated/contracts';
 
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 2 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 });
 
 it('撤销响应未确认时保留原归属，不因之后切换项目快照而改变命令说明', async () => {
   vi.stubGlobal('fetch', async () => { throw new TypeError('response lost'); });
@@ -15,7 +15,7 @@ it('撤销响应未确认时保留原归属，不因之后切换项目快照而�
   expect(store.getCommandsSnapshot()[0].scope).toEqual(grant.scope);
 });
 const detail = (value = run) => ({ ...runDetailSummary, run: value, tasks: page([]), activities: page([]), messages: page([]), artifacts: page([]), questions: page([]), approvals: page([]), waits: page([]), consumptions: page([]), joins: page([]),
-  budget: { id, run_id: id, version: 1, limits, spent_units: '0', reserved_units: '0', model_requests: 0, task_count: 1, steps: 0 }, watermark: event.event_id });
+  budget: { id, run_id: id, version: 1, limits, spent_units: '0', reserved_units: '0', model_requests: 0, task_count: 1, steps: 0, total_tokens: 0, reserved_tokens: 0 }, watermark: event.event_id });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('RuntimeStore真实客户端边界', () => {
@@ -101,8 +101,10 @@ describe('RuntimeStore真实客户端边界', () => {
     const currentRun = { ...run, version: 2, state: kind === 'activity.received' ? 'cancelled' as const : kind === 'budget.settled' ? 'completed' as const : 'running' as const };
     const latest: RunDetail = { ...detail(currentRun), watermark: cursor,
       cost_summary: { ...runDetailSummary.cost_summary, calculated_units: '2500000000', reserved_units: '17', unknown_request_count: 1 },
-      context_usage: { activity_id: secondId, state: kind === 'activity.prepared' ? 'prepared' : 'succeeded', omitted_group_count: 1, omitted_message_count: 2, reason_counts: { outside_run_scope: 2 } } };
-    const payload = { runs: [currentRun], tasks: [], activities: [], budgets: [{ ...latest.budget, version: 2, spent_units: '2500000000' }], messages: [], artifacts: [], questions: [], waits: [], consumptions: [], joins: [] };
+      context_usage: { ...contextUsage, activity_id: secondId, state: kind === 'activity.prepared' ? 'prepared' : 'succeeded', omitted_group_count: 1,
+        omitted_message_count: 2, reason_counts: { outside_run_scope: 2 }, compaction_state: kind === 'activity.prepared' ? 'running' : 'committed',
+        summary_count: kind === 'activity.prepared' ? 0 : 1, compacted_message_count: kind === 'activity.prepared' ? 0 : 2 } };
+    const payload = { runs: [currentRun], tasks: [], activities: [], budgets: [{ ...latest.budget, version: 2, spent_units: '2500000000' }], messages: [], artifacts: [], questions: [], waits: [], consumptions: [], joins: [], pending_commands: [], follow_up_intents: [] };
     const wire = { kind: 'durable', event_id: cursor, event: { ...event, kind, event_id: cursor, payload } };
     let reads = 0;
     vi.stubGlobal('fetch', async (url: string) => {
@@ -229,9 +231,9 @@ describe('RuntimeStore真实客户端边界', () => {
       if (init.method === 'POST' || init.method === 'DELETE') {
         writes++; return Response.json({ error: { code: 'version_conflict', safe_message: '请重新决定', retryable: false, related_ids: [] } }, { status: 409 });
       }
-      if (url.endsWith(`/tasks/${secondId}`)) return Response.json({ id: secondId, version: 1, run_id: id, parent_task_id: null, origin_task_id: null,
+      if (url.endsWith(`/tasks/${secondId}`)) return Response.json({ id: secondId, version: 1, run_id: id, binding: { agent_work: null, input_artifacts: [], input_result: null, execution_session_id: run.execution_session_id, interaction_session_id: run.interaction_session_id, config: run.config, sources: run.sources, delegation_depth: 0 }, parent_task_id: null, origin_task_id: null,
         kind: 'agent', executor_id: 'builtin.agent', state: 'completed', created_seq: 1, deadline_at: null, result_version: 1, reason: null });
-      if (url.endsWith(`/sessions/${id}`)) return Response.json({ id, version: 2, workspace_id: id, title: '更新会话', agent_profile_id: id });
+      if (url.endsWith(`/sessions/${id}`)) return Response.json({ id, version: 2, workspace_id: id, title: '更新会话', agent_profile_id: id, kind: 'interaction', archived: false });
       if (url.endsWith('/snapshot')) return Response.json({ workspace: { id, version: 2, name: '更新项目', directory_resource_id: null }, sessions: page([]),
         active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id });
       return Response.json(detail({ ...run, version: 2 }));
@@ -346,7 +348,7 @@ describe('RuntimeStore真实客户端边界', () => {
     const value = detail();
     store.update(state => mergeRunDetail(state, { ...value,
       waits: page([{ id: 'wait', version: 1, run_id: id, owner_task_id: id, target_task_id: 'child', continuation_id: 'call', deadline_at: null, state: 'ready', result_version: 1 }]),
-      consumptions: page([{ id: 'consume', run_id: id, task_id: id, target_task_id: 'child', result_version: 1, message_boundary: 4 }]),
+      consumptions: page([{ id: 'consume', run_id: id, task_id: id, execution_session_id: run.execution_session_id, target_task_id: 'child', result_version: 1, message_boundary: 4, inbox_entry_id: null }]),
       joins: page([{ id: 'join', run_id: id, root_task_id: id, child_task_id: 'child', child_result_version: 1, event_id: event.event_id }]) }));
     expect(Object.keys(store.getSnapshot().waits)).toEqual(['wait']);
     expect(Object.keys(store.getSnapshot().consumptions)).toEqual(['consume']);

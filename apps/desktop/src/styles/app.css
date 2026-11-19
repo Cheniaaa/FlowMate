@@ -1,4 +1,69 @@
 * { box-sizing: border-box; }
+/* M2：后台事实不占用当前对话；管理页是既有工作台内的可返回视图。 */
+.task-management { position: absolute; z-index: 11; inset: 0 0 0 var(--sidebar-width); background: var(--workspace); overflow: auto; padding: 24px clamp(16px, 4vw, 64px); }
+.task-management > .panel-header { position: sticky; top: -24px; z-index: 1; background: var(--workspace); padding: 12px 0; margin-bottom: 24px; }
+.task-center, .task-detail { max-width: 1040px; margin: auto; }
+.task-center > header, .task-detail > header, .result-inbox > header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; justify-content: space-between; margin-bottom: 18px; }
+.task-filters { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+.task-filters label { min-width: 130px; flex: 1; }
+.task-center-row, .result-entry { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 18px; margin-bottom: 12px; overflow-wrap: anywhere; }
+.task-center-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.task-center-row p, .result-entry p { margin: 7px 0; }
+.task-center-row > div { min-width: 0; }
+.task-center-row > button { flex-shrink: 0; }
+.task-detail > section, .task-detail > details { margin: 18px 0; }
+.managed-task { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); margin: 10px 0; font-size: 12px; }
+.managed-task-heading { display: flex; align-items: center; gap: 10px; padding: 9px 12px; min-width: 0; }
+.managed-task-heading > strong { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.managed-task-heading button { font-size: 11px; min-height: 28px; padding: 3px 7px; }
+.managed-task-menu { position: relative; }
+.managed-task-menu > summary { cursor: pointer; list-style: none; padding: 3px 7px; }
+.managed-task-menu > button { position: absolute; right: 0; z-index: 2; white-space: nowrap; box-shadow: 0 5px 20px #203b2415; }
+.managed-task-body { padding: 0 14px 8px; border-top: 1px solid var(--line); }
+.managed-task-body p { margin: 8px 0; }
+.result-inbox-disclosure { margin: 18px 0; font-size: 12px; }
+.result-inbox-disclosure > summary, .session-actions > summary { cursor: pointer; color: var(--muted); }
+.result-inbox { margin-top: 14px; }
+.result-preview { margin-top: 12px; }
+.session-actions { flex-shrink: 0; padding: 4px 26px; font-size: 11px; }
+.session-actions[open] { max-height: 160px; overflow: auto; border-bottom: 1px solid var(--line); }
+.session-actions button { font-size: 11px; margin: 3px 5px 5px 0; }
+.background-return { font-size: 11px; padding: 8px 12px; border-left: 3px solid var(--accent); margin-bottom: 8px; }
+.background-return p { margin: 0 0 5px; }
+.pending-action { border-bottom: 1px solid var(--line); padding: 12px 0; }
+.pending-action-owner { margin: 0 0 8px; font-size: 11px; }
+.pending-action-owner > div { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 6px; margin: 5px 0; }
+.pending-action-owner dt { color: var(--muted); }
+.pending-action-owner dd { margin: 0; min-width: 0; }
+.pending-action-owner dd > span, .pending-action-owner code { display: block; overflow-wrap: anywhere; white-space: normal; }
+.pending-action > button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.assistants-page, .memory-page { position: absolute; z-index: 20; inset: 0; overflow: auto; background: var(--workspace); padding: 24px max(18px, calc((100vw - 1000px) / 2)); }
+.assistants-page .panel-header, .memory-page .panel-header { position: sticky; top: -24px; background: var(--workspace); z-index: 1; padding: 14px 0; }
+.memory-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 16px; margin: 20px 0; }
+.memory-card { border: 1px solid var(--line); border-radius: 10px; padding: 18px; min-width: 0; overflow-wrap: anywhere; }
+.memory-card > p { white-space: pre-wrap; }
+.memory-card form { margin-top: 12px; }
+.memory-card details { margin: 12px 0; color: var(--muted); font-size: 12px; }
+.memory-page > form { padding: 18px; border: 1px solid var(--line); border-radius: 10px; margin: 20px 0; }
+.memory-maintenance { margin: 20px 0; padding: 18px; border: 1px solid var(--line); border-radius: 10px; }
+.memory-maintenance article { margin: 12px 0; padding: 12px; background: var(--workspace); border-radius: 8px; overflow-wrap: anywhere; }
+.checkbox-label { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.member-lane-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 14px; margin: 18px 0; }
+.member-lane { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 14px; overflow-wrap: anywhere; }
+.member-lane header { display: flex; justify-content: space-between; gap: 8px; }
+.member-lane code, .member-lane button { overflow-wrap: anywhere; white-space: normal; }
+.member-activities { padding-left: 20px; }
+.member-activities li { margin: 12px 0; }
+.member-handoff { border-top: 1px dashed var(--line); padding-top: 10px; margin-top: 10px; }
+.agent-result { border-left: 3px solid var(--accent); padding: 14px; margin: 16px 0; overflow-wrap: anywhere; }
+.configuration-row label:has(input[type='checkbox']) { flex-direction: row; align-items: center; max-width: none; }
+@media (max-width: 760px) {
+  .task-management { inset: 0; padding: 16px; }
+  .task-management > .panel-header { top: -16px; }
+  .task-center-row { align-items: start; flex-direction: column; }
+  .managed-task-heading { gap: 6px; padding: 8px; }
+  .session-actions { padding-left: 16px; padding-right: 16px; }
+}
 body { margin: 0; background: var(--bg); color: var(--ink); font-size: 14px; line-height: 1.55; }
 html, body, #root { height: 100%; overflow: hidden; }
 button { min-height: 34px; }
@@ -332,3 +397,17 @@ legend { font-size: 12px; color: var(--muted); padding: 0 6px; }
   .configuration-row label { flex-basis: 100%; }
   .composer footer { flex-wrap: wrap; }
 }
+.capability-library { position: fixed; inset: 0; z-index: 80; overflow: auto; background: var(--bg, #f5f6f2); padding: 24px; }
+.library-toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin: 18px 0; border: 0; padding: 0; }
+.library-toolbar input { min-width: 180px; }
+.library-layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); background: white; border: 1px solid var(--line); border-radius: 12px; }
+.skill-list { padding: 10px; border-right: 1px solid var(--line); background: #f6f8f3; }
+.skill-item { display: block; width: 100%; text-align: left; padding: 14px; margin-bottom: 6px; border: 1px solid transparent; border-radius: 8px; }
+.skill-item[aria-pressed=true] { background: white; border-color: var(--line); }
+.skill-item strong { display: block; }.skill-item p { color: var(--muted); font-size: 12px; }
+.skill-detail { min-width: 0; padding: 24px; }.skill-detail code { overflow-wrap: anywhere; }
+.skill-body { white-space: pre-wrap; overflow-wrap: anywhere; background: #f8faf5; border: 1px solid var(--line); border-radius: 8px; padding: 15px; }
+.skill-editor { display: grid; gap: 12px; }.skill-editor label { display: grid; gap: 5px; }.skill-editor textarea { width: 100%; }
+.skill-pins { display: flex; gap: 8px; flex-wrap: wrap; padding: 5px 0; font-size: 12px; }
+.skill-pins span { border: 1px solid var(--line); border-radius: 10px; padding: 3px 8px; }
+@media (max-width: 760px) { .capability-library { padding: 14px; }.library-layout { grid-template-columns: 1fr; }.skill-list { border-right: 0; max-height: 240px; overflow: auto; }.skill-detail { padding: 16px; } }

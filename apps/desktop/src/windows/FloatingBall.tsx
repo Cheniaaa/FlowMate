@@ -25,7 +25,7 @@ export default function FloatingBall() {
   }, []);
   async function operate(command: 'toggle_quick' | 'show_workbench' | 'start_ball_drag') {
     setError('');
-    try { await (command === 'show_workbench' ? invoke(command, { run_id: null }) : invoke(command)); }
+    try { await (command === 'show_workbench' ? invoke(command, { target: null }) : invoke(command)); }
     catch (error) { setError(windowError(error)); }
   }
   function drag(event: PointerEvent<HTMLButtonElement>) {
@@ -36,7 +36,7 @@ export default function FloatingBall() {
   return <main className="floating-ball" aria-label="FlowMate 快捷入口">
     <button className="ball-drag-handle" aria-label="拖动悬浮球" title="拖动悬浮球" onPointerDown={drag}>⠿</button>
     <button className="ball-trigger" aria-label="打开快捷小窗" onClick={() => void operate('toggle_quick')}>F</button>
-    <p role="status">{counts ? `${counts.pending_questions + counts.pending_approvals} 项待处理` : '待办同步中'}</p>
+    <p role="status">{counts ? `${counts.pending_actions} 项待处理 · ${counts.unviewed_results} 项未查看` : '待办同步中'}</p>
     <button className="ball-workbench" onClick={() => void operate('show_workbench')}>打开工作台</button>
     {error && <p role="alert">{error}</p>}
   </main>;

@@ -10,10 +10,13 @@ export interface WindowSettings {
   shortcut: string | null;
   shortcut_error: string | null;
 }
-export interface PendingCounts { pending_questions: number; pending_approvals: number }
+export interface PendingCounts { pending_questions: number; pending_approvals: number; pending_actions: number; unviewed_results: number }
+export type WorkbenchTarget = { kind: 'run'; run_id: string } | { kind: 'task'; task_id: string } | { kind: 'tasks'; workspace_id: string | null } | { kind: 'assistants' } | { kind: 'memory' } | { kind: 'capabilities' } | { kind: 'mcp'; server_id: string | null; workspace_id: string | null };
+export interface WorkbenchRequest { target: WorkbenchTarget | null; from_quick: boolean }
+export const showWorkbench = (target: WorkbenchTarget | null) => invoke<void>('show_workbench', { target });
 export const windowError = (error: unknown) => error instanceof Error ? error.message : String(error);
 export const setQuickFormActive = (active: boolean) => invoke<void>('set_quick_form_active', { active });
-export type SettingsSection = 'models' | 'assistant' | 'resources' | 'windows';
+export type SettingsSection = 'models' | 'assistant' | 'resources' | 'windows' | 'memory' | 'environments';
 export interface SettingsNavigation { section: SettingsSection; from_quick: boolean }
 export const openSettings = (section: SettingsSection) => invoke<void>('open_settings', { section });
 

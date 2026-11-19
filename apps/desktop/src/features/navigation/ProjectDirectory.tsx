@@ -27,7 +27,7 @@ export default function ProjectDirectory({ client, workspace, onLink, blocked }:
     try {
       let id: string | null = null;
       if (choose) {
-        const selection = await invoke<{ resources: unknown[] }>('select_resources', { scope: { workspace_id: workspace.id, session_id: null }, kind: 'directory' });
+        const selection = await invoke<{ resources: unknown[] }>('select_resources', { scope: { kind: 'workspace', workspace_id: workspace.id, session_id: null }, kind: 'directory' });
         if (view.current !== request || !selection.resources.length) return;
         id = validate('ResourceRef', selection.resources[0]).id;
       }

@@ -7,10 +7,42 @@ pub const LABELS: [&str; 3] = ["main", "quick", "ball"];
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum SettingsSection { Models, Assistant, Resources, Windows }
+pub enum SettingsSection { Models, Assistant, Resources, Windows, Memory, Environments }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq)]
 pub struct SettingsNavigation { pub section: SettingsSection, pub from_quick: bool }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WorkbenchTarget {
+    Run { run_id: String },
+    Task { task_id: String },
+    Tasks { workspace_id: Option<String> },
+    Assistants {},
+    Memory {},
+    Capabilities {},
+    Mcp { server_id: Option<String>, workspace_id: Option<String> },
+}
+
+impl WorkbenchTarget {
+    pub fn validate(&self) -> Result<(), String> {
+        let id = match self {
+            Self::Run { run_id } => Some(run_id),
+            Self::Task { task_id } => Some(task_id),
+            Self::Tasks { workspace_id } => workspace_id.as_ref(),
+            Self::Mcp { server_id, .. } => server_id.as_ref(),
+            Self::Assistants {} | Self::Memory {} | Self::Capabilities {} => None,
+        };
+        if let Self::Mcp { workspace_id: Some(id), .. } = self {
+            if uuid::Uuid::parse_str(id).is_err() { return Err("invalid_navigation_id".into()); }
+        }
+        if id.is_some_and(|id| uuid::Uuid::parse_str(id).is_err()) { return Err("invalid_navigation_id".into()); }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct WorkbenchNavigation { pub target: Option<WorkbenchTarget>, pub from_quick: bool }
 
 pub fn window_config(config: &tauri::utils::config::WindowConfig) -> tauri::utils::config::WindowConfig {
     let mut config = config.clone();
@@ -50,7 +82,7 @@ pub struct Windows {
     active_shortcut: Option<String>,
     form_active: bool,
     native_dialogs: usize,
-    navigation: Option<String>,
+    navigation: Option<WorkbenchNavigation>,
     settings_navigation: Option<SettingsNavigation>,
 }
 
@@ -144,8 +176,10 @@ impl Windows {
     pub fn begin_dialog(&mut self) { self.native_dialogs += 1; }
     pub fn end_dialog(&mut self) { self.native_dialogs -= 1; }
     pub fn hide_on_blur(&self) -> bool { !self.settings.preferences.quick_pinned && !self.form_active && self.native_dialogs == 0 }
-    pub fn navigate(&mut self, run_id: Option<String>) { self.navigation = run_id; }
-    pub fn take_navigation(&mut self) -> Option<String> { self.navigation.take() }
+    pub fn navigate(&mut self, target: Option<WorkbenchTarget>, from_quick: bool) {
+        self.navigation = if target.is_some() || from_quick { Some(WorkbenchNavigation { target, from_quick }) } else { None };
+    }
+    pub fn take_navigation(&mut self) -> Option<WorkbenchNavigation> { self.navigation.take() }
     pub fn navigate_settings(&mut self, section: SettingsSection, from_quick: bool) { self.settings_navigation = Some(SettingsNavigation { section, from_quick }); }
     pub fn take_settings_navigation(&mut self) -> Option<SettingsNavigation> { self.settings_navigation.take() }
 }
@@ -372,12 +406,27 @@ mod tests {
     fn navigation_is_latest_id_only_consumed_once_without_runtime_content() {
         let (directory, mut windows, _) = fixture();
         assert_eq!(windows.take_navigation(), None);
-        windows.navigate(Some("00000000-0000-4000-8000-000000000001".into()));
-        windows.navigate(Some("00000000-0000-4000-8000-000000000002".into()));
-        assert_eq!(windows.take_navigation().as_deref(), Some("00000000-0000-4000-8000-000000000002"));
+        windows.navigate(Some(WorkbenchTarget::Run { run_id: "00000000-0000-4000-8000-000000000001".into() }), false);
+        windows.navigate(Some(WorkbenchTarget::Task { task_id: "00000000-0000-4000-8000-000000000002".into() }), true);
+        assert_eq!(windows.take_navigation(), Some(WorkbenchNavigation { target: Some(WorkbenchTarget::Task { task_id: "00000000-0000-4000-8000-000000000002".into() }), from_quick: true }));
         assert_eq!(windows.take_navigation(), None);
-        windows.navigate(Some("00000000-0000-4000-8000-000000000001".into()));
-        windows.navigate(None); assert_eq!(windows.take_navigation(), None);
+        windows.navigate(Some(WorkbenchTarget::Tasks { workspace_id: None }), true);
+        assert_eq!(windows.take_navigation(), Some(WorkbenchNavigation { target: Some(WorkbenchTarget::Tasks { workspace_id: None }), from_quick: true }));
+        assert!(WorkbenchTarget::Task { task_id: "not-an-id".into() }.validate().is_err());
+        assert!(serde_json::from_value::<WorkbenchTarget>(serde_json::json!({"kind":"tasks","workspace_id":null,"body":"private"})).is_err());
+        windows.navigate(None, false); assert_eq!(windows.take_navigation(), None);
+        windows.navigate(None, true);
+        assert_eq!(windows.take_navigation(), Some(WorkbenchNavigation { target: None, from_quick: true }));
+        let assistants: WorkbenchTarget = serde_json::from_value(serde_json::json!({"kind":"assistants"})).unwrap();
+        assistants.validate().unwrap();
+        windows.navigate(Some(assistants), true);
+        assert_eq!(windows.take_navigation(), Some(WorkbenchNavigation { target: Some(WorkbenchTarget::Assistants {}), from_quick: true }));
+        assert!(serde_json::from_value::<WorkbenchTarget>(serde_json::json!({"kind":"assistants","workspace_id":"extra"})).is_err());
+        let library: WorkbenchTarget = serde_json::from_value(serde_json::json!({"kind":"capabilities"})).unwrap();
+        library.validate().unwrap();
+        windows.navigate(Some(library), true);
+        assert_eq!(windows.take_navigation(), Some(WorkbenchNavigation { target: Some(WorkbenchTarget::Capabilities {}), from_quick: true }));
+        assert!(serde_json::from_value::<WorkbenchTarget>(serde_json::json!({"kind":"capabilities","skill_versions":{"private":"body"}})).is_err());
         assert!(!windows.path.exists(), "导航不是业务事实的第二份持久副本");
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -385,15 +434,52 @@ mod tests {
     fn t14_settings_navigation_is_one_shot_and_independent_of_quick_forms_and_run_navigation() {
         let (directory, mut windows, _) = fixture();
         windows.form_active(true);
-        windows.navigate(Some("00000000-0000-4000-8000-000000000001".into()));
+        windows.navigate(Some(WorkbenchTarget::Run { run_id: "00000000-0000-4000-8000-000000000001".into() }), false);
         windows.navigate_settings(SettingsSection::Models, false);
         windows.navigate_settings(SettingsSection::Resources, true);
         assert_eq!(windows.take_settings_navigation(), Some(SettingsNavigation { section: SettingsSection::Resources, from_quick: true }));
         assert_eq!(windows.take_settings_navigation(), None);
-        assert_eq!(windows.take_navigation().as_deref(), Some("00000000-0000-4000-8000-000000000001"));
+        assert_eq!(windows.take_navigation(), Some(WorkbenchNavigation { target: Some(WorkbenchTarget::Run { run_id: "00000000-0000-4000-8000-000000000001".into() }), from_quick: false }));
         assert!(!windows.hide_on_blur());
         assert!(!windows.path.exists(), "设置导航不是第二份持久业务配置");
         assert_eq!(Windows::load(&directory).unwrap().take_settings_navigation(), None);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn t6_memory_navigation_and_settings_parse_without_record_content() {
+        let (directory, mut windows, _) = fixture();
+        let target: WorkbenchTarget = serde_json::from_value(serde_json::json!({"kind":"memory"})).unwrap();
+        target.validate().unwrap();
+        windows.form_active(true);
+        windows.navigate(Some(target), true);
+        let section: SettingsSection = serde_json::from_value(serde_json::json!("memory")).unwrap();
+        windows.navigate_settings(section, true);
+        assert_eq!(serde_json::to_value(windows.take_navigation()).unwrap(),
+            serde_json::json!({"target":{"kind":"memory"},"from_quick":true}));
+        assert_eq!(windows.take_navigation(), None);
+        assert_eq!(serde_json::to_value(windows.take_settings_navigation()).unwrap(),
+            serde_json::json!({"section":"memory","from_quick":true}));
+        assert_eq!(windows.take_settings_navigation(), None);
+        assert!(!windows.hide_on_blur());
+        for value in [
+            serde_json::json!({"kind":"memory","text":"private"}),
+            serde_json::json!({"kind":"memory","workspace_id":"00000000-0000-4000-8000-000000000001"}),
+            serde_json::json!({"kind":"memory","record_id":"private"}),
+        ] {
+            assert!(serde_json::from_value::<WorkbenchTarget>(value).is_err());
+        }
+        assert!(!windows.path.exists(), "记忆导航不复制记录、策略或草稿");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn t10_environment_settings_navigation_preserves_origin() {
+        let (directory, mut windows, _) = fixture();
+        let section: SettingsSection = serde_json::from_value(serde_json::json!("environments")).unwrap();
+        windows.navigate_settings(section, true);
+        assert_eq!(serde_json::to_value(windows.take_settings_navigation()).unwrap(),
+            serde_json::json!({"section":"environments","from_quick":true}));
+        assert_eq!(windows.take_settings_navigation(), None);
+        assert!(!windows.path.exists(), "运行环境导航不写入执行路径或环境值");
         std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]

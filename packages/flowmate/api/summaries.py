@@ -35,9 +35,23 @@ def context_usage(tx, run):
     manifest = load(tx, Checkpoint, task.id).context_manifest
     if task.kind != "agent" or not manifest:
         return None
-    activity = load(tx, ActivitySnapshot, manifest["activity_id"])
+    activity = load(tx, ActivitySnapshot, manifest["activity_id"]) if manifest.get("activity_id") else None
+    if activity is None and manifest.get("compaction_state", "none") == "none":
+        return None
     counts = Counter()
-    for omission in manifest["omissions"]:
+    for omission in manifest.get("omissions", []):
         counts[omission["reason"]] += len(omission["message_ids"])
-    return ContextUsageSummary(activity_id=activity.id, state=activity.state,
-        omitted_group_count=len(manifest["omissions"]), omitted_message_count=sum(counts.values()), reason_counts=dict(counts))
+    compaction_state = manifest.get("compaction_state", "none")
+    compaction_reason = manifest.get("compaction_reason")
+    if compaction_state == "running" and task.state in {
+            "interrupted", "blocked_incompatible", "failed", "cancelled", "waiting_user"}:
+        compaction_state, compaction_reason = "blocked", task.reason or run.reason
+    if compaction_state == "committed" and (task.reason or run.reason) in {
+            "scope_revoked", "source_scope_changed", "source_version_conflict"}:
+        compaction_state, compaction_reason = "invalidated", "source_changed"
+    return ContextUsageSummary(activity_id=activity.id if activity else None, state=activity.state if activity else None,
+        omitted_group_count=len(manifest.get("omissions", [])), omitted_message_count=sum(counts.values()), reason_counts=dict(counts),
+        compaction_state=compaction_state,
+        summary_count=len(manifest.get("summary_ids", [])) if compaction_state != "invalidated" else 0,
+        compacted_message_count=len(manifest.get("covered_message_ids", [])) if compaction_state != "invalidated" else 0,
+        compaction_reason=compaction_reason)

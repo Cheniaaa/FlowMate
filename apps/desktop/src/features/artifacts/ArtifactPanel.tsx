@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { ApiError, type RuntimeClient } from '../../api/client';
 import type { ArtifactRef, TextSlice } from '../../generated/contracts';
 import { artifactDocument } from '../../components/Markdown';
+import McpArtifactSource from './McpArtifactSource';
 
 interface ArtifactPanelProps {
   artifact: ArtifactRef | null;
@@ -27,9 +28,12 @@ function ArtifactPreview({ artifact, client, onExport, onSelectSource, exportBlo
   const [error, setError] = useState('');
   const exporting = useRef(false);
   const slice = content.offset === offset ? content.slice : null;
-  const document = useMemo(() => slice ? artifactDocument(slice.text, artifact.media_type) : null, [slice, artifact.media_type]);
+  const binary = artifact.media_type === 'application/octet-stream';
+  const document = useMemo(() => slice && artifact.media_type !== 'application/octet-stream'
+    ? artifactDocument(slice.text, artifact.media_type) : null, [slice, artifact.media_type]);
 
   useEffect(() => {
+    if (binary) return;
     let ignore = false;
     setContent({ offset, slice: null, error: '' });
     client.artifactContent(artifact.id, offset).then(slice => {
@@ -38,7 +42,7 @@ function ArtifactPreview({ artifact, client, onExport, onSelectSource, exportBlo
       if (!ignore) setContent({ offset, slice: null, error: '产物内容加载失败' });
     });
     return () => { ignore = true; };
-  }, [client, artifact.id, offset]);
+  }, [client, artifact.id, offset, binary]);
 
   async function exportArtifact() {
     if (exporting.current || exportBlocked || !onExport) return;
@@ -56,6 +60,7 @@ function ArtifactPreview({ artifact, client, onExport, onSelectSource, exportBlo
   }
 
   return <>
+    <McpArtifactSource artifact={artifact} client={client} />
     <details className="artifact-source"><summary>来源技术详情</summary><dl>
       <dt>来源 hash</dt><dd>{artifact.content_hash}</dd>
       <dt>Task</dt><dd>{artifact.task_id}</dd>
@@ -66,7 +71,8 @@ function ArtifactPreview({ artifact, client, onExport, onSelectSource, exportBlo
       {onExport && <button type="button" disabled={busy || exportBlocked} onClick={() => { void exportArtifact(); }}>{busy ? '正在导出…' : '导出产物'}</button>}
       {exportBlocked && !busy && <p>导出命令待核对或同步，请使用原命令入口；不会重开保存选择。</p>}
     </div>
-    {content.offset === offset && content.error ? <p role="alert">{content.error}</p> : !slice && <p role="status">正在加载产物…</p>}
+    {binary ? <p>二进制文件，可导出到本机。</p> : content.offset === offset && content.error
+      ? <p role="alert">{content.error}</p> : !slice && <p role="status">正在加载产物…</p>}
     {slice && document && <>
       <p className="artifact-range">字符 {slice.start}–{slice.end} / {slice.total_chars} · 版本 {slice.source_version}</p>
       <iframe title="产物预览" sandbox="" srcDoc={document.srcDoc} />
@@ -74,10 +80,10 @@ function ArtifactPreview({ artifact, client, onExport, onSelectSource, exportBlo
         {document.links.map((link, index) => <li key={`${index}:${link.url}`}><button type="button" onClick={() => { void open(link.url); }} aria-label={`打开外部链接：${link.label}`}>{link.label} · {link.url}</button></li>)}
       </ul>}
     </>}
-    <nav className="artifact-pagination" aria-label="产物分段">
+    {!binary && <nav className="artifact-pagination" aria-label="产物分段">
       <button type="button" disabled={!slice || offsets.length === 1} onClick={() => setOffsets(previous => previous.slice(0, -1))}>前文</button>
       <button type="button" disabled={!slice || slice.end >= slice.total_chars} onClick={() => { if (slice) setOffsets(previous => [...previous, slice.end]); }}>下一段</button>
-    </nav>
+    </nav>}
     {error && <p role="alert">{error}</p>}
   </>;
 }

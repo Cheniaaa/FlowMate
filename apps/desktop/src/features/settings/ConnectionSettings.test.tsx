@@ -10,7 +10,7 @@ import Settings from './Settings';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 2 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 3 });
 async function openConnections() {
   render(<Settings client={client} />);
   await userEvent.click(await screen.findByRole('button', { name: new RegExp(connection.display_name) }));
@@ -116,7 +116,7 @@ describe('连接设置编辑生命周期', () => {
     await user.click(screen.getByRole('button', { name: '重试保存凭据' }));
     await screen.findByText('系统凭据已保存');
     expect(bodies).toHaveLength(1);
-    expect(invoke).toHaveBeenLastCalledWith('save_credential', { binding: { connection_id: connection.id, connection_version: 2,
+    expect(invoke).toHaveBeenLastCalledWith('save_credential', { binding: { kind: 'model', connection_id: connection.id, connection_version: 2,
       protocol: connection.protocol, endpoint: connection.endpoint, secret_ref: bodies[0].data.secret_ref }, value: 'retry-key' });
   });
   it('keyset 续页按 ID 更新版本，保存不使用旧版本', async () => {

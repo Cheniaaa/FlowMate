@@ -48,7 +48,7 @@ export default function ConnectionSettings({ client, onBusyChange, onSaved, onDi
   }, [selected?.secret_ref, selected?.version]);
 
   async function saveCredential(connection: ModelConnection, value: string) {
-    await invoke('save_credential', { binding: { connection_id: connection.id, connection_version: connection.version,
+    await invoke('save_credential', { binding: { kind: 'model', connection_id: connection.id, connection_version: connection.version,
       protocol: connection.protocol, endpoint: connection.endpoint, secret_ref: connection.secret_ref }, value });
     setConfigured(true);
   }

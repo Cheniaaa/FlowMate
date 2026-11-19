@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import type {
   ActivityView, Approval, JoinFact, Question, ResultConsumption, TaskSnapshot, TracePageSchema, WaitRecord,
 } from '../../generated/contracts';
-import { event, run } from '../../test/fixtures';
+import { binding, event, run } from '../../test/fixtures';
 import { buildTaskGraph } from './graph-layout';
 import { TaskGraph } from './TaskGraph';
 import { TaskList } from './TaskList';
@@ -21,31 +21,37 @@ const resolvedWaitId = '30000000-0000-4000-8000-000000000002';
 const activityId = '20000000-0000-4000-8000-000000000002';
 const earlierActivityId = '20000000-0000-4000-8000-000000000001';
 const root: TaskSnapshot = {
+  binding,
   id: rootId, run_id: run.id, version: 7, created_seq: 1, parent_task_id: null, origin_task_id: null,
   kind: 'agent', executor_id: 'builtin.agent', state: 'waiting_children', deadline_at: null,
   result_version: null, reason: null,
 };
 const child: TaskSnapshot = {
+  binding,
   id: childId, run_id: run.id, version: 9, created_seq: 2, parent_task_id: rootId, origin_task_id: rootId,
   kind: 'tool', executor_id: 'files.read', state: 'completed', deadline_at: null, result_version: 3, reason: null,
 };
 const sibling: TaskSnapshot = {
+  binding: { ...binding, execution_session_id: siblingId },
   id: siblingId, run_id: run.id, version: 1, created_seq: 3, parent_task_id: rootId, origin_task_id: childId,
   kind: 'agent', executor_id: 'builtin.agent', state: 'running', deadline_at: null, result_version: null, reason: null,
 };
 const leaf: TaskSnapshot = {
+  binding,
   id: leafId, run_id: run.id, version: 1, created_seq: 4, parent_task_id: childId, origin_task_id: childId,
   kind: 'tool', executor_id: 'files.list', state: 'cancelled', deadline_at: null, result_version: 1, reason: null,
 };
 const activity: ActivityView = {
   id: activityId, run_id: run.id, task_id: childId, version: 2, kind: 'tool', operation: 'files.read',
-  state: 'uncertain', actual_units: null, dependencies: [], error: null, usage: null,
+  state: 'uncertain', actual_units: null, dependencies: [], error: null, usage: null, script_execution: null,
 };
 const wait: WaitRecord = {
   id: '30000000-0000-4000-8000-000000000001', run_id: run.id, version: 1, owner_task_id: rootId,
   target_task_id: childId, continuation_id: 'wait-continuation', state: 'pending', deadline_at: null, result_version: null,
 };
 const consumption: ResultConsumption = {
+  inbox_entry_id: null,
+  execution_session_id: run.execution_session_id,
   id: '40000000-0000-4000-8000-000000000001', run_id: run.id, task_id: rootId,
   target_task_id: childId, result_version: 2, message_boundary: 4,
 };
@@ -59,8 +65,9 @@ const question: Question = {
   status: 'pending', answer_message_id: null, dependencies: [],
 };
 const approval: Approval = {
+  mcp: null,
   id: '70000000-0000-4000-8000-000000000001', version: 1, workspace_id: run.workspace_id,
-  session_id: run.session_id, run_id: run.id, task_id: childId, activity_id: activityId, call_id: 'export-1',
+  session_id: run.interaction_session_id, run_id: run.id, task_id: childId, activity_id: activityId, call_id: 'export-1',
   tool_name: 'artifacts.export', tool_version: '1', args_hash: 'abc', target: childId,
   export_preview: { target_path: 'C:\\Synthetic\\report.md', target_exists: false, artifact_id: rootId, artifact_version: 1 },
   parameters: { target_ref: missingId }, dependencies: [], expires_at: '2026-11-07T13:00:00Z', status: 'pending',

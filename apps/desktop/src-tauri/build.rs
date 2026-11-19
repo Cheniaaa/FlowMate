@@ -1,6 +1,7 @@
 fn main() {
     let manifest = tauri_build::AppManifest::new().commands(&[
         "runtime_connection", "stop_runtime", "open_settings", "take_settings_navigation", "return_to_quick", "select_resources", "choose_export_target",
+        "select_skill_package", "choose_skill_export_target",
         "save_credential", "clear_credential", "credential_status",
         "open_external",
         "window_settings", "set_quick_pinned", "set_shortcut", "set_ball_enabled", "toggle_quick", "show_workbench",

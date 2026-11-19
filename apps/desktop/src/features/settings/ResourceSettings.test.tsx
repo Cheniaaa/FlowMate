@@ -18,7 +18,7 @@ it('授权命令响应丢失后关闭/重开设置，仍以窗口内冻结命令
     if (path.endsWith('/snapshot')) return Response.json({ workspace, sessions: page([]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([resource]), grants: page([grant]), watermark: event.event_id });
     return Response.json(path.endsWith('/resources') ? page([resource]) : page([{ ...grant, ...(revoked ? { status: 'revoked', version: 2, epoch: 2 } : {}) }]));
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 2 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
   const store = createRuntimeStore(client); const user = userEvent.setup();
   const view = render(<Settings client={client} section="resources" runtimeStore={store} />);
   await user.click(await screen.findByRole('button', { name: '撤销这份授权并保留历史' }));
@@ -36,8 +36,8 @@ it('项目删除立即清理资料设置的项目选择与授权缓存，旧查�
     if (url.endsWith('/snapshot')) return Response.json({ workspace, sessions: page([]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([resource]), grants: page([grant]), watermark: event.event_id });
     return Response.json(url.endsWith('/workspaces') ? page([workspace]) : url.endsWith('/resources') ? page([resource]) : page([grant]));
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 2 }); const store = createRuntimeStore(client);
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 }); const store = createRuntimeStore(client);
   render(<Settings client={client} section="resources" runtimeStore={store} />); await screen.findByText(resource.label);
-  await act(async () => { store.update(state => applyDeletion(state, { scope: { workspace_id: id, session_id: null }, epoch: 2, status: 'deleted' })); });
+  await act(async () => { store.update(state => applyDeletion(state, { scope: { kind: 'workspace', workspace_id: id, session_id: null }, epoch: 2, status: 'deleted' })); });
   expect(screen.queryByRole('option', { name: workspace.name })).toBeNull(); expect(screen.queryByText(resource.label)).toBeNull();
 });

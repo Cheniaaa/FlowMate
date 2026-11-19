@@ -22,7 +22,7 @@ Windows 原生依赖的安装说明见 [Tauri 环境准备](https://v2.tauri.app
 git clone https://github.com/Cheniaaa/FlowMate.git
 cd FlowMate
 
-uv sync --locked --extra models
+uv sync --locked --extra models --extra capabilities
 
 $env:FLOWMATE_DEV_ROOT = (Get-Location).Path
 $env:FLOWMATE_DEV_PYTHON = Join-Path $env:FLOWMATE_DEV_ROOT '.venv/Scripts/python.exe'
@@ -34,3 +34,14 @@ Pop-Location
 ```
 
 启动后，在应用设置中配置模型连接和模型。
+
+### 冻结 Runtime
+
+M2 Runtime 使用 `models` 和 `capabilities`。开发构建另需 `packaging` 依赖组：
+
+```powershell
+uv sync --locked --extra models --extra capabilities --group packaging
+uv run --locked --no-sync python scripts/build_sidecar.py --output .local/m2/runtime
+```
+
+输出为 onedir，不执行产品安装；已有构建目录不会被覆盖。

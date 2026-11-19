@@ -6,15 +6,17 @@ from typing import Literal
 
 from pydantic import AwareDatetime, Field, JsonValue
 
+from flowmate.contracts import scopes
 from flowmate.contracts.base import Contract, Count, Id, Name, Version, identifier
-from flowmate.contracts.execution import AccountingActivity, AccountingBudget, ScopeDependency
+from flowmate.contracts.execution import (
+    AccountingActivity,
+    AccountingBudget,
+    BudgetGroupSnapshot,
+    McpToolSnapshot,
+    ScopeDependency,
+)
 
-Purpose = Literal["read", "model_send", "export"]
-
-
-class ScopeRef(Contract):
-    workspace_id: Id
-    session_id: Id | None = None
+Purpose = Literal["read", "model_send", "export", "tool_send", "local_process_send"]
 
 
 class ExportTargetInfo(Contract):
@@ -27,7 +29,7 @@ class ExportTargetInfo(Contract):
 
 class NativeSelection(Contract):
     id: Id = Field(default_factory=identifier)
-    scope: ScopeRef
+    scope: scopes.ScopeRef
     kind: Literal["file", "directory", "export"]
     canonical_path: str
     file_identity: str = Field(min_length=1)
@@ -36,7 +38,7 @@ class NativeSelection(Contract):
 
 class ResourceRef(Contract):
     id: Id
-    scope: ScopeRef
+    scope: scopes.ScopeRef
     label: str
     version: Version = 1
     kind: Literal["file", "directory", "export"]
@@ -51,8 +53,10 @@ class ResourceRecord(ResourceRef):
 
 
 class GrantCommand(Contract):
-    scope: ScopeRef
-    resource_ids: list[Id] = Field(min_length=1)
+    scope: scopes.ScopeRef
+    resource_ids: list[Id] = Field(default_factory=list)
+    memory_scopes: list[scopes.ScopeRef] = Field(default_factory=list)
+    mcp_versions: dict[Id, Version] = Field(default_factory=dict)
     purposes: list[Purpose] = Field(min_length=1)
     destination: str | None = None
 
@@ -99,7 +103,7 @@ class Approval(Contract):
     id: Id = Field(default_factory=identifier)
     version: Version = 1
     workspace_id: Id
-    session_id: Id
+    session_id: Id | None
     run_id: Id
     task_id: Id
     activity_id: Id
@@ -109,6 +113,7 @@ class Approval(Contract):
     args_hash: str
     target: str | None
     export_preview: ExportApprovalPreview | None = None
+    mcp: McpToolSnapshot | None = None
     parameters: dict[str, JsonValue]
     dependencies: list[ScopeDependency]
     expires_at: AwareDatetime
@@ -134,13 +139,13 @@ class PolicyChange(Contract):
 
 class ScopeState(Contract):
     id: Id
-    scope: ScopeRef
+    scope: scopes.ScopeRef
     epoch: Version
     status: Literal["active", "revoked", "deleted"]
 
 
 class DeletionReceipt(Contract):
-    scope: ScopeRef
+    scope: scopes.ScopeRef
     epoch: Version
     status: Literal["deleted"] = "deleted"
 
@@ -155,3 +160,4 @@ class LifecycleChange(Contract):
     deletions: list[DeletionReceipt] = Field(default_factory=list)
     accounting_activities: list[AccountingActivity] = Field(default_factory=list)
     accounting_budgets: list[AccountingBudget] = Field(default_factory=list)
+    budget_groups: list[BudgetGroupSnapshot] = Field(default_factory=list)

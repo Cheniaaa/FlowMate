@@ -1,19 +1,19 @@
 """有界JSON行协议；值与错误表示不进入公开契约或日志。"""
 
 import json
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, ValidationError, model_validator
 
 from flowmate.contracts.base import Contract, DomainError, Id, Version
 from flowmate.contracts.settings import Endpoint, ModelProtocol
 
-Method = Literal["credential.resolve", "private.protect", "private.unprotect", "resource.register",
+Method = Literal["credential.resolve", "private.protect", "private.unprotect", "resource.register", "skills.register",
                  "workspace.create_from_directory", "workspace.directory_command_status", "shutdown"]
 
 
 class HostRequest(Contract):
-    protocol_version: Literal[2] = 2
+    protocol_version: Literal[3] = 3
     request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     # 本地DTO的初值由串行writer覆盖；wire解码仍要求显式正整数。
     stream_seq: int = Field(default=1, ge=1, le=2**64 - 1)
@@ -27,7 +27,7 @@ class HostError(Contract):
 
 
 class HostReply(Contract):
-    protocol_version: Literal[2] = 2
+    protocol_version: Literal[3] = 3
     request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     kind: Literal["reply"] = "reply"
     method: Method
@@ -44,7 +44,7 @@ class HostReply(Contract):
 
 
 class HostEvent(Contract):
-    protocol_version: Literal[2] = 2
+    protocol_version: Literal[3] = 3
     request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     stream_seq: int = Field(default=1, ge=1, le=2**64 - 1)
     kind: Literal["event"] = "event"
@@ -52,12 +52,46 @@ class HostEvent(Contract):
     params: dict[str, JsonValue] = Field(default_factory=dict, repr=False)
 
 
-class SecretBinding(Contract):
+class ModelSecretBinding(Contract):
+    kind: Literal["model"] = "model"
     connection_id: Id
     connection_version: Version
     protocol: ModelProtocol
     endpoint: Endpoint
     secret_ref: str = Field(min_length=1, max_length=256)
+
+
+class McpDestination(Contract):
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    cwd: str | None = None
+    url: Endpoint | None = None
+
+
+class McpSecretBinding(Contract):
+    kind: Literal["mcp"] = "mcp"
+    server_id: Id
+    config_revision: Version
+    transport: Literal["stdio", "http"]
+    destination: McpDestination
+    purpose: Literal["env", "http_token"]
+    env_name: str | None = None
+    secret_ref: str = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def check_destination(self):
+        destination = self.destination
+        if self.transport == "http":
+            if (not destination.url or destination.command is not None or destination.args
+                    or destination.cwd is not None or self.purpose != "http_token" or self.env_name is not None):
+                raise ValueError("HTTP 凭据须绑定确切 URL")
+        elif (not destination.command or destination.url is not None or self.purpose != "env"
+                or not self.env_name or "=" in self.env_name or "\x00" in self.env_name):
+            raise ValueError("stdio 凭据须绑定命令、参数、目录及环境变量名")
+        return self
+
+
+SecretBinding = Annotated[ModelSecretBinding | McpSecretBinding, Field(discriminator="kind")]
 
 
 class ProtectedValue(Contract):
@@ -99,7 +133,7 @@ def decode_frame(data, max_bytes):
             raise ValueError("machine frame requires a single complete line")
         value = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object,
                            parse_constant=_invalid_constant)
-        if not isinstance(value, dict) or value.get("protocol_version") != 2:
+        if not isinstance(value, dict) or value.get("protocol_version") != 3:
             raise ValueError("invalid frame envelope")
         if type(value["protocol_version"]) is not int:
             raise ValueError("invalid protocol version type")

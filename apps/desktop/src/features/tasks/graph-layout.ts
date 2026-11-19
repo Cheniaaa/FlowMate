@@ -66,7 +66,7 @@ export function buildTaskGraph(
   const allNodes: GraphNode[] = [];
   for (const task of orderedTasks) {
     allNodes.push({ id: task.id, entity_kind: 'task', x: 126 + depth(task) * 16, y: 42 + allNodes.length * 84,
-      state: task.state, label: task.kind === 'tool' ? '工具任务' : task.parent_task_id === null ? '主任务' : '子任务' });
+      state: task.state, label: task.kind === 'tool' ? '工具任务' : task.binding.agent_work ? `成员 · ${task.binding.config.agent_profile.display_name}` : task.parent_task_id === null ? '主任务' : '子任务' });
     // Activity 的 ID 排序只保证稳定展示，不表示创建时间或调用先后。
     for (const activity of activitiesByTask.get(task.id) ?? []) {
       allNodes.push({ id: activity.id, entity_kind: 'activity', x: 126 + (depth(task) + 1) * 16,

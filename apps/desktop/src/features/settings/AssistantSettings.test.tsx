@@ -8,7 +8,7 @@ import Settings from './Settings';
 import AssistantSettings from './AssistantSettings';
 
 afterEach(() => { vi.unstubAllGlobals(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 2 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 3 });
 
 describe('共享主助理设置', () => {
   it('keyset 续页合并助理和模型的最新版本', async () => {
@@ -58,9 +58,9 @@ describe('共享主助理设置', () => {
     await user.click(screen.getByRole('button', { name: '保存助理' }));
     await screen.findByText('助理配置已保存；仅对新运行生效');
     expect(requests).toHaveLength(1);
-    expect(requests[0].url).toBe('http://127.0.0.1:54321/v2/profiles/00000000-0000-4000-8000-000000000001');
+    expect(requests[0].url).toBe('http://127.0.0.1:54321/v3/profiles/00000000-0000-4000-8000-000000000001');
     expect(requests[0].body.meta.expected_version).toBe(1);
-    expect(requests[0].body.data).toEqual({ id: agent.id, version: 1, display_name: '我的助理', icon_id: 'compass', communication_style: '简洁、直接', instructions: '先核对来源', default_model_profile_id: model.id });
+    expect(requests[0].body.data).toEqual({ ...agent, version: 1, display_name: '我的助理', icon_id: 'compass', communication_style: '简洁、直接', instructions: '先核对来源', default_model_profile_id: model.id });
     await user.click(screen.getByRole('button', { name: '保存助理' }));
     await waitFor(() => expect(requests).toHaveLength(2));
     expect(requests[1].body.meta.expected_version).toBe(2);
@@ -149,4 +149,20 @@ describe('共享主助理设置', () => {
     await user.click(screen.getByRole('button', { name: '取消编辑' }));
     expect((screen.getByLabelText('工作指导') as HTMLTextAreaElement).value).toBe('');
   });
+});
+
+it('旧设置编辑身份仍保留成员能力/Skill字段，不静默覆盖', async () => {
+  const configured = { ...agent, delegatable: true, allowed_tools: ['existing.tool'], skill_ids: ['00000000-0000-4000-8000-000000000099'], default_model_profile_id: model.id };
+  let saved: SaveAgentCommand | undefined;
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    if (init.method === 'PUT') { saved = JSON.parse(init.body as string); return Response.json({ ...saved!.data, version: 2 }); }
+    return Response.json(url.endsWith('/profiles') ? page([configured]) : url.includes('/model-connections') ? page([connection]) : page([model]));
+  });
+  render(<AssistantSettings client={client} />);
+  await screen.findByLabelText('显示名称');
+  await userEvent.click(screen.getByRole('button', { name: '保存助理' }));
+  await waitFor(() => expect(saved).toBeDefined());
+  expect(saved!.data.allowed_tools).toEqual(['existing.tool']);
+  expect(saved!.data.skill_ids).toEqual(configured.skill_ids);
+  expect(saved!.data.delegatable).toBe(true);
 });

@@ -6,9 +6,10 @@ from typing import Literal
 
 from pydantic import Field, create_model
 
-from flowmate.contracts.base import Contract, Count, DomainError, Id
+from flowmate.contracts.base import Contract, Count, DomainError, Id, Version
 from flowmate.contracts.execution import (
     ArtifactRef,
+    Checkpoint,
     ExportReceipt,
     ModelMessage,
     ScopeDependency,
@@ -38,6 +39,8 @@ class BatchResult(Contract):
 
 class ExportInput(Contract):
     artifact_id: Id
+    artifact_version: Version
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_ref: Id
     expected_target_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
@@ -47,7 +50,9 @@ def context_dependencies(tx, ctx):
     dependencies = list(ctx.scope_dependencies)
     for row in tx.execute("SELECT document FROM messages WHERE task_id=? ORDER BY rowid", (ctx.task_id,)):
         dependencies.extend(ModelMessage.model_validate_json(row[0]).source_dependencies)
-    return dependencies
+    from flowmate.agents.checkpoint import content_dependencies
+    from flowmate.runtime.transitions import load
+    return content_dependencies(load(tx, Checkpoint, ctx.task_id), dependencies)
 
 
 def _anchor(resource):
@@ -79,7 +84,7 @@ def register_builtin_tools(catalog, policy, files, artifacts, config):
         offset=(Count, 0), limit=(int, Field(default=config.max_read_chars, ge=1, le=config.max_read_chars)))
 
     def resources(tx, ctx, args):
-        ids = args.resource_ids if hasattr(args, "resource_ids") else [args.resource_id]
+        ids = args["resource_ids"] if "resource_ids" in args else [args["resource_id"]]
         return {"read": [ScopeDependency(scope_id=record.id, epoch=record.version)
                          for id in ids for record in [policy.resource(ctx, id, tx=tx)]]}
 
@@ -87,36 +92,37 @@ def register_builtin_tools(catalog, policy, files, artifacts, config):
         return {"read": context_dependencies(tx, ctx)}
 
     def artifact_sources(tx, ctx, args):
-        return {"read": artifacts.reference(ctx, args.artifact_id, tx=tx).dependencies}
+        return {"read": artifacts.reference(ctx, args["artifact_id"], tx=tx).dependencies}
 
     def export_sources(tx, ctx, args):
-        result = artifact_sources(tx, ctx, args)
-        target = policy.resource(ctx, args.target_ref, tx=tx)
+        result = {"read": artifacts.reference(ctx, args["artifact_id"], tx=tx,
+            artifact_version=args["artifact_version"], content_hash=args["content_hash"]).dependencies}
+        target = policy.resource(ctx, args["target_ref"], tx=tx)
         if target.kind != "export":
             raise DomainError("export_target_invalid", "导出目标须来自原生保存选择")
         result["export"] = [ScopeDependency(scope_id=target.id, epoch=target.version)]
         return result
 
     async def list_files(ctx, args, cancel):
-        resource = policy.resource(ctx, args.resource_id)
-        page = await asyncio.to_thread(files.list_files, _anchor(resource), cursor=args.cursor,
-                                        limit=args.limit, cancel=cancel.is_set)
+        resource = policy.resource(ctx, args["resource_id"])
+        page = await asyncio.to_thread(files.list_files, _anchor(resource), cursor=args["cursor"],
+                                        limit=args["limit"], cancel=cancel.is_set)
         refs = [policy.register_child(ctx, resource.id, NativeSelection(scope=resource.scope,
             kind=entry.anchor.kind, canonical_path=entry.anchor.canonical_path,
             file_identity=entry.anchor.identity)) for entry in page.items]
         return ToolOutcome(result=ResourcePage(items=refs, next_cursor=page.next_cursor).model_dump(mode="json"))
 
     async def read_text(ctx, args, cancel):
-        resource = policy.resource(ctx, args.resource_id)
+        resource = policy.resource(ctx, args["resource_id"])
         result = await asyncio.to_thread(files.read_text, _anchor(resource),
-            source_version=args.source_version, offset=args.offset, limit=args.limit, cancel=cancel.is_set)
+            source_version=args["source_version"], offset=args["offset"], limit=args["limit"], cancel=cancel.is_set)
         observation, dependency = _observed(resource, result)
         return ToolOutcome(result=TextSlice(**{key: value for key, value in asdict(result).items()
             if key in TextSlice.model_fields}).model_dump(mode="json"),
             dependencies=[dependency], source_observations=[observation])
 
     async def inspect_batch(ctx, args, cancel):
-        records = [policy.resource(ctx, id) for id in args.resource_ids]
+        records = [policy.resource(ctx, id) for id in args["resource_ids"]]
         results = await asyncio.to_thread(files.inspect_batch, [_anchor(record) for record in records],
                                           cancel=cancel.is_set)
         observations, dependencies, entries = [], [], []
@@ -132,23 +138,23 @@ def register_builtin_tools(catalog, policy, files, artifacts, config):
     async def create_text(ctx, args, cancel):
         with policy.store.transaction(write=False) as tx:
             dependencies = context_dependencies(tx, ctx)
-        staged = await asyncio.to_thread(artifacts.stage_text, ctx, args.text, args.media_type, dependencies)
+        staged = await asyncio.to_thread(artifacts.stage_text, ctx, args["text"], args["media_type"], dependencies)
         return ToolOutcome(result=staged.ref.model_dump(mode="json"), dependencies=staged.ref.dependencies,
                             staged_artifacts=[staged])
 
     async def read_artifact(ctx, args, cancel):
-        result = await asyncio.to_thread(artifacts.read, ctx, args.artifact_id, args.offset, args.limit)
+        result = await asyncio.to_thread(artifacts.read, ctx, args["artifact_id"], args["offset"], args["limit"])
         return ToolOutcome(result=result.model_dump(mode="json"))
 
     async def export_artifact(ctx, args, cancel):
-        selection = policy.resource(ctx, args.target_ref)
-        result = await asyncio.to_thread(artifacts.export, ctx, args.artifact_id, selection,
-                                         args.expected_target_hash)
+        selection = policy.resource(ctx, args["target_ref"])
+        result = await asyncio.to_thread(artifacts.export, ctx, args["artifact_id"], selection,
+            args["expected_target_hash"], artifact_version=args["artifact_version"], content_hash=args["content_hash"])
         return ToolOutcome(result=result.model_dump(mode="json"))
 
     def register(name, handler, input_model, result_model, resolver, *, background=False,
-                 approval=False, visible=True, purposes=("read",), retry="read_only"):
-        catalog.register(ToolSpec(name=name, version="1", input_schema=input_model.model_json_schema(),
+                 approval=False, visible=True, purposes=("read",), retry="read_only", version="1"):
+        catalog.register(ToolSpec(name=name, version=version, input_schema=input_model.model_json_schema(),
             result_schema=result_model.model_json_schema(mode="serialization"),
             background_supported=background, cancellation="cooperative" if retry == "read_only" else "best_effort",
             retry_class=retry, required_purposes=list(purposes), requires_approval=approval,
@@ -161,4 +167,4 @@ def register_builtin_tools(catalog, policy, files, artifacts, config):
     register("artifacts.create_text", create_text, create_input, ArtifactRef, history, retry="idempotent")
     register("artifacts.read", read_artifact, artifact_input, TextSlice, artifact_sources)
     register("artifacts.export", export_artifact, ExportInput, ExportReceipt, export_sources,
-             approval=True, visible=False, purposes=("read", "export"), retry="never")
+             approval=True, visible=False, purposes=("read", "export"), retry="never", version="2")

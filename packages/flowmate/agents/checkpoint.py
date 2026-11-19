@@ -8,8 +8,9 @@ from pydantic import Field, JsonValue, RootModel
 from flowmate.config import MAX_QUESTION_FIELDS, MAX_QUESTION_OPTIONS
 from flowmate.contracts.base import Contract, DomainError, Version
 from flowmate.contracts.execution import (
+    AgentResult,
     RunOutput,
-    SubmitToolTask,
+    SubmitTask,
     TaskHandle,
     TaskResult,
     TaskSnapshot,
@@ -17,6 +18,21 @@ from flowmate.contracts.execution import (
     WaitOutcome,
 )
 from flowmate.tools.catalog import ToolSpec
+
+CONTROL_TOOLS = frozenset({
+    "user.ask", "run.finish", "agent.finish",
+    "task.submit", "task.status", "task.result", "task.await", "task.cancel",
+})
+
+
+def content_dependencies(checkpoint, dependencies, *, delegate=False):
+    """交付子目标时排除仅目录来源；当前工具参数保留已展示资料元信息的授权。"""
+    catalog = {(item["scope_id"], item["epoch"])
+        for item in checkpoint.context_manifest.get("catalog_dependencies", [])}
+    if not delegate:
+        catalog.difference_update((item["scope_id"], item["epoch"])
+            for item in checkpoint.context_manifest.get("resource_metadata_dependencies", []))
+    return [item for item in dependencies if (item.scope_id, item.epoch) not in catalog]
 
 
 class AskInput(Contract):
@@ -33,6 +49,22 @@ class FinishInput(Contract):
     """提交完成结果。仅在任务要求均已满足时调用，业务待确认事项保留在交付内容中。"""
 
     output: RunOutput
+
+
+class FinishAgentInput(Contract):
+    output: AgentResult
+
+
+def agent_output_validator(schema):
+    from jsonschema import Draft202012Validator
+    from jsonschema.exceptions import SchemaError
+    from referencing import Registry
+
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError:
+        raise DomainError("output_schema_invalid", "成员交付Schema无效") from None
+    return Draft202012Validator(schema, registry=Registry())
 
 
 class ControlResult(Contract):
@@ -127,14 +159,14 @@ def answer_validator(schema):
 def register_control_tools(catalog):
     async def controlled(*args):
         raise DomainError("control_only", "控制能力须由Agent持久转换处理")
-    for name, model in (("user.ask", AskInput), ("run.finish", FinishInput)):
+    for name, model in (("user.ask", AskInput), ("run.finish", FinishInput), ("agent.finish", FinishAgentInput)):
         catalog.register(ToolSpec(name=name, version="1", input_schema=model.model_json_schema(),
             result_schema=ControlResult.model_json_schema(mode="serialization"), background_supported=False,
             cancellation="none", retry_class="never"), controlled,
             input_model=model, result_model=ControlResult)
     read_result = TaskResult | ConsumedTaskResult
     for name, model, result in (
-        ("task.submit", SubmitToolTask, TaskSubmission | TaskResult | ConsumedTaskResult | WaitOutcome),
+        ("task.submit", SubmitTask, TaskSubmission | TaskResult | ConsumedTaskResult | WaitOutcome),
         ("task.status", TaskInput, TaskSnapshot), ("task.result", TaskInput, read_result),
         ("task.await", AwaitTaskInput, read_result | WaitOutcome),
         ("task.cancel", CancelTaskInput, TaskSnapshot),

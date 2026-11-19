@@ -14,7 +14,12 @@ from flowmate.contracts.settings import (
     Session,
     Workspace,
 )
+from flowmate.integrations.configuration_contracts import McpNotice
+from flowmate.memory.contracts import MemoryChange
+from flowmate.memory.maintenance_contracts import MemoryMaintenanceNotice
 from flowmate.policy.contracts import LifecycleChange, PolicyChange
+from flowmate.processes.contracts import EnvironmentChanged
+from flowmate.skills.contracts import SkillNotice
 
 
 class AgentSaved(Contract):
@@ -24,17 +29,24 @@ class AgentSaved(Contract):
 
 class NewEvent(Contract):
     kind: Literal[
-        "workspace.created", "workspace.default_created", "workspace.directory_changed", "session.created", "agent.saved", "model.saved", "connection.saved",
+        "workspace.created", "workspace.default_created", "workspace.directory_changed", "session.created", "session.updated", "agent.saved", "model.saved", "connection.saved",
         "run.started", "run.cancelled", "run.resumed", "run.steered", "task.stepped",
         "activity.prepared", "activity.dispatched", "activity.received",
-        "budget.reserved", "budget.settled", "runtime.recovered",
+        "budget.reserved", "budget.settled", "budget.allocated", "budget.counted", "budget.returned", "runtime.recovered",
         "resource.registered", "resource.updated", "grant.created", "grant.revoked",
         "approval.proposed", "approval.decided", "artifact.published",
         "question.asked", "question.answered",
         "task.submitted", "task.cancelled", "task.consumed", "task.joined", "wait.registered", "wait.resolved",
         "scope.deleted", "scope.revoked", "accounting.settled",
+        "delivery.changed", "admission.stopped",
+        "follow_up.changed", "command.queued", "command.applied", "command.cancelled", "run.yielded",
+        "memory.changed", "memory.policy_changed",
+        "memory.maintenance_changed",
+        "skill.changed",
+        "environment.changed",
+        "mcp.changed",
     ]
-    payload: Workspace | Session | AgentSaved | ModelProfile | ModelConnection | RuntimeChange | PolicyChange | LifecycleChange
+    payload: Workspace | Session | AgentSaved | ModelProfile | ModelConnection | RuntimeChange | PolicyChange | LifecycleChange | MemoryChange | MemoryMaintenanceNotice | SkillNotice | EnvironmentChanged | McpNotice
     event_version: Literal[1] = 1
     workspace_id: Id | None = None
     session_id: Id | None = None
@@ -48,9 +60,14 @@ class NewEvent(Contract):
     def check_payload(self):
         expected = {
             "workspace.created": Workspace, "workspace.default_created": Workspace,
-            "workspace.directory_changed": Workspace, "session.created": Session,
+            "workspace.directory_changed": Workspace, "session.created": Session, "session.updated": Session,
             "agent.saved": AgentSaved, "model.saved": ModelProfile, "connection.saved": ModelConnection,
-        }.get(self.kind, LifecycleChange if self.kind.split(".")[0] in {"scope", "accounting"} else
+            "environment.changed": EnvironmentChanged,
+            "mcp.changed": McpNotice,
+        }.get(self.kind, SkillNotice if self.kind == "skill.changed" else
+              MemoryMaintenanceNotice if self.kind == "memory.maintenance_changed" else
+              MemoryChange if self.kind.startswith("memory.") else
+              LifecycleChange if self.kind.split(".")[0] in {"scope", "accounting"} else
               PolicyChange if self.kind.split(".")[0] in {
             "resource", "grant", "approval",
         } else RuntimeChange)

@@ -35,6 +35,9 @@ class AgentProfile(Contract):
     communication_style: str = ""
     instructions: str = ""
     default_model_profile_id: Id | None = None
+    delegatable: bool = False
+    allowed_tools: list[str] = Field(default_factory=list)
+    skill_ids: list[Id] = Field(default_factory=list)
 
 
 def _endpoint(value: str) -> str:
@@ -158,3 +161,5 @@ class Session(Contract):
     workspace_id: Id
     title: Name
     agent_profile_id: Id
+    kind: Literal["interaction", "execution"] = "interaction"
+    archived: bool = False

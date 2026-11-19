@@ -31,7 +31,7 @@ export function TaskGraph({ tasks, activities, waits, consumptions, joins, colla
     }
   }
   return <section className="task-graph" aria-label="任务图">
-    <details className="graph-order-note"><summary>图例与排列说明</summary><p>任务按创建序排列；过程按所属任务内 ID 稳定展示，不表示发生时间。</p>
+    <details className="graph-order-note"><summary>图例与排列说明</summary><p>任务按创建序排列；过程按所属任务内 ID 稳定展示，不表示发生时间。成员名称来自 Task 固定配置；独立后台仅有来源关联，不是父子取消关系。</p>
     <ul className="graph-legend" aria-label="任务图图例">
       <li>父关系：实线</li><li>等待：虚线 → 等待目标</li>
       <li>结果消费：虚线 → 消费任务</li><li>结果合流：虚线 → 根任务</li>

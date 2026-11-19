@@ -24,18 +24,19 @@ it('settings 先订阅再领取；打开/关闭保持 Conversation DOM 与草稿
   let section: { section: string; from_quick: boolean } | null = null;
   vi.mocked(invoke).mockImplementation(async name => { order.push(name); if (name === 'take_settings_navigation') { const value = section; section = null; return value; } return null; });
   const workspace = { id, version: 1, name: '项目', directory_resource_id: null };
-  const session = { id, version: 1, workspace_id: id, title: '聊天', agent_profile_id: id };
+  const session = { id, version: 1, workspace_id: id, title: '聊天', agent_profile_id: id, kind: 'interaction', archived: false };
   vi.stubGlobal('fetch', async (url: string) => {
     const path = new URL(url).pathname;
+    if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return json(page([]));
     if (path.endsWith('/events')) return new Response(new ReadableStream());
-    const values: Record<string, unknown> = { '/v2/workspaces': page([workspace]), '/v2/profiles': page([agent]), '/v2/models': page([]), '/v2/model-connections': page([]), '/v2/provider-presets': [],
-      '/v2/navigation': { default_workspace_id: id, workspaces: page([]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id },
-      [`/v2/workspaces/${id}/directory`]: { workspace_id: id, workspace_version: 1, state: 'unlinked', reason: null, resource: null },
-      [`/v2/workspaces/${id}/snapshot`]: { workspace, sessions: page([session]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id },
-      [`/v2/sessions/${id}/messages`]: page([]), [`/v2/sessions/${id}/runs`]: page([]) };
+    const values: Record<string, unknown> = { '/v3/workspaces': page([workspace]), '/v3/profiles': page([agent]), '/v3/models': page([]), '/v3/model-connections': page([]), '/v3/provider-presets': [],
+      '/v3/navigation': { default_workspace_id: id, workspaces: page([]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id },
+      [`/v3/workspaces/${id}/directory`]: { workspace_id: id, workspace_version: 1, state: 'unlinked', reason: null, resource: null },
+      [`/v3/workspaces/${id}/snapshot`]: { workspace, sessions: page([session]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id },
+      [`/v3/sessions/${id}/messages`]: page([]), [`/v3/sessions/${id}/runs`]: page([]) };
     return json(values[path]);
   });
-  const user = userEvent.setup(); render(<WorkbenchWindow client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 2 })} />);
+  const user = userEvent.setup(); render(<WorkbenchWindow client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
   await screen.findByRole('heading', { name: '聊天' });
   const input = screen.getByLabelText('消息'); await user.type(input, '保持草稿');
   const entry = screen.getByRole('button', { name: '模型设置' }); await user.click(entry);
@@ -59,19 +60,20 @@ it.each([false, true])('注册后领取首次导航，跨workspace查询归属/�
   vi.mocked(listen).mockImplementation((_name, callback) => { wake = callback; return registered.promise; });
   let pendingId: string | null = secondId;
   vi.mocked(invoke).mockImplementation(async name => {
-    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 2 };
-    if (name === 'take_workbench_navigation') { const value = pendingId; pendingId = null; return value; }
+    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 };
+    if (name === 'take_workbench_navigation') { const value = pendingId; pendingId = null; return value ? { target: { kind: 'run', run_id: value }, from_quick: true } : null; }
     if (name === 'take_settings_navigation') return null;
     throw new Error(`未定义原生命令 ${name}`);
   });
   const firstWorkspace = { id, version: 1, name: '首页工作区', directory_resource_id: null };
   const targetWorkspace = { id: secondId, version: 1, name: '真实归属工作区', directory_resource_id: null };
-  const firstSession = { id, version: 1, workspace_id: id, title: '首页会话', agent_profile_id: id };
+  const firstSession = { id, version: 1, workspace_id: id, title: '首页会话', agent_profile_id: id, kind: 'interaction', archived: false };
   const targetSession = { ...firstSession, id: secondId, workspace_id: secondId, title: '首页之外的真实会话' };
-  const targetRun = { ...run, id: secondId, workspace_id: secondId, session_id: secondId, state: 'completed', output: { summary: '目标任务摘要', artifact_ids: [], unresolved: [], handled_failures: [] } };
+  const targetRun = { ...run, id: secondId, workspace_id: secondId, interaction_session_id: secondId, execution_session_id: secondId, state: 'completed', output: { summary: '目标任务摘要', artifact_ids: [], unresolved: [], handled_failures: [] } };
   const latePage = deferred<Response>(); const releaseRun = deferred<void>(); const requests: string[] = [];
   vi.stubGlobal('fetch', async (url: string) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v2', ''); requests.push(path + parsed.search);
+    const parsed = new URL(url), path = parsed.pathname.replace('/v3', ''); requests.push(path + parsed.search);
+    if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return json(page([]));
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path === `/workspaces/${id}/sessions`) return latePage.promise;
     const watermark = path === `/workspaces/${secondId}/snapshot` ? '9007199254740994' : event.event_id;
@@ -83,7 +85,7 @@ it.each([false, true])('注册后领取首次导航，跨workspace查询归属/�
       [`/sessions/${secondId}`]: targetSession, [`/sessions/${id}/runs`]: page([]), [`/sessions/${id}/messages`]: page([]),
       [`/sessions/${secondId}/runs`]: page([targetRun]), [`/sessions/${secondId}/messages`]: page([]),
       [`/runs/${secondId}`]: { ...runDetailSummary, run: targetRun, tasks: page([]), activities: page([]), messages: page([]), artifacts: page([]), questions: page([]), approvals: page([]), waits: page([]), consumptions: page([]), joins: page([]),
-        budget: { id: run.budget_id, run_id: secondId, version: 1, limits, spent_units: '0', reserved_units: '0', model_requests: 0, task_count: 1, steps: 1 }, watermark: requests.filter(value => value === `/runs/${secondId}`).length > 1 ? '9007199254740994' : event.event_id } };
+        budget: { id: run.budget_id, run_id: secondId, version: 1, limits, spent_units: '0', reserved_units: '0', model_requests: 0, task_count: 1, steps: 1, total_tokens: 0, reserved_tokens: 0 }, watermark: requests.filter(value => value === `/runs/${secondId}`).length > 1 ? '9007199254740994' : event.event_id } };
     if (!(path in values)) throw new Error(`未定义HTTP ${path}`);
     if (early && path === `/runs/${secondId}` && requests.filter(value => value === path).length === 1) await releaseRun.promise;
     return json(values[path]);

@@ -9,16 +9,17 @@ from flowmate.contracts.execution import (
     OutboxItem,
     RuntimeChange,
 )
+from flowmate.contracts.scopes import ScopeRef
 from flowmate.persistence.store import Store, UnitOfWork
 from flowmate.policy.contracts import (
     Approval,
     ExportApprovalPreview,
     PolicyChange,
-    ScopeRef,
     ToolInvocation,
     invocation_hash,
 )
 from flowmate.policy.service import (
+    PolicyService,
     _command,
     _dependencies,
     _document,
@@ -53,16 +54,18 @@ class ApprovalService:
     @staticmethod
     def _event(tx, kind, approvals, ctx, causation_id=None):
         _policy_event(tx, kind, PolicyChange(approvals=approvals),
-                      ScopeRef(workspace_id=ctx.workspace_id, session_id=ctx.session_id),
+                      ScopeRef(kind="session" if ctx.interaction_session_id is not None else "workspace",
+                               workspace_id=ctx.workspace_id, session_id=ctx.interaction_session_id),
                       ctx=ctx, causation_id=causation_id)
 
     def propose(self, call: ToolInvocation, ctx: ExecutionContext, *,
-                export_preview: ExportApprovalPreview | None = None) -> Approval:
+                export_preview: ExportApprovalPreview | None = None, mcp=None) -> Approval:
         call = ToolInvocation.model_validate(call.model_dump())
         digest = invocation_hash(call)
         with self.store.transaction() as tx:
             run, task, activity = self._prepared(tx, ctx)
-            dependencies = _dependencies(tx, ctx, [*activity.intent.dependencies, *call.dependencies])
+            dependencies = _dependencies(tx, ctx, [*activity.intent.dependencies, *call.dependencies],
+                artifact_id=PolicyService.artifact_read_id(call.name, call.arguments))
             changed = []
             rows = tx.execute("SELECT document FROM approvals WHERE activity_id=? AND call_id=? "
                               "AND status IN ('pending','approved','denied')",
@@ -74,10 +77,10 @@ class ApprovalService:
                     return previous
                 changed.append(bump(previous, status=("expired" if self.clock() >= previous.expires_at
                                                        else "superseded")))
-            approval = Approval(workspace_id=run.workspace_id, session_id=run.session_id,
+            approval = Approval(workspace_id=run.workspace_id, session_id=run.interaction_session_id,
                 run_id=run.id, task_id=task.id, activity_id=activity.id, call_id=call.call_id,
                 tool_name=call.name, tool_version=call.version, args_hash=digest, target=call.target,
-                parameters=call.arguments, dependencies=dependencies, export_preview=export_preview,
+                parameters=call.arguments, dependencies=dependencies, export_preview=export_preview, mcp=mcp,
                 expires_at=min(self.clock() + timedelta(seconds=self.ttl_seconds), run.deadline_at,
                                task.deadline_at or run.deadline_at))
             self._event(tx, "approval.proposed", [*changed, approval], ctx)
@@ -101,7 +104,8 @@ class ApprovalService:
             self._binding(approval, ctx)
             if self.clock() >= approval.expires_at:
                 raise DomainError("approval_expired", "审批有效期已过")
-            _dependencies(tx, ctx, [*activity.intent.dependencies, *approval.dependencies])
+            _dependencies(tx, ctx, [*activity.intent.dependencies, *approval.dependencies],
+                artifact_id=PolicyService.artifact_read_id(approval.tool_name, approval.parameters))
             status = "approved" if allow else "denied"
             if approval.status == status:
                 return approval
@@ -132,7 +136,7 @@ class ApprovalService:
     @staticmethod
     def _binding(approval, ctx):
         if (approval.workspace_id, approval.session_id, approval.run_id, approval.task_id,
-                approval.activity_id) != (ctx.workspace_id, ctx.session_id, ctx.run_id,
+                approval.activity_id) != (ctx.workspace_id, ctx.interaction_session_id, ctx.run_id,
                                           ctx.task_id, ctx.activity_id):
             raise DomainError("approval_binding", "审批归属与活动不一致")
 
@@ -146,7 +150,8 @@ class ApprovalService:
             raise DomainError("approval_expired", "审批有效期已过")
         if approval.status != "approved":
             raise DomainError("approval_required", "调用未获得有效批准")
-        dependencies = _dependencies(tx, ctx, [*activity.intent.dependencies, *call.dependencies])
+        dependencies = _dependencies(tx, ctx, [*activity.intent.dependencies, *call.dependencies],
+            artifact_id=PolicyService.artifact_read_id(call.name, call.arguments))
         if (approval.call_id != call.call_id or approval.tool_name != call.name
                 or approval.tool_version != call.version or approval.args_hash != invocation_hash(call)
                 or approval.target != call.target or approval.dependencies != dependencies):

@@ -7,22 +7,38 @@ from pydantic import AwareDatetime, Field, JsonValue
 from flowmate.contracts.base import CommandMeta, Contract, Count, Id, Name, Units, Version
 from flowmate.contracts.events import AgentSaved
 from flowmate.contracts.execution import (
+    AdmissionFence,
     ArtifactRef,
     BudgetSnapshot,
+    DeliveryState,
+    FollowUpIntent,
     JoinFact,
     ModelMessage,
+    PendingUserCommand,
     Question,
     ResultConsumption,
     RunLimits,
     RunSnapshot,
     ScopeDependency,
+    SessionInboxEntry,
+    SourceSelection,
+    TaskHandle,
     TaskSnapshot,
     Usage,
     WaitRecord,
 )
 from flowmate.contracts.pricing import Price
-from flowmate.contracts.settings import ModelConnection, ModelProfile, Session, Workspace
+from flowmate.contracts.settings import (
+    AgentProfile,
+    ModelConnection,
+    ModelProfile,
+    Session,
+    Workspace,
+)
 from flowmate.contracts.workspaces import WorkspaceDirectoryResult as WorkspaceDirectoryResult
+from flowmate.integrations.configuration_contracts import McpNotice
+from flowmate.memory.contracts import MemoryChange
+from flowmate.memory.maintenance_contracts import MemoryMaintenanceNotice
 from flowmate.policy.contracts import (
     Approval,
     DataUseGrant,
@@ -30,6 +46,9 @@ from flowmate.policy.contracts import (
     ResourceRef,
     ScopeState,
 )
+from flowmate.processes.contracts import EnvironmentChanged
+from flowmate.skills.contracts import SkillNotice
+from flowmate.skills.execution.contracts import ScriptExecutionSummary
 
 T = TypeVar("T")
 
@@ -59,9 +78,9 @@ class CommandStatus(Contract):
 
 
 class Health(Contract):
-    api_version: Literal[2] = 2
+    api_version: Literal[3] = 3
     runtime_version: str
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
 
 
 class ErrorBody(Contract):
@@ -91,8 +110,11 @@ class StartRequest(Contract):
     agent_profile_id: Id
     model_profile_id: Id
     text: str = Field(min_length=1)
-    resource_ids: list[Id] = Field(default_factory=list)
+    sources: SourceSelection = Field(default_factory=SourceSelection)
     limits: RunLimits = Field(default_factory=RunLimits)
+    allow_managed: bool = False
+    allow_follow_up: bool = False
+    source_result: Id | None = None
 
 
 class Steering(Contract):
@@ -105,6 +127,10 @@ class Answer(Contract):
 
 class ApprovalDecision(Contract):
     allow: bool
+
+
+class ArchiveSession(Contract):
+    archived: bool
 
 
 class ExportRequest(Contract):
@@ -124,6 +150,14 @@ class ActivityView(Contract):
     usage: Usage | None = None
     actual_units: Units | None = None
     dependencies: list[ScopeDependency] = Field(default_factory=list)
+    script_execution: ScriptExecutionSummary | None = None
+
+
+class MemberLane(Contract):
+    task: TaskSnapshot
+    profile: AgentProfile
+    activities: list[ActivityView]
+    handoffs: list[TaskHandle]
 
 
 class MessageView(ModelMessage):
@@ -142,6 +176,8 @@ class PublicChange(Contract):
     waits: list[WaitRecord] = Field(default_factory=list)
     consumptions: list[ResultConsumption] = Field(default_factory=list)
     joins: list[JoinFact] = Field(default_factory=list)
+    pending_commands: list[PendingUserCommand] = Field(default_factory=list)
+    follow_up_intents: list[FollowUpIntent] = Field(default_factory=list)
 
 
 class PublicPolicyChange(Contract):
@@ -174,7 +210,7 @@ class WorkspaceEvent(EventBase):
 
 
 class SessionEvent(EventBase):
-    kind: Literal["session.created"]
+    kind: Literal["session.created","session.updated"]
     payload: Session
 
 
@@ -196,8 +232,10 @@ class ModelConnectionEvent(EventBase):
 class ExecutionEvent(EventBase):
     kind: Literal["run.started", "run.cancelled", "run.resumed", "run.steered", "task.stepped",
         "activity.prepared", "activity.dispatched", "activity.received", "budget.reserved", "budget.settled",
+        "budget.allocated", "budget.counted", "budget.returned",
         "runtime.recovered", "artifact.published", "question.asked", "question.answered",
-        "task.submitted", "task.cancelled", "task.consumed", "task.joined", "wait.registered", "wait.resolved"]
+        "task.submitted", "task.cancelled", "task.consumed", "task.joined", "wait.registered", "wait.resolved",
+        "follow_up.changed", "command.queued", "command.applied", "command.cancelled", "run.yielded"]
     payload: PublicChange
 
 
@@ -212,7 +250,50 @@ class LifecycleEvent(EventBase):
     payload: PublicLifecycleChange
 
 
-PublicEvent = Annotated[WorkspaceEvent | SessionEvent | AgentEvent | ModelProfileEvent | ModelConnectionEvent | ExecutionEvent | PolicyEvent | LifecycleEvent,
+class DeliveryChange(Contract):
+    deliveries: list[SessionInboxEntry]
+
+
+class DeliveryEvent(EventBase):
+    kind: Literal["delivery.changed"]
+    payload: DeliveryChange
+
+
+class AdmissionChange(Contract):
+    admission_fences: list[AdmissionFence]
+
+
+class AdmissionEvent(EventBase):
+    kind: Literal["admission.stopped"]
+    payload: AdmissionChange
+
+
+class MemoryEvent(EventBase):
+    kind: Literal["memory.changed", "memory.policy_changed"]
+    payload: MemoryChange
+
+
+class MemoryMaintenanceEvent(EventBase):
+    kind: Literal["memory.maintenance_changed"]
+    payload: MemoryMaintenanceNotice
+
+
+class SkillEvent(EventBase):
+    kind: Literal["skill.changed"]
+    payload: SkillNotice
+
+
+class EnvironmentEvent(EventBase):
+    kind: Literal["environment.changed"]
+    payload: EnvironmentChanged
+
+
+class McpEvent(EventBase):
+    kind: Literal["mcp.changed"]
+    payload: McpNotice
+
+
+PublicEvent = Annotated[WorkspaceEvent | SessionEvent | AgentEvent | ModelProfileEvent | ModelConnectionEvent | ExecutionEvent | PolicyEvent | LifecycleEvent | DeliveryEvent | AdmissionEvent | MemoryEvent | MemoryMaintenanceEvent | SkillEvent | EnvironmentEvent | McpEvent,
                         Field(discriminator="kind")]
 
 
@@ -263,11 +344,15 @@ class RunCostSummary(Contract):
 
 
 class ContextUsageSummary(Contract):
-    activity_id: Id
-    state: Literal["prepared", "dispatched", "succeeded", "failed", "uncertain"]
+    activity_id: Id | None
+    state: Literal["prepared", "dispatched", "succeeded", "failed", "uncertain"] | None
     omitted_group_count: Count
     omitted_message_count: Count
     reason_counts: dict[Literal["outside_run_scope", "source_invalid", "replay_incompatible", "capacity"], Count]
+    compaction_state: Literal["none", "running", "committed", "blocked", "invalidated"] = "none"
+    summary_count: Count = 0
+    compacted_message_count: Count = 0
+    compaction_reason: str | None = None
 
 
 class WorkspaceNavigation(Contract):
@@ -288,7 +373,7 @@ class InboxQuestion(Contract):
     id: Id
     kind: Literal["question"] = "question"
     workspace_id: Id
-    session_id: Id
+    session_id: Id | None
     run_id: Id
     question: Question
 
@@ -297,12 +382,38 @@ class InboxApproval(Contract):
     id: Id
     kind: Literal["approval"] = "approval"
     workspace_id: Id
-    session_id: Id
+    session_id: Id | None
     run_id: Id
     approval: Approval
 
 
-InboxItem = Annotated[InboxQuestion | InboxApproval, Field(discriminator="kind")]
+class PendingActionCommand(Contract):
+    kind: Literal["view_task","resume","cancel_run","retry_delivery","inspect_export_recovery"]
+    target_id: Id
+    expected_version: Version | None
+
+
+class PendingAction(Contract):
+    id: Id
+    kind: Literal["recovery","blocked","delivery_failed"]
+    workspace_id: Id
+    session_id: Id | None
+    run_id: Id
+    task_id: Id
+    version: Version
+    reason: str
+    allowed_actions: list[PendingActionCommand]
+
+
+InboxItem = Annotated[InboxQuestion | InboxApproval | PendingAction, Field(discriminator="kind")]
+
+
+class TaskCenterItem(Contract):
+    run: RunSnapshot
+    root: TaskSnapshot
+    pending_count: Count
+    delivery_state: DeliveryState | None
+    origin_task_id: Id | None
 
 
 class RunDetail(Contract):

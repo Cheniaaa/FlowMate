@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import type { Approval } from '../../generated/contracts';
 import Button from '../../components/Button';
+import McpIdentity from '../authorization/McpIdentity';
 
 export default function ApprovalCard({ approval, busy, onDecision }: { approval: Approval; busy: boolean; onDecision: (allow: boolean) => Promise<void> }) {
   const inFlight = useRef(false);
@@ -10,7 +11,8 @@ export default function ApprovalCard({ approval, busy, onDecision }: { approval:
     inFlight.current = true; setPending(true);
     try { await onDecision(allow); } finally { inFlight.current = false; setPending(false); }
   }
-  return <article className="approval-card"><header><span className="eyebrow">需要你的确认</span><h3>待审批：{approval.tool_name} · {approval.tool_version}</h3></header>
+  return <article className="approval-card"><header><span className="eyebrow">需要你的确认</span><h3>待审批：{approval.mcp?.original_name ?? approval.tool_name} · {approval.tool_version}</h3></header>
+    {approval.mcp && <><McpIdentity value={approval.mcp} /><p>审批不会创建资料发送授权；只确认以下实际参数的本次调用。</p></>}
     <div className="interaction-body">{approval.export_preview ? <>
       <p>目标：<strong>{approval.export_preview.target_path}</strong></p>
       <p><strong>{approval.export_preview.target_exists ? '覆盖已核验的现有文件' : '创建新文件'}</strong> · <span>产物版本：{approval.export_preview.artifact_version}</span></p>

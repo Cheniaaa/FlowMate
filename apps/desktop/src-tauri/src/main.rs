@@ -62,11 +62,11 @@ fn publish_pending<R: tauri::Runtime>(app: &tauri::AppHandle<R>, pending: &MenuI
         app.emit_to(EventTarget::webview_window(label), "pending-counts", counts).map_err(|_| "window_event_failed")?;
     }
     let text = match counts {
-        Some(counts) => format!("待输入 {} · 待审批 {}", counts.pending_questions, counts.pending_approvals),
+        Some(counts) => format!("待处理 {} · 未查看结果 {}", counts.pending_actions, counts.unviewed_results),
         None => "待办数量：连接不可用".into(),
     };
     pending.set_text(&text).map_err(|_| "tray_update_failed")?;
-    pending.set_enabled(counts.is_some_and(|counts| counts.pending_questions > 0 || counts.pending_approvals > 0)).map_err(|_| "tray_update_failed")?;
+    pending.set_enabled(counts.is_some_and(|counts| counts.pending_actions > 0 || counts.unviewed_results > 0)).map_err(|_| "tray_update_failed")?;
     app.tray_by_id("runtime-tray").ok_or("tray_missing")?.set_tooltip(Some(format!("FlowMate · {text}"))).map_err(|_| "tray_update_failed".into())
 }
 
@@ -174,17 +174,17 @@ fn start_ball_drag<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) -> Result
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn show_workbench<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>, run_id: Option<String>) -> Result<(), String> {
+fn show_workbench<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>, target: Option<windows::WorkbenchTarget>) -> Result<(), String> {
     checked_window(&window, &["main", "quick", "ball"])?;
-    if window.label() == "ball" && run_id.is_some() { return Err("forbidden_navigation".into()); }
-    if run_id.as_ref().is_some_and(|id| uuid::Uuid::parse_str(id).is_err()) { return Err("invalid_run_id".into()); }
-    app.state::<Mutex<windows::Windows>>().lock().map_err(|_| "window_state_unavailable")?.navigate(run_id);
+    if window.label() == "ball" && target.is_some() { return Err("forbidden_navigation".into()); }
+    if let Some(target) = &target { target.validate()?; }
+    app.state::<Mutex<windows::Windows>>().lock().map_err(|_| "window_state_unavailable")?.navigate(target, window.label() == "quick");
     windows::show(&app, "main")?;
     app.emit_to(EventTarget::webview_window("main"), "workbench-navigation", ()).map_err(|_| "window_event_failed".into())
 }
 
 #[tauri::command]
-fn take_workbench_navigation<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>) -> Result<Option<String>, String> {
+fn take_workbench_navigation<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>) -> Result<Option<windows::WorkbenchNavigation>, String> {
     checked_window(&window, &["main"])?;
     Ok(app.state::<Mutex<windows::Windows>>().lock().map_err(|_| "window_state_unavailable")?.take_navigation())
 }
@@ -240,7 +240,7 @@ fn stop_runtime<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::
 #[tauri::command(rename_all = "snake_case")]
 fn save_credential<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>, binding: SecretBinding, value: String) -> Result<SecretStatus, String> {
     checked_window(&window, &["main"])?;
-    app.try_state::<Arc<CredentialStore>>().ok_or("host_unavailable")?.save(&binding, &value).map_err(String::from)
+    app.try_state::<Arc<CredentialStore>>().ok_or("host_unavailable")?.save_bound(&binding, &value).map_err(String::from)
 }
 #[tauri::command(rename_all = "snake_case")]
 fn clear_credential<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>, secret_ref: String) -> Result<SecretStatus, String> {
@@ -265,7 +265,7 @@ async fn select_resources<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, ap
     native_resources::select(&window, channel, scope, kind).await
 }
 #[tauri::command]
-async fn choose_export_target<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>, scope: native_resources::Scope) -> Result<native_resources::Selection, String> {
+async fn choose_export_target<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>, scope: native_resources::Scope, binary: bool) -> Result<native_resources::Selection, String> {
     checked_window(&window, &["main", "quick"])?;
     scope.validate()?;
     let channel = {
@@ -274,7 +274,33 @@ async fn choose_export_target<R: tauri::Runtime>(window: tauri::WebviewWindow<R>
         host.channel()
     };
     let _dialog = NativeDialog::begin(&window, &app)?;
-    native_resources::choose_export(&window, channel, scope).await
+    native_resources::choose_export(&window, channel, scope, binary).await
+}
+
+#[tauri::command]
+async fn select_skill_package<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>, scope: native_resources::Scope, kind: native_resources::SelectionKind) -> Result<native_resources::Selection, String> {
+    checked_window(&window, &["main", "quick"])?;
+    scope.validate()?;
+    let channel = {
+        let host = app.try_state::<Mutex<RuntimeHost>>().ok_or("host_unavailable")?;
+        let host = host.lock().map_err(|_| "host_unavailable")?;
+        host.channel()
+    };
+    let _dialog = NativeDialog::begin(&window, &app)?;
+    native_resources::select_skill(&window, channel, scope, kind).await
+}
+
+#[tauri::command]
+async fn choose_skill_export_target<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>, scope: native_resources::Scope) -> Result<native_resources::Selection, String> {
+    checked_window(&window, &["main", "quick"])?;
+    scope.validate()?;
+    let channel = {
+        let host = app.try_state::<Mutex<RuntimeHost>>().ok_or("host_unavailable")?;
+        let host = host.lock().map_err(|_| "host_unavailable")?;
+        host.channel()
+    };
+    let _dialog = NativeDialog::begin(&window, &app)?;
+    native_resources::choose_skill_export(&window, channel, scope).await
 }
 
 #[tauri::command]
@@ -328,12 +354,12 @@ fn main() {
         .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .manage(Arc::new(native_resources::WorkspaceDirectories::default()))
         .invoke_handler(tauri::generate_handler![runtime_connection, stop_runtime, open_settings, take_settings_navigation, return_to_quick, save_credential,
-            clear_credential, credential_status, select_resources, choose_export_target, open_external,
+            clear_credential, credential_status, select_resources, choose_export_target, select_skill_package, choose_skill_export_target, open_external,
             window_settings, set_quick_pinned, set_shortcut, set_ball_enabled, toggle_quick, show_workbench,
             take_workbench_navigation, set_quick_form_active, pending_counts, start_ball_drag,
             create_workspace_from_directory, retry_workspace_from_directory, check_workspace_directory_command])
         .setup(|app| {
-            let directory = app.path().app_data_dir()?.join("data-v2");
+            let directory = app.path().app_data_dir()?.join("data-v3");
             let host = if cfg!(debug_assertions) {
                 let python = std::env::var_os("FLOWMATE_DEV_PYTHON").ok_or("development_python_required")?;
                 let root = std::env::var_os("FLOWMATE_DEV_ROOT").ok_or("development_root_required")?;
@@ -447,7 +473,7 @@ mod tests {
             .manage(Mutex::new(windows::Windows::load(&std::env::temp_dir().join("opencode").join(format!("flowmate-ipc-{}", uuid::Uuid::new_v4()))).unwrap()))
             .manage(notifications)
             .invoke_handler(tauri::generate_handler![runtime_connection, stop_runtime, open_settings, take_settings_navigation, return_to_quick, save_credential,
-                clear_credential, credential_status, select_resources, choose_export_target, open_external,
+                clear_credential, credential_status, select_resources, choose_export_target, select_skill_package, choose_skill_export_target, open_external,
                 window_settings, set_quick_pinned, set_shortcut, set_ball_enabled, toggle_quick, show_workbench,
                 take_workbench_navigation, set_quick_form_active, pending_counts, start_ball_drag,
                 create_workspace_from_directory, retry_workspace_from_directory, check_workspace_directory_command])
@@ -478,7 +504,7 @@ mod tests {
             // 无效边界值在 Credential Manager 调用前返回；本轮权限检查不访问任何凭据。
             let mut binding = credentials::tests::binding(); binding.connection_id = "invalid".into();
             for (command, body, expected) in [
-                ("save_credential", serde_json::json!({"binding":binding,"value":""}), "invalid_binding"),
+                ("save_credential", serde_json::json!({"binding":credentials::SecretBinding::Model(binding.clone()),"value":""}), "invalid_binding"),
                 ("clear_credential", serde_json::json!({"secret_ref":""}), "invalid_secret_ref"),
                 ("credential_status", serde_json::json!({"secret_ref":""}), "invalid_secret_ref"),
             ] {
@@ -550,7 +576,7 @@ mod tests {
         let remote = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::External("https://example.invalid".parse().unwrap())).build().unwrap();
         let mut binding = credentials::tests::binding(); binding.connection_id = "invalid".into();
         for (command, body) in [
-            ("save_credential", serde_json::json!({"binding":binding,"value":""})),
+            ("save_credential", serde_json::json!({"binding":credentials::SecretBinding::Model(binding.clone()),"value":""})),
             ("clear_credential", serde_json::json!({"secret_ref":""})), ("credential_status", serde_json::json!({"secret_ref":""})),
             ("take_settings_navigation", serde_json::json!({})), ("open_settings", serde_json::json!({"section":"models"})),
         ] {
@@ -696,10 +722,10 @@ mod tests {
         let (app, store) = ipc_app(); let main = window(&app, "main");
         let binding = credentials::tests::binding();
         let _cleanup = credentials::tests::Cleanup(&store, binding.secret_ref.clone());
-        let saved = ipc(&main, "save_credential", serde_json::json!({"binding":binding,"value":credentials::tests::KEY}));
+        let saved = ipc(&main, "save_credential", serde_json::json!({"binding":credentials::SecretBinding::Model(binding.clone()),"value":credentials::tests::KEY}));
         let _ = store.clear(&binding.secret_ref);
         assert_eq!(saved.unwrap(), serde_json::json!({"secret_ref":"public-test-ref","configured":true}));
-        ipc(&main, "save_credential", serde_json::json!({"binding":binding,"value":credentials::tests::KEY})).unwrap();
+        ipc(&main, "save_credential", serde_json::json!({"binding":credentials::SecretBinding::Model(binding.clone()),"value":credentials::tests::KEY})).unwrap();
         assert_eq!(ipc(&main, "credential_status", serde_json::json!({"secret_ref":binding.secret_ref})).unwrap()["configured"], true);
         assert_eq!(ipc(&main, "clear_credential", serde_json::json!({"secret_ref":binding.secret_ref})).unwrap()["configured"], false);
         for command in ["read_credential", "private_unprotect", "private.unprotect", "unprotect", "private_channel", "credential.resolve"] {
@@ -709,12 +735,31 @@ mod tests {
     }
 
     #[test]
+    fn actual_ipc_mcp_only_saves_status_and_cannot_read_plaintext() {
+        let (app, store) = ipc_app();
+        let main = window(&app, "main");
+        let reference = format!("synthetic-mcp-ipc-{}", uuid::Uuid::new_v4());
+        let _cleanup = credentials::tests::Cleanup(&store, reference.clone());
+        let binding = serde_json::json!({"kind":"mcp","server_id":uuid::Uuid::new_v4().to_string(),
+            "config_revision":1,"transport":"http",
+            "destination":{"command":null,"args":[],"cwd":null,"url":"http://127.0.0.1:19013/mcp"},
+            "purpose":"http_token","env_name":null,"secret_ref":reference});
+        let result = ipc(&main, "save_credential", serde_json::json!({
+            "binding":binding,"value":credentials::tests::KEY})).unwrap();
+        assert_eq!(result, serde_json::json!({"secret_ref":reference,"configured":true}));
+        assert!(!result.to_string().contains(credentials::tests::KEY));
+        assert_eq!(ipc(&main, "credential_status", serde_json::json!({"secret_ref":reference})).unwrap()["configured"], true);
+        assert_eq!(ipc(&main, "clear_credential", serde_json::json!({"secret_ref":reference})).unwrap()["configured"], false);
+        assert!(ipc(&main, "credential.resolve", serde_json::json!({"binding":binding})).is_err());
+    }
+
+    #[test]
     fn actual_ipc_capabilities_reject_credential_commands_outside_main() {
         let (app, _) = ipc_app(); let mut binding = credentials::tests::binding(); binding.connection_id = "invalid".into();
         for label in ["quick", "ball", "settings", "preview"] {
             let window = window(&app, label);
             for (command, body) in [
-                ("save_credential", serde_json::json!({"binding":binding,"value":""})),
+                ("save_credential", serde_json::json!({"binding":credentials::SecretBinding::Model(binding.clone()),"value":""})),
                 ("clear_credential", serde_json::json!({"secret_ref":""})),
                 ("credential_status", serde_json::json!({"secret_ref":""})),
                 ("private_unprotect", serde_json::json!({})),
@@ -731,7 +776,7 @@ mod tests {
         for label in ["main", "quick", "settings", "ball", "preview"] {
             let window = window(&app, label);
             for command in ["runtime_connection", "stop_runtime", "select_resources", "choose_export_target"] {
-                let error = ipc(&window, command, serde_json::json!({"scope":{"workspace_id":"00000000-0000-4000-8000-000000000001"},"kind":"file"})).unwrap_err();
+                let error = ipc(&window, command, serde_json::json!({"scope":{"kind":"workspace","workspace_id":"00000000-0000-4000-8000-000000000001","session_id":null},"kind":"file","binary":false})).unwrap_err();
                 let allowed = label == "main" || label == "quick";
                 if allowed { assert_eq!(error, "host_unavailable", "{label}: {command}"); }
                 else { assert!(error.as_str().unwrap().contains("not allowed"), "{label} {command}: {error}"); }
@@ -785,10 +830,10 @@ mod tests {
         let (app, _) = ipc_app(); let mut binding = credentials::tests::binding(); binding.connection_id = "invalid".into();
         app.add_capability(r#"{"identifier":"test-broader-local","windows":["preview"],"permissions":["host-settings"]}"#).unwrap();
         let preview = window(&app, "preview");
-        assert_eq!(ipc(&preview, "save_credential", serde_json::json!({"binding":binding,"value":credentials::tests::KEY})).unwrap_err(), "forbidden_window");
+        assert_eq!(ipc(&preview, "save_credential", serde_json::json!({"binding":credentials::SecretBinding::Model(binding.clone()),"value":credentials::tests::KEY})).unwrap_err(), "forbidden_window");
         app.add_capability(r#"{"identifier":"test-broader-remote","windows":["main"],"remote":{"urls":["https://example.invalid"]},"permissions":["host-settings"]}"#).unwrap();
         let remote = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::External("https://example.invalid".parse().unwrap())).build().unwrap();
-        assert_eq!(ipc_at(&remote, "save_credential", serde_json::json!({"binding":binding,"value":credentials::tests::KEY}), "https://example.invalid").unwrap_err(), "forbidden_window");
+        assert_eq!(ipc_at(&remote, "save_credential", serde_json::json!({"binding":credentials::SecretBinding::Model(binding.clone()),"value":credentials::tests::KEY}), "https://example.invalid").unwrap_err(), "forbidden_window");
     }
 
     #[test]
@@ -810,7 +855,7 @@ mod tests {
             }
             for (command, body, allowed) in [
                 ("toggle_quick", serde_json::json!({}), ["main", "quick", "ball"].contains(&label)),
-                ("show_workbench", serde_json::json!({"run_id":null}), ["main", "quick", "ball"].contains(&label)),
+                ("show_workbench", serde_json::json!({"target":null}), ["main", "quick", "ball"].contains(&label)),
                 ("take_workbench_navigation", serde_json::json!({}), label == "main"),
                 ("set_quick_form_active", serde_json::json!({"active":true}), label == "quick"),
                 ("window_settings", serde_json::json!({}), ["main", "quick"].contains(&label)),
@@ -846,16 +891,16 @@ mod tests {
             ("window_settings", serde_json::json!({})), ("pending_counts", serde_json::json!({})),
             ("set_quick_pinned", serde_json::json!({"pinned":true})), ("set_ball_enabled", serde_json::json!({"enabled":true})),
             ("set_shortcut", serde_json::json!({"chord":null})), ("toggle_quick", serde_json::json!({})),
-            ("show_workbench", serde_json::json!({"run_id":null})), ("take_workbench_navigation", serde_json::json!({})),
+            ("show_workbench", serde_json::json!({"target":null})), ("take_workbench_navigation", serde_json::json!({})),
             ("set_quick_form_active", serde_json::json!({"active":true})),
         ] {
             assert_eq!(ipc(&preview, command, body.clone()).unwrap_err(), "forbidden_window", "{command}");
             assert_eq!(ipc_at(&remote, command, body, "https://example.invalid").unwrap_err(), "forbidden_window", "{command}");
         }
         let ball = window(&app, "ball");
-        assert_eq!(ipc(&ball, "show_workbench", serde_json::json!({"run_id":"00000000-0000-4000-8000-000000000001"})).unwrap_err(), "forbidden_navigation");
+        assert_eq!(ipc(&ball, "show_workbench", serde_json::json!({"target":{"kind":"task","task_id":"00000000-0000-4000-8000-000000000001"}})).unwrap_err(), "forbidden_navigation");
         let quick = window(&app, "quick");
-        assert_eq!(ipc(&quick, "show_workbench", serde_json::json!({"run_id":"not an id or message body"})).unwrap_err(), "invalid_run_id");
+        assert_eq!(ipc(&quick, "show_workbench", serde_json::json!({"target":{"kind":"run","run_id":"not an id or message body"}})).unwrap_err(), "invalid_navigation_id");
     }
 
     #[test]
@@ -864,8 +909,8 @@ mod tests {
         let (app, _) = ipc_app();
         let main = window(&app, "main"); let quick = window(&app, "quick"); let ball = window(&app, "ball");
         let first = "00000000-0000-4000-8000-000000000001";
-        ipc(&quick, "show_workbench", serde_json::json!({"run_id":first})).unwrap();
-        assert_eq!(ipc(&main, "take_workbench_navigation", serde_json::json!({})).unwrap(), first);
+        ipc(&quick, "show_workbench", serde_json::json!({"target":{"kind":"run","run_id":first}})).unwrap();
+        assert_eq!(ipc(&main, "take_workbench_navigation", serde_json::json!({})).unwrap(), serde_json::json!({"target":{"kind":"run","run_id":first},"from_quick":true}));
         let wakeups = Arc::new(Mutex::new(Vec::new())); let seen = wakeups.clone();
         main.listen("workbench-navigation", move |event| seen.lock().unwrap().push(event.payload().to_owned()));
         let unexpected = Arc::new(Mutex::new(0));
@@ -873,15 +918,56 @@ mod tests {
             let seen = unexpected.clone(); candidate.listen("workbench-navigation", move |_| *seen.lock().unwrap() += 1);
         }
         let second = "00000000-0000-4000-8000-000000000002";
-        ipc(&quick, "show_workbench", serde_json::json!({"run_id":second})).unwrap();
+        ipc(&quick, "show_workbench", serde_json::json!({"target":{"kind":"task","task_id":second}})).unwrap();
         assert_eq!(*wakeups.lock().unwrap(), ["null"]);
         assert_eq!(*unexpected.lock().unwrap(), 0);
-        assert_eq!(ipc(&main, "take_workbench_navigation", serde_json::json!({})).unwrap(), second);
+        assert_eq!(ipc(&main, "take_workbench_navigation", serde_json::json!({})).unwrap(), serde_json::json!({"target":{"kind":"task","task_id":second},"from_quick":true}));
         assert_eq!(ipc(&main, "take_workbench_navigation", serde_json::json!({})).unwrap(), serde_json::Value::Null);
+        ipc(&quick, "show_workbench", serde_json::json!({"target":{"kind":"assistants"}})).unwrap();
+        assert_eq!(ipc(&main, "take_workbench_navigation", serde_json::json!({})).unwrap(), serde_json::json!({"target":{"kind":"assistants"},"from_quick":true}));
+        assert_eq!(ipc(&ball, "show_workbench", serde_json::json!({"target":{"kind":"assistants"}})).unwrap_err(), "forbidden_navigation");
         ipc(&quick, "set_quick_form_active", serde_json::json!({"active":true})).unwrap();
         ipc(&quick, "toggle_quick", serde_json::json!({})).unwrap();
         assert!(!app.state::<Mutex<windows::Windows>>().lock().unwrap().hide_on_blur(), "显式隐藏不丢弃草稿状态");
         assert_eq!(app.webview_windows().len(), 3, "切窗不能创建第二个 WebView");
+    }
+
+    #[test]
+    fn t6_memory_ipc_roundtrip_keeps_settings_separate_and_returns_to_existing_quick() {
+        use tauri::Listener;
+        let (app, _) = ipc_app();
+        let main = window(&app, "main"); let quick = window(&app, "quick"); let ball = window(&app, "ball");
+        ipc(&quick, "set_quick_form_active", serde_json::json!({"active":true})).unwrap();
+        // 请求早于listener注册也保留，业务内容不进入唤醒事件。
+        ipc(&quick, "show_workbench", serde_json::json!({"target":{"kind":"memory"}})).unwrap();
+        ipc(&quick, "open_settings", serde_json::json!({"section":"memory"})).unwrap();
+        assert_eq!(ipc(&main, "take_workbench_navigation", serde_json::json!({})).unwrap(),
+            serde_json::json!({"target":{"kind":"memory"},"from_quick":true}));
+        assert_eq!(ipc(&main, "take_settings_navigation", serde_json::json!({})).unwrap(),
+            serde_json::json!({"section":"memory","from_quick":true}));
+        assert_eq!(ipc(&main, "take_workbench_navigation", serde_json::json!({})).unwrap(), serde_json::Value::Null);
+        assert_eq!(ipc(&main, "take_settings_navigation", serde_json::json!({})).unwrap(), serde_json::Value::Null);
+        let wakeups = Arc::new(Mutex::new(Vec::new()));
+        for name in ["workbench-navigation", "settings-navigation"] {
+            let seen = wakeups.clone();
+            main.listen(name, move |event| seen.lock().unwrap().push(event.payload().to_owned()));
+        }
+        ipc(&main, "show_workbench", serde_json::json!({"target":{"kind":"memory"}})).unwrap();
+        ipc(&main, "open_settings", serde_json::json!({"section":"memory"})).unwrap();
+        assert_eq!(*wakeups.lock().unwrap(), ["null", "null"]);
+        assert_eq!(ipc(&main, "take_workbench_navigation", serde_json::json!({})).unwrap(),
+            serde_json::json!({"target":{"kind":"memory"},"from_quick":false}));
+        assert_eq!(ipc(&main, "take_settings_navigation", serde_json::json!({})).unwrap(),
+            serde_json::json!({"section":"memory","from_quick":false}));
+        assert_eq!(ipc(&ball, "show_workbench", serde_json::json!({"target":{"kind":"memory"}})).unwrap_err(), "forbidden_navigation");
+        for value in [serde_json::json!({"kind":"memory","body":"private"}), serde_json::json!({"kind":"memory","record_id":"private"})] {
+            assert!(ipc(&quick, "show_workbench", serde_json::json!({"target":value})).is_err());
+        }
+        quick.hide().unwrap();
+        ipc(&main, "return_to_quick", serde_json::json!({})).unwrap();
+        assert!(quick.is_visible().unwrap());
+        assert!(!app.state::<Mutex<windows::Windows>>().lock().unwrap().hide_on_blur());
+        assert_eq!(app.webview_windows().len(), 3);
     }
 
     #[test]
@@ -941,10 +1027,10 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "真实私有通知桥必须在启动后发送初始聚合");
             thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(ipc(&ball, "pending_counts", serde_json::json!({})).unwrap(), serde_json::json!({"pending_questions":0,"pending_approvals":0}));
+        assert_eq!(ipc(&ball, "pending_counts", serde_json::json!({})).unwrap(), serde_json::json!({"pending_questions":0,"pending_approvals":0,"pending_actions":0,"unviewed_results":0}));
         for _ in 0..3 {
             ipc(&ball, "toggle_quick", serde_json::json!({})).unwrap();
-            ipc(&ball, "show_workbench", serde_json::json!({"run_id":null})).unwrap();
+            ipc(&ball, "show_workbench", serde_json::json!({"target":null})).unwrap();
         }
         app.state::<Mutex<RuntimeHost>>().lock().unwrap().stop();
         let log = std::fs::read_to_string(directory.join("desktop-host.jsonl")).unwrap();

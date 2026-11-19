@@ -82,3 +82,31 @@ it('reasoning 与正文独立 disclosure，不复制私有对象；内部控制�
   expect(document.body.textContent).not.toContain('private-signature');
   expect(screen.getByText('工具调用 · run.finish').closest('.process-details')).toBeTruthy();
 });
+
+it.each([
+  '{"handle":{"run_id":"internal-run","task_id":"internal-task"},"result":{"summary":"旧上下文交付正文"},"dependencies":[{"scope_id":"internal-scope","epoch":1}]}',
+  '旧上下文交付正文，无需解析为JSON',
+])('task_result按可信origin显示交付标记，不冒充用户或展开上下文：%s', text => {
+  const input: ModelMessage = { ...message(id, [{ kind: 'text', text }], 'user'), origin: 'task_result',
+    source_dependencies: [{ scope_id: secondId, epoch: 1 }], private_ref: 'private-context-ref' };
+  const frozen = JSON.stringify(input);
+  const { container } = render(<MessageList messages={[input,
+    message(secondId, [{ kind: 'text', text: '最终助理总结' }])]} assistantName="助理" />);
+  const received = article(container, id);
+  expect(received.textContent).not.toContain(text);
+  expect(received.textContent).toContain('已接收任务交付');
+  expect(received.querySelector('.message-avatar')?.textContent).not.toBe('你');
+  expect(received.classList.contains('message--user')).toBe(false);
+  expect(received.innerHTML).not.toMatch(/internal-run|internal-task|internal-scope|private-context-ref|旧上下文交付正文/);
+  expect(screen.getByText('最终助理总结')).toBeTruthy();
+  expect(JSON.stringify(input)).toBe(frozen);
+});
+
+it.each(['conversation', 'steering', 'answer'] as const)('真实用户%s输入的TaskResult形状JSON保留原话与用户身份，不按文本猜来源', origin => {
+  const text = '{"origin":"task_result","handle":{"task_id":"用户自己输入的ID"},"dependencies":[],"result":{"summary":"用户自己的JSON"}}';
+  const { container } = render(<MessageList messages={[{ ...message(id, [{ kind: 'text', text }], 'user'), origin }]} assistantName="助理" />);
+  const user = article(container, id);
+  expect(within(user).getByText(text).textContent).toBe(text);
+  expect(user.querySelector('.message-avatar')?.textContent).toBe('你');
+  expect(screen.queryByText(/已接收任务交付/)).toBeNull();
+});

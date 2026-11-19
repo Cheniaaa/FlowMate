@@ -13,11 +13,11 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.resetAllMocks(); window.history.replaceState(null, '', '/'); });
 const json = (value: unknown) => new Response(JSON.stringify(value));
-const connectionInfo = { base_url: 'http://127.0.0.1:54321', token: 'test-runtime-token', protocol_version: 2 };
+const connectionInfo = { base_url: 'http://127.0.0.1:54321', token: 'test-runtime-token', protocol_version: 3 };
 const uuid = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const settings = { quick_pinned: false, ball_enabled: false, shortcut: null, shortcut_error: null };
 const workspace = { id, version: 1, name: '工作笔记', directory_resource_id: null };
-const session = { id, version: 1, workspace_id: id, title: '原有会话', agent_profile_id: id };
+const session = { id, version: 1, workspace_id: id, title: '原有会话', agent_profile_id: id, kind: 'interaction', archived: false };
 const profile = { ...agent, display_name: '笔记助理', default_model_profile_id: model.id };
 
 function boundary(label = 'quick') {
@@ -26,7 +26,7 @@ function boundary(label = 'quick') {
   const unlisten = vi.fn();
   vi.mocked(listen).mockImplementation(async (name, callback) => { handlers.set(name, callback); return unlisten; });
   vi.mocked(invoke).mockImplementation(async (name, args) => {
-    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'test-runtime-token', protocol_version: 2 };
+    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'test-runtime-token', protocol_version: 3 };
     if (name === 'window_settings') return settings;
     if (name === 'pending_counts' || name === 'take_workbench_navigation' || name === 'take_settings_navigation') return null;
     if (name === 'select_resources') return { resources: [{ id: secondId, version: 1, scope: (args as any).scope, label: 'notes.md', kind: 'file', source_version: null }] };
@@ -41,7 +41,7 @@ function businessServer() {
   let state: RunSnapshot | undefined;
   let createdSession = session;
   let stream!: ReadableStreamDefaultController<Uint8Array>;
-  const approval: Approval = { id: uuid(10), version: 1, workspace_id: id, session_id: id, run_id: id,
+  const approval: Approval = { mcp: null, id: uuid(10), version: 1, workspace_id: id, session_id: id, run_id: id,
     task_id: run.root_task_id, activity_id: uuid(11), call_id: 'write', tool_name: 'artifacts.export', tool_version: '1',
     args_hash: 'hash', target: secondId, export_preview: { target_path: 'C:\\Synthetic\\report.md', target_exists: false, artifact_id: id, artifact_version: 1 }, parameters: { target_ref: secondId }, dependencies: [], expires_at: '2026-11-07T13:00:00Z', status: 'pending' };
   const question: Question = { id: uuid(12), version: 1, run_id: id, task_id: run.root_task_id, call_id: 'ask', message_id: uuid(13),
@@ -54,21 +54,22 @@ function businessServer() {
       artifacts: page(state?.state === 'completed' ? [artifact] : []) as RunDetail['artifacts'],
       questions: page(state?.state === 'waiting_user' ? [question] : state?.state === 'completed' ? [{ ...question, version: 2, status: 'answered', answer_message_id: uuid(18) }] : []), approvals: page(state?.state === 'waiting_approval' ? [approval] : []),
       waits: page([]), consumptions: page([]), joins: page([]), watermark: event.event_id,
-      budget: { id: run.budget_id, run_id: id, version: 1, limits, spent_units: '0', reserved_units: '0', model_requests: 1, steps: 1, task_count: 1 } };
+      budget: { id: run.budget_id, run_id: id, version: 1, limits, spent_units: '0', reserved_units: '0', model_requests: 1, steps: 1, task_count: 1, total_tokens: 0, reserved_tokens: 0 } };
   }
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v2', ''); requests.push(path);
+    const path = new URL(url).pathname.replace('/v3', ''); requests.push(path);
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer test-runtime-token');
     if (init.method === 'POST') {
       const body = JSON.parse(init.body as string); commands.push({ path, body });
-      if (path === '/grants') return json({ ...body.data, id: uuid(16), version: 1, epoch: 1, status: 'active' });
+      if (path === '/grants') return json({ ...body.data, memory_scopes: [], mcp_versions: {}, id: uuid(16), version: 1, epoch: 1, status: 'active' });
       if (path.endsWith('/sessions')) { createdSession = { ...session, id: uuid(17), title: body.data.title }; return json(createdSession); }
-      if (path.endsWith('/runs')) { approval.session_id = createdSession.id; state = { ...run, session_id: createdSession.id, state: 'waiting_approval', config: { ...run.config, agent_profile: profile } }; return json(state); }
+      if (path.endsWith('/runs')) { approval.session_id = createdSession.id; state = { ...run, interaction_session_id: createdSession.id, execution_session_id: createdSession.id, state: 'waiting_approval', config: { ...run.config, agent_profile: profile } }; return json(state); }
       if (path.endsWith('/decision')) return json({ ...approval, version: 2, status: 'approved' });
       if (path.endsWith('/answer')) { state = { ...state!, version: 3, state: 'completed', output: { summary: '笔记报告已交付', artifact_ids: [artifact.id], unresolved: [], handled_failures: [] } }; return json(state); }
       throw new Error(`未定义命令 ${path}`);
     }
     if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }));
+    if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return json(page([]));
     const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([profile]), '/models': page([model]), '/model-connections': page([connection]),
       [`/workspaces/${id}/snapshot`]: { workspace, sessions: page([createdSession]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id },
       [`/sessions/${id}/messages`]: page([]), [`/sessions/${id}/runs`]: page(state ? [state] : []),
@@ -81,12 +82,13 @@ function businessServer() {
   return { commands, requests, artifact, async ask() {
     state = { ...state!, version: 2, state: 'waiting_user' };
     const value: StreamEvent = { kind: 'durable', event_id: '9007199254740994', event: { ...event, session_id: createdSession.id, kind: 'question.asked', event_id: '9007199254740994', seq: 2,
-      payload: { runs: [state], tasks: [], activities: [], budgets: [], messages: [], artifacts: [], questions: [question], waits: [], consumptions: [], joins: [] } } };
+      payload: { runs: [state], tasks: [], activities: [], budgets: [], messages: [], artifacts: [], questions: [question], waits: [], consumptions: [], joins: [], pending_commands: [], follow_up_intents: [] } } };
     await act(async () => { stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`)); });
   } };
 }
 
-it('test_quick_completes_without_opening_main', async () => {
+// 覆盖建会话、资料授权、运行、审批、问答与产物预览，完整交互使用单例时间预算。
+it('test_quick_completes_without_opening_main', { timeout: 15_000 }, async () => {
   boundary(); const server = businessServer(); const user = userEvent.setup();
   render(<App />);
   await screen.findByRole('heading', { name: profile.display_name });
@@ -117,7 +119,7 @@ it('test_quick_completes_without_opening_main', async () => {
   expect((await screen.findByTitle('产物预览')).getAttribute('srcdoc')).toContain('真实产物内容');
   expect(screen.getByTitle('产物预览').getAttribute('sandbox')).toBe('');
   expect(server.commands.map(command => command.path)).toEqual([`/workspaces/${id}/sessions`, '/grants', `/sessions/${uuid(17)}/runs`, `/approvals/${uuid(10)}/decision`, `/questions/${uuid(12)}/answer`]);
-  expect(server.commands[2].body.data).toMatchObject({ agent_profile_id: profile.id, model_profile_id: model.id, text: '整理选中的笔记', resource_ids: [secondId] });
+  expect(server.commands[2].body.data).toMatchObject({ agent_profile_id: profile.id, model_profile_id: model.id, text: '整理选中的笔记', sources: { resource_ids: [secondId] } });
   expect(vi.mocked(invoke).mock.calls.some(([name]) => name === 'show_workbench')).toBe(false);
 });
 
@@ -129,7 +131,7 @@ it('quick展开只传当前Run ID，展开和显式隐藏均保留本WebView草�
   await screen.findByRole('button', { name: '允许本次操作' });
   await user.type(screen.getByLabelText('消息'), '下次补充草稿');
   await user.click(screen.getByRole('button', { name: '展开工作台' }));
-  expect(invoke).toHaveBeenCalledWith('show_workbench', { run_id: id });
+  expect(invoke).toHaveBeenCalledWith('show_workbench', { target: { kind: 'run', run_id: id } });
   await user.click(screen.getByRole('button', { name: '隐藏快捷小窗' }));
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('下次补充草稿');
 });
@@ -149,7 +151,7 @@ it('quick在开启原生选择器前等待form-active宿主确认，取消选择
   expect(invoke).toHaveBeenCalledWith('set_quick_form_active', { active: true });
   expect(vi.mocked(invoke).mock.calls.some(([name]) => name === 'select_resources')).toBe(false);
   await act(async () => { acknowledge(); });
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('select_resources', { scope: { workspace_id: id, session_id: id }, kind: 'file' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('select_resources', { scope: { kind: 'session', workspace_id: id, session_id: id }, kind: 'file' }));
   await waitFor(() => expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'set_quick_form_active').at(-1)?.[1]).toEqual({ active: false }));
 });
 it('quick 打开模型设置先保留原小窗，section 必填且不在 quick 挂载凭据表单', async () => {
@@ -190,11 +192,11 @@ it('ball只读取Rust聚合，注册后读取初值且迟到初值不能覆盖�
   const view = render(<App />);
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('pending_counts'));
   expect(listen).toHaveBeenCalledWith('pending-counts', expect.any(Function), { target: 'ball' });
-  await act(async () => { native.handlers.get('pending-counts')!({ event: 'pending-counts', id: 1, payload: { pending_questions: 2, pending_approvals: 1 } }); finish(null); });
-  expect(await screen.findByText('3 项待处理')).toBeTruthy();
+  await act(async () => { native.handlers.get('pending-counts')!({ event: 'pending-counts', id: 1, payload: { pending_questions: 2, pending_approvals: 1, pending_actions: 4, unviewed_results: 2 } }); finish(null); });
+  expect(await screen.findByText('4 项待处理 · 2 项未查看')).toBeTruthy();
   const user = userEvent.setup(); await user.click(screen.getByRole('button', { name: '打开快捷小窗' }));
   await user.click(screen.getByRole('button', { name: '打开工作台' }));
-  expect(invoke).toHaveBeenCalledWith('show_workbench', { run_id: null });
+  expect(invoke).toHaveBeenCalledWith('show_workbench', { target: null });
   expect(invoke).not.toHaveBeenCalledWith('runtime_connection'); expect(fetch).not.toHaveBeenCalled();
   view.unmount(); expect(native.unlisten).toHaveBeenCalledOnce();
 });
@@ -255,7 +257,7 @@ it('ball专用handle拖动不误开quick，普通单击仍打开quick且保留�
   const native = boundary('ball'); const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
   const user = userEvent.setup(); render(<App />);
   const handle = await screen.findByRole('button', { name: '拖动悬浮球' });
-  await act(async () => { native.handlers.get('pending-counts')!({ id: 1, event: 'pending-counts', payload: { pending_questions: 1, pending_approvals: 2 } }); });
+  await act(async () => { native.handlers.get('pending-counts')!({ id: 1, event: 'pending-counts', payload: { pending_questions: 1, pending_approvals: 2, pending_actions: 3, unviewed_results: 0 } }); });
   await user.pointer([{ keys: '[MouseRight>]', target: handle }, { keys: '[/MouseRight]', target: handle }]);
   expect(vi.mocked(invoke).mock.calls.some(([name]) => name === 'start_ball_drag')).toBe(false);
   await user.pointer([
@@ -265,7 +267,7 @@ it('ball专用handle拖动不误开quick，普通单击仍打开quick且保留�
   ]);
   expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'start_ball_drag')).toEqual([['start_ball_drag']]);
   expect(vi.mocked(invoke).mock.calls.some(([name]) => name === 'toggle_quick')).toBe(false);
-  expect(screen.getByText('3 项待处理')).toBeTruthy();
+  expect(screen.getByText('3 项待处理 · 0 项未查看')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: '打开快捷小窗' }));
   expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'toggle_quick')).toEqual([['toggle_quick']]);
   expect(invoke).not.toHaveBeenCalledWith('runtime_connection'); expect(fetch).not.toHaveBeenCalled();

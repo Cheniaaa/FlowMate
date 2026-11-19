@@ -102,7 +102,7 @@ fn decode(bytes: &[u8]) -> Result<Frame, &'static str> {
         .filter(|value| !value.is_empty() && value.len() <= 128 && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'))
         .ok_or("invalid_frame")?.to_owned();
     let method = object.get("method").and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or("invalid_frame")?.to_owned();
-    if object.get("protocol_version").and_then(Value::as_u64) != Some(2) { return Err("invalid_frame"); }
+    if object.get("protocol_version").and_then(Value::as_u64) != Some(3) { return Err("invalid_frame"); }
     let kind = object.get("kind").and_then(Value::as_str).ok_or("invalid_frame")?;
     let allowed: &[&str] = match kind {
         "request" | "event" => &["protocol_version", "request_id", "stream_seq", "kind", "method", "params"],
@@ -225,7 +225,7 @@ impl Channel {
                                     }
                                 };
                                 let shutdown = method == "shutdown" && result.is_ok();
-                                let mut frame = json!({"protocol_version":2,"request_id":id,"kind":"reply","method":method});
+                                let mut frame = json!({"protocol_version":3,"request_id":id,"kind":"reply","method":method});
                                 match result {
                                     Ok(value) => frame["result"] = value,
                                     Err(code) => frame["error"] = json!({"code":if safe_code(code) { code } else { "internal_error" }}),
@@ -238,7 +238,7 @@ impl Channel {
                                     }
                                     Ok(_) => {}
                                     Err(code) if code == "frame_too_large" => {
-                                        if inner.send(json!({"protocol_version":2,"request_id":id,"kind":"reply","method":method,"error":{"code":"frame_too_large"}})).is_err() {
+                                        if inner.send(json!({"protocol_version":3,"request_id":id,"kind":"reply","method":method,"error":{"code":"frame_too_large"}})).is_err() {
                                             inner.fail("channel_closed");
                                         }
                                     }
@@ -263,13 +263,13 @@ impl Channel {
             pending.insert(id.clone(), Pending { method: method.into(), reply: tx, deadline: Instant::now() + timeout });
         }
         let _guard = PendingGuard { inner: self.0.clone(), id: id.clone() };
-        self.0.send(json!({"protocol_version":2,"request_id":id,"kind":"request","method":method,"params":params}))?;
+        self.0.send(json!({"protocol_version":3,"request_id":id,"kind":"request","method":method,"params":params}))?;
         tokio::time::timeout(timeout, rx).await.map_err(|_| "request_timeout".to_string())?
             .map_err(|_| "channel_closed".to_string())?
     }
     pub fn event(&self, method: &str, params: Value) -> Result<(), String> {
         if method.is_empty() || !params.is_object() { return Err("invalid_frame".into()); }
-        self.0.send(json!({"protocol_version":2,"request_id":self.0.id(),"kind":"event","method":method,"params":params})).map(|_| ())
+        self.0.send(json!({"protocol_version":3,"request_id":self.0.id(),"kind":"event","method":method,"params":params})).map(|_| ())
     }
     pub fn shutdown(&self) -> Result<(), String> {
         // 固定的停机通知仍是 request，Python 会先写 reply 再停机。
@@ -292,8 +292,33 @@ mod tests {
     use std::{io::{BufRead, BufReader}, net::{TcpListener, TcpStream}, sync::{atomic::{AtomicUsize, Ordering}, mpsc}};
 
     #[test]
+    fn mcp_private_channel_resolves_only_matching_type_and_revision() {
+        let store = Arc::new(crate::credentials::tests::store());
+        let payload = json!({"kind":"mcp","server_id":"00000000-0000-4000-8000-000000000002",
+            "config_revision":1,"transport":"stdio",
+            "destination":{"command":"C:\\Synthetic Folder\\server.exe","args":["argument with spaces"],"cwd":null,"url":null},
+            "purpose":"env","env_name":"SYNTHETIC_TOKEN","secret_ref":"synthetic-private-channel"});
+        let binding: crate::credentials::SecretBinding = serde_json::from_value(payload.clone()).unwrap();
+        let _cleanup = crate::credentials::tests::Cleanup(&store, "synthetic-private-channel".into());
+        store.save_bound(&binding, crate::credentials::tests::KEY).unwrap();
+        let (channel, peer, _) = pair(crate::runtime_host::private_handler(store.clone()));
+        let mut peer = BufReader::new(peer);
+        send(peer.get_mut(), json!({"protocol_version":3,"stream_seq":1,"request_id":"matching",
+            "kind":"request","method":"credential.resolve","params":{"binding":payload}}));
+        assert_eq!(read(&mut peer)["result"], json!({"value":crate::credentials::tests::KEY}));
+        let mut changed = payload.clone(); changed["config_revision"] = json!(2);
+        send(peer.get_mut(), json!({"protocol_version":3,"stream_seq":2,"request_id":"changed",
+            "kind":"request","method":"credential.resolve","params":{"binding":changed}}));
+        let denied = read(&mut peer);
+        assert_eq!(denied["error"], json!({"code":"credential_binding_mismatch"}));
+        assert!(denied.get("result").is_none());
+        assert!(!denied.to_string().contains(crate::credentials::tests::KEY));
+        channel.close();
+    }
+
+    #[test]
     fn wire_rejects_duplicate_json_keys_and_counts_delimiter_in_limit() {
-        assert!(decode(br#"{"protocol_version":2,"stream_seq":1,"request_id":"one","kind":"request","method":"credential.resolve","params":{"binding":{},"binding":{}}}"#).is_err());
+        assert!(decode(br#"{"protocol_version":3,"stream_seq":1,"request_id":"one","kind":"request","method":"credential.resolve","params":{"binding":{},"binding":{}}}"#).is_err());
         let mut reader = std::io::Cursor::new(vec![b'x'; MAX_FRAME_BYTES]);
         assert_eq!(read_frame(&mut reader).unwrap_err(), "frame_too_large");
     }
@@ -302,9 +327,9 @@ mod tests {
     fn wire_rejects_extra_fields_wrong_types_and_error_bodies() {
         for value in [
             json!({"protocol_version":true,"request_id":"x","kind":"request","method":"credential.resolve","params":{}}),
-            json!({"protocol_version":2,"stream_seq":1,"request_id":"x","kind":"request","method":"credential.resolve","params":[],"secret":"x"}),
-            json!({"protocol_version":2,"request_id":"x","kind":"reply","method":"credential.resolve","result":null,"error":{"code":"failed"}}),
-            json!({"protocol_version":2,"request_id":"x","kind":"reply","method":"credential.resolve","error":{"code":"failed","message":"public-test-key-not-a-secret"}}),
+            json!({"protocol_version":3,"stream_seq":1,"request_id":"x","kind":"request","method":"credential.resolve","params":[],"secret":"x"}),
+            json!({"protocol_version":3,"request_id":"x","kind":"reply","method":"credential.resolve","result":null,"error":{"code":"failed"}}),
+            json!({"protocol_version":3,"request_id":"x","kind":"reply","method":"credential.resolve","error":{"code":"failed","message":"public-test-key-not-a-secret"}}),
         ] { assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err()); }
     }
 
@@ -325,7 +350,7 @@ mod tests {
     }
     fn send(peer: &mut impl Write, frame: Value) { writeln!(peer, "{frame}").unwrap(); peer.flush().unwrap(); }
     fn request(id: &str, method: &str) -> Value {
-        json!({"protocol_version":2,"stream_seq":1,"request_id":id,"kind":"request","method":method,"params":{}})
+        json!({"protocol_version":3,"stream_seq":1,"request_id":id,"kind":"request","method":method,"params":{}})
     }
 
     #[test]
@@ -334,14 +359,14 @@ mod tests {
         channel.event("startup", json!({})).unwrap();
         let mut peer = BufReader::new(peer);
         let event = read(&mut peer);
-        assert_eq!(event["protocol_version"], 2);
+        assert_eq!(event["protocol_version"], 3);
         assert_eq!(event["stream_seq"], 1);
         let task = tauri::async_runtime::spawn({ let channel = channel.clone(); async move {
             channel.request("resource.register", json!({}), Duration::from_secs(3)).await
         }});
         let request = read(&mut peer);
         assert_eq!(request["stream_seq"], 2);
-        send(peer.get_mut(), json!({"protocol_version":2,"request_id":request["request_id"],"kind":"reply","method":request["method"],"result":true}));
+        send(peer.get_mut(), json!({"protocol_version":3,"request_id":request["request_id"],"kind":"reply","method":request["method"],"result":true}));
         assert_eq!(tauri::async_runtime::block_on(task).unwrap().unwrap(), true);
         channel.close();
     }
@@ -358,14 +383,14 @@ mod tests {
                 let frame: Value = serde_json::from_slice(bytes).unwrap();
                 let expected = self.0.fetch_add(1, Ordering::SeqCst) + 1;
                 assert_eq!(frame["stream_seq"], expected as u64);
-                assert_eq!(frame["protocol_version"], 2);
+                assert_eq!(frame["protocol_version"], 3);
                 Ok(bytes.len())
             }
             fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
         }
         let mut input = Vec::new();
         for sequence in 1..=65537 {
-            writeln!(&mut input, "{}", json!({"protocol_version":2,"stream_seq":sequence,"request_id":"reusable-event-id","kind":"event","method":"ready","params":{}})).unwrap();
+            writeln!(&mut input, "{}", json!({"protocol_version":3,"stream_seq":sequence,"request_id":"reusable-event-id","kind":"event","method":"ready","params":{}})).unwrap();
         }
         let incoming = Arc::new(AtomicUsize::new(0)); let received = incoming.clone();
         let outgoing = Arc::new(AtomicUsize::new(0));
@@ -377,7 +402,7 @@ mod tests {
         completed.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(!channel.is_closed(), "累计接收数不能关闭连接");
         for _ in 0..65537 {
-            channel.0.send(json!({"protocol_version":2,"request_id":"reusable-event-id","kind":"event","method":"ready","params":{}}))
+            channel.0.send(json!({"protocol_version":3,"request_id":"reusable-event-id","kind":"event","method":"ready","params":{}}))
                 .unwrap().recv_timeout(Duration::from_secs(3)).unwrap();
         }
         assert_eq!(incoming.load(Ordering::SeqCst), 65537);
@@ -410,7 +435,7 @@ mod tests {
         for second in [1, 2] {
             let effects = Arc::new(AtomicUsize::new(0)); let seen = effects.clone();
             let (channel, mut peer, _) = pair(Arc::new(move |_, _| { seen.fetch_add(1, Ordering::SeqCst); Ok(Value::Null) }));
-            send(&mut peer, json!({"protocol_version":2,"stream_seq":2,"request_id":"first","kind":"event","method":"ready","params":{}}));
+            send(&mut peer, json!({"protocol_version":3,"stream_seq":2,"request_id":"first","kind":"event","method":"ready","params":{}}));
             let mut next = request("second", "private.protect"); next["stream_seq"] = json!(second);
             send(&mut peer, next);
             let mut byte = [0]; assert_eq!(peer.read(&mut byte).unwrap(), 0);
@@ -487,10 +512,10 @@ mod tests {
             let mut frame = request("invalid", "private.protect"); frame["stream_seq"] = sequence;
             assert!(decode(&serde_json::to_vec(&frame).unwrap()).is_err());
         }
-        let mut old = request("old", "private.protect"); old["protocol_version"] = json!(1);
+        let mut old = request("old", "private.protect"); old["protocol_version"] = json!(2);
         assert!(decode(&serde_json::to_vec(&old).unwrap()).is_err());
-        assert!(decode(br#"{"protocol_version":2,"request_id":"missing","kind":"event","method":"ready","params":{}}"#).is_err());
-        assert!(decode(br#"{"protocol_version":2,"stream_seq":1,"request_id":"reply","kind":"reply","method":"private.protect","result":null}"#).is_err());
+        assert!(decode(br#"{"protocol_version":3,"request_id":"missing","kind":"event","method":"ready","params":{}}"#).is_err());
+        assert!(decode(br#"{"protocol_version":3,"stream_seq":1,"request_id":"reply","kind":"reply","method":"private.protect","result":null}"#).is_err());
     }
 
     #[test]
@@ -504,7 +529,7 @@ mod tests {
             send(peer.get_mut(), request("python-1", "private.protect"));
             assert_eq!(read(&mut peer)["result"]["handled"], "private.protect");
             for frame in [b, a] {
-                send(peer.get_mut(), json!({"protocol_version":2,"request_id":frame["request_id"],"kind":"reply","method":frame["method"],"result":frame["method"]}));
+                send(peer.get_mut(), json!({"protocol_version":3,"request_id":frame["request_id"],"kind":"reply","method":frame["method"],"result":frame["method"]}));
             }
         });
         tauri::async_runtime::block_on(async {
@@ -550,8 +575,8 @@ mod tests {
         assert!(channel.event("startup", json!({})).is_ok());
         let worker = std::thread::spawn(move || {
             let mut peer = BufReader::new(peer); read(&mut peer); let pending = read(&mut peer);
-            send(peer.get_mut(), json!({"protocol_version":2,"request_id":"unknown","kind":"reply","method":"credential.resolve","result":"ignored"}));
-            send(peer.get_mut(), json!({"protocol_version":2,"request_id":pending["request_id"],"kind":"reply","method":"wrong","result":null}));
+            send(peer.get_mut(), json!({"protocol_version":3,"request_id":"unknown","kind":"reply","method":"credential.resolve","result":"ignored"}));
+            send(peer.get_mut(), json!({"protocol_version":3,"request_id":pending["request_id"],"kind":"reply","method":"wrong","result":null}));
         });
         assert_eq!(tauri::async_runtime::block_on(channel.request("resource.register", json!({}), Duration::from_secs(3))).unwrap_err(), "invalid_reply_method");
         worker.join().unwrap(); assert_eq!(effects.load(Ordering::SeqCst), 0);
@@ -565,9 +590,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let mut peer = BufReader::new(peer); read(&mut peer); let old = read(&mut peer);
             wait.recv().unwrap();
-            send(peer.get_mut(), json!({"protocol_version":2,"request_id":old["request_id"],"kind":"reply","method":old["method"],"result":"late"}));
+            send(peer.get_mut(), json!({"protocol_version":3,"request_id":old["request_id"],"kind":"reply","method":old["method"],"result":"late"}));
             let next = read(&mut peer);
-            send(peer.get_mut(), json!({"protocol_version":2,"request_id":next["request_id"],"kind":"reply","method":next["method"],"result":"next"}));
+            send(peer.get_mut(), json!({"protocol_version":3,"request_id":next["request_id"],"kind":"reply","method":next["method"],"result":"next"}));
         });
         tauri::async_runtime::block_on(async {
             assert_eq!(channel.request("first", json!({}), Duration::from_millis(50)).await.unwrap_err(), "request_timeout");
@@ -596,7 +621,7 @@ mod tests {
         let mut line = String::new(); peer.read_line(&mut line).unwrap();
         assert!(!line.is_empty(), "oversize results must return an explicit bounded error");
         let reply: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(reply, json!({"protocol_version":2,"request_id":"oversize","kind":"reply","method":"private.protect","error":{"code":"frame_too_large"}}));
+        assert_eq!(reply, json!({"protocol_version":3,"request_id":"oversize","kind":"reply","method":"private.protect","error":{"code":"frame_too_large"}}));
         assert!(!channel.is_closed()); channel.close();
     }
 
@@ -631,7 +656,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let mut peer = BufReader::new(peer); let shutdown = read(&mut peer); let other = read(&mut peer);
             let shutdown = if shutdown["method"] == "shutdown" { shutdown } else { other };
-            send(peer.get_mut(), json!({"protocol_version":2,"request_id":shutdown["request_id"],"kind":"reply","method":"wrong","result":null}));
+            send(peer.get_mut(), json!({"protocol_version":3,"request_id":shutdown["request_id"],"kind":"reply","method":"wrong","result":null}));
             // 维持连接，证明失败由错误 method 而不是 EOF 触发。
             let mut line = String::new(); let _ = peer.read_line(&mut line);
         });

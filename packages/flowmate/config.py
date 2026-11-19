@@ -4,9 +4,10 @@ from pydantic import Field
 
 from flowmate.contracts.base import Contract
 from flowmate.contracts.execution import RunLimits
+from flowmate.integrations.contracts import McpLimits
 
-SCHEMA_VERSION = 2
-API_VERSION = 2
+SCHEMA_VERSION = 3
+API_VERSION = 3
 APPLICATION_ID = 0x464D4154
 MAX_QUESTION_FIELDS = 12
 MAX_QUESTION_OPTIONS = 20
@@ -14,6 +15,13 @@ MAX_ANSWER_TEXT_BYTES = 8192
 
 
 class RuntimeConfig(Contract):
+    # 硬接收预算独立于模型正文预算；连接仅由用户显式发现建立。
+    mcp_limits: McpLimits = Field(default_factory=lambda: McpLimits(
+        request_timeout_seconds=30, max_catalog_bytes=1024 * 1024,
+        max_result_bytes=8 * 1024 * 1024, max_pages=100,
+    ))
+    session_result_capacity: int = Field(default=200, gt=0)
+    delivery_max_attempts: int = Field(default=3, gt=0)
     run_limits: RunLimits = Field(default_factory=RunLimits)
     model_concurrency: int = Field(default=3, gt=0)
     file_concurrency: int = Field(default=2, gt=0)

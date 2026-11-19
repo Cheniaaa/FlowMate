@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validate } from './validation';
-import { event, id, model, run } from '../test/fixtures';
+import { event, id, limits, model, run } from '../test/fixtures';
 
 describe('真实生成 Schema 的边界校验', () => {
   it('拒绝同时缺少价格快照与unknown原因', () => {
@@ -24,7 +24,7 @@ describe('真实生成 Schema 的边界校验', () => {
   });
   it.each([12, '01', '-1', '1.5', 'oops'])('拒绝金额/事件游标 %s，仅允许无损十进制字符串', value => {
     expect(() => validate('PublicEvent', { ...event, event_id: value })).toThrow();
-    expect(() => validate('BudgetSnapshot', { id, version: 1, run_id: id, limits: { max_steps: 64, max_model_requests: 24, max_tasks: 64, deadline_seconds: 900, max_cost_units: null }, spent_units: value, reserved_units: '0', model_requests: 0, steps: 0, task_count: 1 })).toThrow();
+    expect(() => validate('BudgetSnapshot', { id, version: 1, run_id: id, limits, spent_units: value, reserved_units: '0', model_requests: 0, steps: 0, task_count: 1, total_tokens: 0, reserved_tokens: 0 })).toThrow();
   });
   it('保留超过安全整数的合法金额', () => {
     const command = { meta: { command_id: id }, data: { agent_profile_id: id, model_profile_id: id, text: 'hi', limits: { max_cost_units: '9007199254740993' } } };

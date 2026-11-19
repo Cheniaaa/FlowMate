@@ -25,7 +25,12 @@ from flowmate.host.notifications import publish_notifications
 from flowmate.host.protocol import HostEvent
 from flowmate.host.resources import HostResources
 from flowmate.host.secrets import HostSecrets
+from flowmate.host.skills import SkillHost
 from flowmate.host.stdio import open_stdio
+from flowmate.memory.maintenance import MemoryMaintenance, register_maintenance_tools
+from flowmate.memory.provider import SQLiteMemoryProvider
+from flowmate.memory.service import MemoryService
+from flowmate.memory.tools import register_memory_tools
 from flowmate.models.direct import ModelGateway
 from flowmate.models.private_state import SDK_VERSION, PrivateStateCodec
 from flowmate.persistence.store import Store
@@ -33,10 +38,18 @@ from flowmate.plugins.host import PluginHost, PluginManifest, SlotSpec
 from flowmate.policy.approvals import ApprovalService
 from flowmate.policy.lifecycle import ScopeLifecycle
 from flowmate.policy.service import PolicyService
+from flowmate.processes.environments import EnvironmentService
+from flowmate.processes.runner import ProcessRunner
 from flowmate.runtime.scheduler import Scheduler
 from flowmate.runtime.service import RunService, RuntimeCatalog
 from flowmate.runtime.transitions import utc_now
 from flowmate.settings import SettingsService
+from flowmate.skills.execution.service import SkillExecutionService
+from flowmate.skills.execution.tools import register_script_tool
+from flowmate.skills.export_publication import SkillExports
+from flowmate.skills.native_files import NativeSkillFiles
+from flowmate.skills.service import SkillService
+from flowmate.skills.tools import register_skill_tools
 from flowmate.tools.builtin import register_builtin_tools
 from flowmate.tools.catalog import ToolCatalog
 from flowmate.tools.files import NativeTextFiles
@@ -44,6 +57,8 @@ from flowmate.tools.gateway import ToolExecutor, ToolGateway
 
 if TYPE_CHECKING:
     from flowmate.api.streams import EventStream
+    from flowmate.integrations.configuration import McpConfiguration
+    from flowmate.integrations.tools import McpTools
     from flowmate.runtime.tasks import TaskService
 
 
@@ -113,6 +128,7 @@ class _AgentProvider(_Provider):
 
         scheduler.register_driver("model", agent.drive_model)
         scheduler.register_driver("tool", drive_tool)
+        scheduler.configure_context(agent.compaction)
         await scheduler.start(catalog=self.catalog)
 
     async def drain(self):
@@ -136,6 +152,14 @@ class Runtime:
     config: RuntimeConfig
     streams: "EventStream"
     host_resources: HostResources
+    skills: SkillService
+    skill_host: SkillHost
+    environments: EnvironmentService
+    script_execution: SkillExecutionService
+    memory: MemoryService
+    maintenance: MemoryMaintenance
+    mcp: "McpConfiguration" = field(init=False)
+    mcp_tools: "McpTools" = field(init=False)
     _resources: ExitStack = field(repr=False)
     _lifecycle: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
     _started: bool = field(default=False, init=False, repr=False)
@@ -144,6 +168,10 @@ class Runtime:
     @property
     def agent(self) -> AgentExecutor:
         return self.plugins.resolve("agent_executor").service
+
+    @property
+    def delivery(self):
+        return self.scheduler.delivery
 
     async def start(self) -> None:
         async with self._lifecycle:
@@ -172,10 +200,11 @@ def build_runtime(
 ) -> Runtime:
     """先获得目录独占权再打开Store；不启动或接管调用方的HostChannel。"""
     selected = dict(overrides) if overrides is not None else {}
-    if (selected.keys() - {"model", "config", "clock"}
+    if (selected.keys() - {"model", "config", "clock", "context"}
             or ("config" in selected and not isinstance(selected["config"], RuntimeConfig))
             or ("clock" in selected and not callable(selected["clock"]))
-            or ("model" in selected and not callable(getattr(selected["model"], "stream", None)))):
+            or ("model" in selected and not callable(getattr(selected["model"], "stream", None)))
+            or ("context" in selected and not callable(getattr(selected["context"], "build", None)))):
         raise DomainError("runtime_override_invalid", "Runtime测试装配选项无效")
     config = selected.get("config", RuntimeConfig())
     clock = selected.get("clock", utc_now)
@@ -193,12 +222,21 @@ def build_runtime(
             max_read_chars=config.max_read_chars, max_batch_files=config.max_batch_files,
             max_page_size=config.max_page_size)
         artifacts = ArtifactStore(store, policy, files, config=config)
-        lifecycle = ScopeLifecycle(store, policy, artifacts)
+        memory = MemoryService(store, SQLiteMemoryProvider(store), policy, artifacts=artifacts, clock=clock)
+        skills = SkillService(store)
+        environments = EnvironmentService(store, ProcessRunner())
+        scheduler = Scheduler(store, {}, config, clock=clock)
+        script_execution = SkillExecutionService(skills, environments, policy, files, artifacts, scheduler)
+        skill_files = NativeSkillFiles()
+        skill_exports = SkillExports(skill_files, store.path.parent / "skill-export-recovery")
+        lifecycle = ScopeLifecycle(store, policy, artifacts, skill_exports=skill_exports)
         resources.callback(lifecycle.collect_content)
         catalog = ToolCatalog()
         register_builtin_tools(catalog, policy, files, artifacts, config)
         register_control_tools(catalog)
-        scheduler = Scheduler(store, {}, config, clock=clock)
+        register_memory_tools(catalog, memory)
+        register_skill_tools(catalog, skills)
+        register_script_tool(catalog, script_execution)
         secrets = HostSecrets(host)
         codec = PrivateStateCodec(store, secrets, policy)
         scheduler.configure_tools(policy, artifacts)
@@ -210,6 +248,9 @@ def build_runtime(
         streams = EventStream(store)
         resources.callback(streams.close)
         plugins = PluginHost()
+        plugins.register(PluginManifest(plugin_id="builtin.memory", version=__version__,
+            provides=(SlotSpec(name="memory_provider", exclusive=True),)),
+            lambda config, dependencies: _Provider(memory.provider))
         plugins.register(PluginManifest(plugin_id="builtin.tools", version=__version__,
             provides=(SlotSpec(name="tool_executor", exclusive=True),)),
             lambda config, dependencies: _Provider(ToolExecutor(ToolGateway(catalog, policy, approvals, scheduler))))
@@ -218,9 +259,10 @@ def build_runtime(
             lambda config, dependencies: _Provider(selected["model"] if "model" in selected else
                 ModelGateway(policy, secrets, private_state=codec, clock=clock, catalog=catalog)))
         plugins.register(PluginManifest(plugin_id="builtin.context", version=__version__,
-            provides=(SlotSpec(name="context_builder", exclusive=True),), requires=("builtin.tools", "builtin.model")),
-            lambda config, dependencies: _Provider(ContextBuilder(store, policy,
-                estimate=dependencies["builtin.model"].service.estimate)))
+            provides=(SlotSpec(name="context_builder", exclusive=True),), requires=("builtin.tools", "builtin.model", "builtin.memory")),
+            lambda config, dependencies: _Provider(selected["context"] if "context" in selected else ContextBuilder(store, policy,
+                estimate=dependencies["builtin.model"].service.estimate, memory=memory, maintenance=maintenance,
+                artifacts=artifacts, skills=skills)))
         plugins.register(PluginManifest(plugin_id="builtin.agent", version=__version__,
             provides=(SlotSpec(name="agent_executor", exclusive=True),),
             requires=("builtin.tools", "builtin.model", "builtin.context")),
@@ -228,14 +270,27 @@ def build_runtime(
                 dependencies["builtin.model"].service, dependencies["builtin.tools"].service,
                 policy=policy, artifacts=artifacts,
                 context=dependencies["builtin.context"].service, clock=clock, emit_delta=streams.publish,
-                emit_reasoning_delta=streams.publish_reasoning),
+                emit_reasoning_delta=streams.publish_reasoning, maintenance=maintenance),
                 scheduler, service.catalog.snapshot()))
         service = RunService(store, RuntimeCatalog(tools=catalog.snapshot(), plugins=plugins.snapshot(),
-            agent_executor_id="builtin.agent"), clock=clock)
-        return Runtime(store=store, settings=settings, service=service, policy=policy, lifecycle=lifecycle,
+            agent_executor_id="builtin.agent", tool_catalog=catalog), clock=clock)
+        maintenance = MemoryMaintenance(store, memory, policy, service, clock=clock)
+        register_maintenance_tools(catalog, maintenance)
+        service.catalog.tools = catalog.snapshot()
+        scheduler.configure_maintenance(maintenance)
+        scheduler.configure_followups(service)
+        skill_host = SkillHost(skills, policy, skill_files, skill_exports, config)
+        runtime = Runtime(store=store, settings=settings, service=service, policy=policy, lifecycle=lifecycle,
             approvals=approvals, artifacts=artifacts, catalog=catalog, scheduler=scheduler,
             plugins=plugins, config=config, streams=streams, tasks=scheduler.tasks,
-            host_resources=HostResources(policy, files, config), _resources=resources.pop_all())
+            host_resources=HostResources(policy, files, config), skills=skills, skill_host=skill_host,
+            environments=environments, script_execution=script_execution,
+            memory=memory, maintenance=maintenance,
+            _resources=resources.pop_all())
+        from flowmate.integrations.bootstrap import register_mcp
+
+        register_mcp(runtime, host, limits=config.mcp_limits)
+        return runtime
 
 
 class _Startup(Contract):
@@ -371,6 +426,7 @@ async def serve_runtime(data_dir: Path) -> None:
             raise DomainError("startup_data_dir_mismatch", "私有启动与命令行目录不一致")
         runtime = build_runtime(directory, host)
         host.handlers["resource.register"] = runtime.host_resources.register
+        host.handlers["skills.register"] = runtime.skill_host.register
         host.handlers["workspace.create_from_directory"] = runtime.host_resources.create_workspace_from_directory
         host.handlers["workspace.directory_command_status"] = runtime.host_resources.directory_command_status
         await runtime.start()

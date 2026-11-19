@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type EventCallback } from '@tauri-apps/api/event';
 import { afterEach, expect, it, vi } from 'vitest';
-import { checkWorkspaceDirectoryCommand, createWorkspaceFromDirectory, retryWorkspaceFromDirectory, useWindowSettings, type WindowSettings } from './windows';
+import { checkWorkspaceDirectoryCommand, createWorkspaceFromDirectory, openSettings, retryWorkspaceFromDirectory, showWorkbench, useWindowSettings, type WindowSettings, type WorkbenchTarget, type SettingsSection } from './windows';
 import { commandMeta } from './client';
 import { id, resource } from '../test/fixtures';
 
@@ -12,6 +12,17 @@ afterEach(() => vi.resetAllMocks());
 
 const initial: WindowSettings = { quick_pinned: false, ball_enabled: false, shortcut: null, shortcut_error: null };
 const newer: WindowSettings = { quick_pinned: true, ball_enabled: true, shortcut: 'Control+Space', shortcut_error: null };
+
+it('记忆内容导航与策略章节分别使用原Workbench/settings命令，不传记录正文或owner', async () => {
+  vi.mocked(invoke).mockResolvedValue(undefined);
+  const target: WorkbenchTarget = { kind: 'memory' }, section: SettingsSection = 'memory';
+  await showWorkbench(target);
+  await openSettings(section);
+  expect(vi.mocked(invoke).mock.calls).toEqual([
+    ['show_workbench', { target: { kind: 'memory' } }],
+    ['open_settings', { section: 'memory' }],
+  ]);
+});
 
 it('原生目录创建只有首次选择；响应丢失后明确核对/原命令 retry，不再 create，不保存路径', async () => {
   const meta = commandMeta();

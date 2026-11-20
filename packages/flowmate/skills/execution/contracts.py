@@ -58,6 +58,7 @@ class ScriptExecutionResult(Contract):
     truncated: bool
     process_identity: ProcessIdentity | None
     outputs: list[ScriptArtifact]
+    collection_error: str | None = None
     external_costs: Literal["unknown"] = "unknown"
 
 
@@ -74,6 +75,7 @@ class ScriptExecutionSummary(Contract):
     termination_reason: Literal["exited", "cancelled", "timed_out"]
     truncated: bool
     outputs: list[ScriptArtifact]
+    collection_error: str | None = None
     external_costs: Literal["unknown"] = "unknown"
 
 

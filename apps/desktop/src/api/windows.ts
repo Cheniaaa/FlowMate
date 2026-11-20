@@ -11,7 +11,7 @@ export interface WindowSettings {
   shortcut_error: string | null;
 }
 export interface PendingCounts { pending_questions: number; pending_approvals: number; pending_actions: number; unviewed_results: number }
-export type WorkbenchTarget = { kind: 'run'; run_id: string } | { kind: 'task'; task_id: string } | { kind: 'tasks'; workspace_id: string | null } | { kind: 'assistants' } | { kind: 'memory' } | { kind: 'capabilities' } | { kind: 'mcp'; server_id: string | null; workspace_id: string | null };
+export type WorkbenchTarget = { kind: 'run'; run_id: string } | { kind: 'task'; task_id: string } | { kind: 'tasks'; workspace_id: string | null } | { kind: 'assistants' } | { kind: 'memory' } | { kind: 'capabilities' } | { kind: 'mcp'; server_id: string | null; workspace_id: string | null } | { kind: 'connection'; connection_id: string };
 export interface WorkbenchRequest { target: WorkbenchTarget | null; from_quick: boolean }
 export const showWorkbench = (target: WorkbenchTarget | null) => invoke<void>('show_workbench', { target });
 export const windowError = (error: unknown) => error instanceof Error ? error.message : String(error);

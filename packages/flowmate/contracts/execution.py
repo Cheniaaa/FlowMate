@@ -386,7 +386,7 @@ class ToolCallPart(Contract):
     kind: Literal["tool_call"] = "tool_call"
     call_id: str
     name: str
-    arguments: dict[str, JsonValue]
+    arguments: dict[str, JsonValue] | str
 
 
 class ToolResultPart(Contract):

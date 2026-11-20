@@ -62,6 +62,17 @@ if TYPE_CHECKING:
     from flowmate.runtime.tasks import TaskService
 
 
+# WHATWG Fetch §2.9（含Chromium的受限端口），loopback同样受限：
+# https://fetch.spec.whatwg.org/#port-blocking
+_FETCH_BLOCKED_PORTS = frozenset({
+    0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,
+    101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179,
+    389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601,
+    636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000,
+    6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080,
+})
+
+
 @contextmanager
 def _instance_lock(directory: Path):
     directory.mkdir(parents=True, exist_ok=True)
@@ -273,7 +284,7 @@ def build_runtime(
                 emit_reasoning_delta=streams.publish_reasoning, maintenance=maintenance),
                 scheduler, service.catalog.snapshot()))
         service = RunService(store, RuntimeCatalog(tools=catalog.snapshot(), plugins=plugins.snapshot(),
-            agent_executor_id="builtin.agent", tool_catalog=catalog), clock=clock)
+            agent_executor_id="builtin.agent", tool_catalog=catalog), clock=clock, policy=policy)
         maintenance = MemoryMaintenance(store, memory, policy, service, clock=clock)
         register_maintenance_tools(catalog, maintenance)
         service.catalog.tools = catalog.snapshot()
@@ -331,9 +342,19 @@ async def _serve_http(runtime, host, startup, disconnected):
             if self.started:
                 ready.set()
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as bound:
-        bound.bind(("127.0.0.1", 0))
-        port = bound.getsockname()[1]
+    with ExitStack() as rejected, ExitStack() as selected:
+        # 留住被拒socket，避免OS重复分配；尝试次数由受限端口数量限定。
+        for _ in range(len(_FETCH_BLOCKED_PORTS) + 1):
+            bound = selected.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            bound.bind(("127.0.0.1", 0))
+            port = bound.getsockname()[1]
+            if port not in _FETCH_BLOCKED_PORTS:
+                break
+            rejected.enter_context(selected.pop_all())
+        else:
+            raise DomainError("http_startup_failed", "未分配到浏览器可用的HTTP端口")
+        # 选中socket由selected持有；HTTP装配前释放所有被拒端口。
+        rejected.close()
         app = create_app(runtime, ConnectionPolicy(token=startup.token,
             allowed_origins=startup.allowed_origins, bound_host=f"127.0.0.1:{port}"), host=host)
         server = ControlledServer(uvicorn.Config(app, host="127.0.0.1", port=0,

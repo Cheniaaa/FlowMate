@@ -46,7 +46,7 @@ def public_event(event, execution_session_id, *, tx=None):
         visible_messages = execution_session_id is not None and execution_session_id == event.session_id
         payload = PublicChange(runs=payload.runs, tasks=payload.tasks,
             activities=[activity_view(activity) for activity in payload.activities], budgets=payload.budgets,
-            messages=[MessageView(**message.model_dump(), event_id=event.event_id, event_index=index)
+            messages=[MessageView(**message.model_dump(), run_id=event.run_id, event_id=event.event_id, event_index=index)
                       for index, message in enumerate(payload.messages) if visible_messages],
             artifacts=payload.artifacts, questions=payload.questions, waits=payload.waits,
             consumptions=payload.consumptions, pending_commands=payload.pending_commands,

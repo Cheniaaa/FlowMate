@@ -11,7 +11,7 @@ export function uiCommandId(command: UiCommand): string {
   const body = (command.type === 'decideMemory' ? command.args[1] : command.args[command.args.length - 1]) as CommandMeta | { meta: CommandMeta };
   return ('meta' in body ? body.meta : body).command_id!;
 }
-export interface CommandOutcome { status: 'confirmed' | 'unconfirmed'; sync: 'ready' | 'pending'; commandId: string; task?: TaskHandle }
+export interface CommandOutcome { status: 'confirmed' | 'unconfirmed'; sync: 'ready' | 'pending'; commandId: string; task?: TaskHandle; runId?: string }
 export interface PendingCommand extends CommandOutcome { type: CommandName; busy: boolean; error: string; runId?: string; targetId?: string; scope?: ResourceRef['scope'] }
 interface CommandEntry {
   command: UiCommand; encoded: string; outcome: CommandOutcome; error: string;
@@ -26,6 +26,8 @@ export function createRuntimeStore(client: RuntimeClient) {
   const listeners = new Set<() => void>();
   const pending = new Map<string, CommandEntry>();
   const workSessions = new Set<string>();
+  const resultDepths = new Map<string, number>();
+  const resultReads = new Map<string, Promise<void>>();
   let commands: PendingCommand[] = [];
   function publishCommands() {
     commands = [...pending.values()].filter(entry => entry.outcome.status === 'unconfirmed' || entry.outcome.sync === 'pending')
@@ -50,9 +52,37 @@ export function createRuntimeStore(client: RuntimeClient) {
       cursor = page.next_cursor;
     }
   }
-  async function refreshResults(sessionId: string, cursor?: string) {
-    const page = await client.sessionResults(sessionId, { limit: 50, ...(cursor ? { cursor } : {}) });
-    update(state => mergeResultPage(state, sessionId, page, !!cursor));
+  function refreshResults(sessionId: string, cursor?: string): Promise<void> {
+    async function read() {
+      if (cursor) {
+        // 用户请求“下一页”；排队期间首页可能换了上界，执行时取当前末页游标。
+        const next = snapshot.resultPages[sessionId]?.next_cursor;
+        if (!next) return;
+        const page = await client.sessionResults(sessionId, { limit: 50, cursor: next });
+        resultDepths.set(sessionId, (resultDepths.get(sessionId) ?? 1) + 1);
+        update(state => mergeResultPage(state, sessionId, page, true));
+        return;
+      }
+      // 深度在轮到本次读取时确定，前一续页已安装的记录不能被迟到首页截短。
+      const depth = resultDepths.get(sessionId) ?? 1;
+      const pages = [await client.sessionResults(sessionId, { limit: 50 })];
+      while (pages.length < depth && pages.at(-1)!.next_cursor) {
+        pages.push(await client.sessionResults(sessionId, { limit: 50, cursor: pages.at(-1)!.next_cursor! }));
+      }
+      resultDepths.set(sessionId, pages.length);
+      const watermark = pages.reduce((mark, page) => BigInt(page.watermark) < BigInt(mark) ? page.watermark : mark, pages[0].watermark);
+      update(state => mergeResultPage(state, sessionId, { items: [...new Map(pages.flatMap(page => page.items).map(entry => [entry.id, entry])).values()],
+        next_cursor: pages.at(-1)!.next_cursor, watermark }));
+    }
+    const previous = resultReads.get(sessionId);
+    // 两个调用者仍各自收到错误；前一次失败不阻塞之后的显式读取。
+    const operation = previous ? previous.then(read, read) : read();
+    resultReads.set(sessionId, operation);
+    const clear = () => {
+      if (resultReads.get(sessionId) === operation) resultReads.delete(sessionId);
+    };
+    void operation.then(clear, clear);
+    return operation;
   }
   async function refreshPendingCommands(sessionId: string) {
     let cursor: string | undefined;
@@ -266,6 +296,7 @@ export function createRuntimeStore(client: RuntimeClient) {
     entry.error = '';
     try { await entry.refresh!(); entry.outcome = { ...entry.outcome, sync: 'ready' }; }
     catch (error) { entry.error = error instanceof ApiError ? `${error.code}: ${error.message}` : '状态同步失败，请重试查询'; }
+    entry.outcome = { ...entry.outcome, runId: entry.runId };
     return entry.outcome;
   }
   function operate(entry: CommandEntry, action: () => Promise<CommandOutcome>): Promise<CommandOutcome> {

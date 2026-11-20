@@ -65,11 +65,10 @@ it('能力库异步选择固定打开时会话；切换后只更新原key且名�
   await screen.findByRole('heading', { name: '会话甲' });
   await user.click(screen.getByRole('button', { name: '选择 Skill' }));
   await user.click(await screen.findByRole('button', { name: '用于原会话的新目标' }));
-  await user.selectOptions(screen.getByLabelText('会话'), secondId);
+  expect((screen.getByRole('button', { name: '返回对话与草稿' }) as HTMLButtonElement).disabled).toBe(true);
   await api.complete();
   expect(drafts.read({ workspaceId: id, sessionId: id }).skillVersions).toEqual({ [secondId]: hash });
   expect(drafts.read({ workspaceId: id, sessionId: secondId }).skillVersions).toEqual({});
-  await user.selectOptions(screen.getByLabelText('会话'), id);
   expect(await screen.findByText(/release-note · aaaaaaaaaaaa/)).toBeTruthy();
   await user.click(screen.getByRole('button', { name: '移除 Skill release-note' }));
   expect(drafts.read({ workspaceId: id, sessionId: id }).skillVersions).toEqual({});

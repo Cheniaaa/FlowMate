@@ -8,15 +8,18 @@ import { skillQuery } from './skill-query';
 import SkillExecution from './SkillExecution';
 import SkillExportRecovery from './SkillExportRecovery';
 
-export default function SkillDetail({ client, view, scope, workspaceId, refreshKey = 0, onUse, onChanged, onEdit }: {
+export default function SkillDetail({ client, view, scope, workspaceId, refreshKey = 0, onUse, onChanged, onEdit, onBusyChange }: {
   client: RuntimeClient; view: SkillView; scope: ScopeRef; onUse?: (version: SkillVersion) => Promise<void>;
-  workspaceId?: string; refreshKey?: number; onChanged: () => void; onEdit: () => Promise<void>;
+  workspaceId?: string; refreshKey?: number; onChanged: () => void; onEdit: () => Promise<void>; onBusyChange?: (busy: boolean) => void;
 }) {
   const version = view.version, query = skillQuery(scope);
   const [file, setFile] = useState<SkillFileSlice>(), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const [receipts, setReceipts] = useState<SkillExportReceipt[]>([]), [overwrite, setOverwrite] = useState<ResourceRef>();
   const [pendingExport, freezeExport] = useState<SaveSkillExportCommand>(), [pendingBinding, freezeBinding] = useState<BindSkillCommand>();
   const pending = useRef(false);
+  const [executionBusy, setExecutionBusy] = useState(false);
+  const locked = busy || executionBusy || !!pendingExport || !!pendingBinding || !!overwrite;
+  useEffect(() => { onBusyChange?.(locked); return () => onBusyChange?.(false); }, [locked, onBusyChange]);
   useEffect(() => {
     let ignore = false; setFile(undefined);
     client.skillFile(version.skill_id, version.content_hash, skillQuery(version.scope)).then(value => { if (!ignore) setFile(value); })
@@ -62,12 +65,12 @@ export default function SkillDetail({ client, view, scope, workspaceId, refreshK
   }
   return <article aria-label="Skill 详情" className="skill-detail">
     <p>Agent Skills 标准包 · {view.binding?.enabled ? '已启用' : '未启用'}</p>
-    <h2>{version.name}</h2><p>{version.description}</p><p>版本 <code>{version.content_hash}</code></p>
+    <h2>{version.name}</h2><p>{version.description}</p><details><summary>版本详情</summary><code>{version.content_hash}</code></details>
     <div className="button-row">
-      {onUse && <button disabled={busy || !view.binding?.enabled || view.readiness !== 'content_available'} onClick={() => void act(() => onUse(version))}>用于原会话的新目标</button>}
-      <button disabled={busy} onClick={() => void act(bind)}>{pendingBinding ? '按原命令核对启停' : view.binding?.enabled ? '停用' : '启用'}</button>
-      <button disabled={busy || view.readiness !== 'content_available'} onClick={() => void onEdit()}>编辑新版本</button>
-      <button disabled={busy || !!pendingExport || !workspaceId || view.readiness !== 'content_available'} onClick={() => void act(choose)}>导出标准包</button>
+      {onUse && <button disabled={locked || !view.binding?.enabled || view.readiness !== 'content_available'} onClick={() => void act(() => onUse(version))}>用于原会话的新目标</button>}
+      <button disabled={busy || executionBusy || !!pendingExport || !!overwrite} onClick={() => void act(bind)}>{pendingBinding ? '按原命令核对启停' : view.binding?.enabled ? '停用' : '启用'}</button>
+      <button disabled={locked || view.readiness !== 'content_available'} onClick={() => void onEdit()}>编辑新版本</button>
+      <button disabled={locked || !workspaceId || view.readiness !== 'content_available'} onClick={() => void act(choose)}>导出标准包</button>
     </div>
     {!workspaceId && <p>保存副本需选择一个项目作为原生保存目标范围，无需聊天会话。</p>}
     {error && <p role="alert">{error}</p>}
@@ -80,7 +83,7 @@ export default function SkillDetail({ client, view, scope, workspaceId, refreshK
     <p>启停只影响新运行；执行许可与运行环境由其管理入口核对。实际使用记录见任务 Trace。</p>
     {version.files.some(file => file.path.startsWith('scripts/')) && <SkillExecution
       key={`${version.skill_id}:${version.content_hash}:${scope.kind}:${scope.workspace_id}`}
-      client={client} version={version} scope={scope} onChanged={onChanged} />}
+      client={client} version={version} scope={scope} onChanged={onChanged} onBusyChange={setExecutionBusy} />}
     {overwrite && <section aria-label="确认覆盖"><p>将覆盖所选文件：{overwrite.label}</p><code>{overwrite.source_version}</code>
       <button disabled={busy} onClick={() => void act(() => save(overwrite))}>确认覆盖并保存</button><button disabled={busy} onClick={() => setOverwrite(undefined)}>取消覆盖</button></section>}
     {pendingExport && <section aria-label="保存命令待核对"><p>保存结果待核对 · {pendingExport.meta.command_id}</p>

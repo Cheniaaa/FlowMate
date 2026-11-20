@@ -4,7 +4,6 @@ from flowmate.contracts.base import DomainError, identifier
 from flowmate.contracts.events import NewEvent
 from flowmate.contracts.execution import (
     TERMINAL,
-    ActivitySnapshot,
     BudgetGroupSnapshot,
     BudgetSnapshot,
     FollowUpIntent,
@@ -21,9 +20,6 @@ from flowmate.runtime.leases import acquire_session
 from flowmate.runtime.tasks import result_input
 from flowmate.runtime.transitions import (
     bump,
-    check_admission,
-    check_scopes,
-    context_for,
     emit,
     load,
     pending_outbox,
@@ -139,27 +135,9 @@ class FollowUpService:
         return applied
 
     def _resume(self, tx, intent, run):
-        check_scopes(tx, run.scope_dependencies)
-        check_admission(tx, run)
-        self.service.catalog.require_available(run.config.catalog)
-        if self.clock() >= run.deadline_at:
-            raise DomainError("deadline_exceeded", "原自动总结授权时限已过")
-        for row in tx.execute("SELECT document FROM activities WHERE run_id=?", (run.id,)):
-            activity = ActivitySnapshot.model_validate_json(row[0])
-            if activity.state == "uncertain" or (activity.receipt is not None and not activity.content_committed):
-                raise DomainError("missing_activity_result", "外部结果尚未核实，不能自动重放")
-        from flowmate.runtime.tasks import selected_result
-        ctx = context_for(tx, run.root_task_id)
-        result = selected_result(tx, ctx)
-        for purpose in ("read", "model_send"):
-            from flowmate.policy.service import PolicyService
-            decision = PolicyService(self.store, clock=self.clock).check_tx(tx, ctx, result.dependencies, purpose,
-                run.config.model_profile.endpoint if purpose == "model_send" else None)
-            if not decision.allowed:
-                raise DomainError("grant_required", "自动总结所需用途授权已失效")
-        for row in tx.execute("SELECT document FROM messages WHERE run_id=?", (run.id,)):
-            from flowmate.contracts.execution import ModelMessage
-            check_scopes(tx, ModelMessage.model_validate_json(row[0]).source_dependencies)
+        from flowmate.runtime.recovery import check_resume, resume_candidates
+        check_resume(tx, run, resume_candidates(tx, run), catalog=self.service.catalog.snapshot(),
+            policy=self.service.policy, now=self.clock())
         tasks, items = [], []
         for id in intent.paused_task_ids:
             task = load(tx, TaskSnapshot, id)
@@ -207,6 +185,15 @@ class FollowUpService:
                         from flowmate.policy.service import PolicyService
                         sources = PolicyService.resource_closure(tx, selected.dependencies,
                             source_run_id=selected.handle.run_id, source_task_id=selected.handle.task_id)
+                        source_run = load(tx, RunSnapshot, selected.handle.run_id)
+                        source_task = load(tx, TaskSnapshot, selected.handle.task_id)
+                        dependency_ids = {item.scope_id for item in selected.dependencies}
+                        # 记忆身份及修订已固定在 input_result，不能转成整个范围的选择。
+                        selection = SourceSelection(resource_ids=sources,
+                            skill_versions={id: version for id, version in source_task.binding.sources.skill_versions.items()
+                                if id in dependency_ids},
+                            excluded_source_ids=sorted(set(source_run.sources.excluded_source_ids)
+                                | set(source_task.binding.sources.excluded_source_ids)))
                         group = load(tx, BudgetGroupSnapshot, origin.budget_group_id)
                         # 仅申请组内未占用额度；既有allocate在同事务核验并转拨。
                         limits = group.limits.model_dump()
@@ -231,7 +218,7 @@ class FollowUpService:
                         command = StartRun(session_id=intent.target_session_id,
                             agent_profile_id=config.agent_profile.id, model_profile_id=config.model_profile.id,
                             text="总结指定后台任务的明确交付，引用依据；不要执行新任务。",
-                            sources=SourceSelection(resource_ids=sources), limits=group.limits.model_validate(limits),
+                             sources=selection, limits=group.limits.model_validate(limits),
                             source_result=intent.source_result)
                         pending = PendingUserCommand(command_id=identifier(), session_id=command.session_id,
                             start=command, created_seq=1, config=config,

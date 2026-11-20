@@ -53,7 +53,7 @@ it.each(['task', 'managed-run', 'tasks', 'assistants', 'existing'] as const)('�
   if (kind === 'tasks') await waitFor(() => expect(urls).toContain(`/tasks?workspace_id=${secondId}&limit=50`));
   if (kind === 'assistants') await screen.findByLabelText('显示名称');
   expect((input as HTMLTextAreaElement).value).toBe('主窗原草稿');
-  expect((screen.getByLabelText('会话') as HTMLSelectElement).value).toBe(id);
+  expect(screen.getByRole('heading', { name: session.title })).toBeTruthy();
   if (kind === 'assistants') {
     await user.click(within(screen.getByRole('dialog', { name: '我的助理' })).getByRole('button', { name: '返回对话与草稿' }));
     await waitFor(() => expect(document.activeElement).toBe(input));

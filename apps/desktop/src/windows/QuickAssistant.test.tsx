@@ -39,6 +39,7 @@ function businessServer() {
   const commands: { path: string; body: any }[] = [];
   const requests: string[] = [];
   let state: RunSnapshot | undefined;
+  let savedGrant: unknown;
   let createdSession = session;
   let stream!: ReadableStreamDefaultController<Uint8Array>;
   const approval: Approval = { mcp: null, id: uuid(10), version: 1, workspace_id: id, session_id: id, run_id: id,
@@ -48,7 +49,7 @@ function businessServer() {
     question: '报告采用哪个范围？', answer_schema: { type: 'string' }, status: 'pending', answer_message_id: null, dependencies: [] };
   const artifact = { id: uuid(14), version: 1, task_id: run.root_task_id, activity_id: uuid(11), content_hash: 'a'.repeat(64), dependencies: [], media_type: 'text/markdown' };
   const message: ModelMessage = { id: uuid(15), role: 'assistant', parts: [{ kind: 'text', text: '已经完成笔记报告。' }],
-    source_dependencies: [], activity_id: null, private_ref: null, origin: 'conversation', event_id: event.event_id, event_index: 0 };
+    source_dependencies: [], run_id: run.id, activity_id: null, private_ref: null, origin: 'conversation', event_id: event.event_id, event_index: 0 };
   function detail(): RunDetail {
     return { ...runDetailSummary, run: state!, tasks: page([]), activities: page([]), messages: page(state?.state === 'completed' ? [message] : []),
       artifacts: page(state?.state === 'completed' ? [artifact] : []) as RunDetail['artifacts'],
@@ -59,9 +60,19 @@ function businessServer() {
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname.replace('/v3', ''); requests.push(path);
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer test-runtime-token');
+    if (path.endsWith('/resource-coverage')) {
+      const allowed = commands.some(command => command.path === '/grants');
+      const ids = JSON.parse(init.body as string).resource_ids;
+      return json({ allowed, destination: connection.endpoint, missing_read: allowed ? [] : ids,
+        missing_model_send: allowed ? [] : ids });
+    }
     if (init.method === 'POST') {
       const body = JSON.parse(init.body as string); commands.push({ path, body });
-      if (path === '/grants') return json({ ...body.data, memory_scopes: [], mcp_versions: {}, id: uuid(16), version: 1, epoch: 1, status: 'active' });
+      if (path === '/grants') {
+        savedGrant = { ...body.data, memory_scopes: [], mcp_versions: {}, mcp_queries: [],
+          id: uuid(16), version: 1, epoch: 1, status: 'active' };
+        return json(savedGrant);
+      }
       if (path.endsWith('/sessions')) { createdSession = { ...session, id: uuid(17), title: body.data.title }; return json(createdSession); }
       if (path.endsWith('/runs')) { approval.session_id = createdSession.id; state = { ...run, interaction_session_id: createdSession.id, execution_session_id: createdSession.id, state: 'waiting_approval', config: { ...run.config, agent_profile: profile } }; return json(state); }
       if (path.endsWith('/decision')) return json({ ...approval, version: 2, status: 'approved' });
@@ -70,6 +81,7 @@ function businessServer() {
     }
     if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }));
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return json(page([]));
+    if (path === `/workspaces/${id}/grants`) return json(page(savedGrant ? [savedGrant] : []));
     const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([profile]), '/models': page([model]), '/model-connections': page([connection]),
       [`/workspaces/${id}/snapshot`]: { workspace, sessions: page([createdSession]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id },
       [`/sessions/${id}/messages`]: page([]), [`/sessions/${id}/runs`]: page(state ? [state] : []),
@@ -95,16 +107,15 @@ it('test_quick_completes_without_opening_main', { timeout: 15_000 }, async () =>
   expect(document.querySelector('.workbench--compact')).toBeTruthy();
   const picker = document.querySelector<HTMLDetailsElement>('.workspace-picker')!;
   expect(picker.open).toBe(false);
-  await user.click(screen.getByText('工作区与会话', { selector: 'summary' }));
+  await user.click(screen.getByRole('button', { name: '新建会话' }));
   await user.type(screen.getByLabelText('新会话标题'), '小窗独立任务');
   await user.click(screen.getByRole('button', { name: '创建会话' }));
   await screen.findByRole('heading', { name: '小窗独立任务' });
   await user.type(screen.getByLabelText('消息'), '整理选中的笔记');
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
   await screen.findByText('notes.md');
-  expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(true);
-  await user.click(screen.getByRole('button', { name: '授权读取并发送' }));
-  await screen.findByRole('button', { name: '当前范围已授权' });
+  expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.getByText(/点击发送即同意本次读取/).textContent).toContain(connection.endpoint);
   await user.click(screen.getByRole('button', { name: '发送' }));
   await user.click(await screen.findByRole('button', { name: '允许本次操作' }));
   await waitFor(() => expect(screen.queryByRole('button', { name: '允许本次操作' })).toBeNull());
@@ -115,7 +126,8 @@ it('test_quick_completes_without_opening_main', { timeout: 15_000 }, async () =>
   expect(screen.queryByLabelText('回答')).toBeNull();
   await user.click(screen.getByText('任务交付摘要'));
   expect(screen.getAllByText('笔记报告已交付').length).toBeGreaterThan(0);
-  await user.click(screen.getByRole('button', { name: `预览产物 ${server.artifact.id}` }));
+  await user.click(screen.getByRole('button', { name: '产物' }));
+  await user.click(screen.getByRole('button', { name: 'Markdown 文档 1' }));
   expect((await screen.findByTitle('产物预览')).getAttribute('srcdoc')).toContain('真实产物内容');
   expect(screen.getByTitle('产物预览').getAttribute('sandbox')).toBe('');
   expect(server.commands.map(command => command.path)).toEqual([`/workspaces/${id}/sessions`, '/grants', `/sessions/${uuid(17)}/runs`, `/approvals/${uuid(10)}/decision`, `/questions/${uuid(12)}/answer`]);

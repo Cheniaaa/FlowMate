@@ -10,8 +10,8 @@ import { skillQuery } from './skill-query';
 type Pending = { kind: 'save'; command: SaveSkillExecutionPermissionCommand }
   | { kind: 'revoke'; id: string; meta: CommandMeta } | { kind: 'bind'; command: BindSkillCommand };
 
-export default function SkillExecution({ client, version, scope, onChanged }: {
-  client: RuntimeClient; version: SkillVersion; scope: ScopeRef; onChanged: () => void;
+export default function SkillExecution({ client, version, scope, onChanged, onBusyChange }: {
+  client: RuntimeClient; version: SkillVersion; scope: ScopeRef; onChanged: () => void; onBusyChange?: (busy: boolean) => void;
 }) {
   const [settings, setSettings] = useState<SkillScriptSettings>();
   const [environment, setEnvironment] = useState<ExecutionEnvironmentView>();
@@ -19,6 +19,7 @@ export default function SkillExecution({ client, version, scope, onChanged }: {
   const [chosen, setChosen] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<Pending>();
   const working = useRef(false);
+  useEffect(() => { onBusyChange?.(busy || !!pending); return () => onBusyChange?.(false); }, [busy, pending, onBusyChange]);
   useEffect(() => {
     let ignore = false;
     async function load() {
@@ -29,8 +30,14 @@ export default function SkillExecution({ client, version, scope, onChanged }: {
         const configured = await client.executionEnvironment(value.binding.environment_id);
         if (!ignore) setEnvironment(configured);
       } else {
-        const page = await client.executionEnvironments();
-        if (!ignore) setOptions(page);
+        const page = await client.discoverExecutionEnvironments();
+        if (!ignore) {
+          setOptions(page);
+          const extensions = { python: ['.py'], node: ['.js', '.mjs', '.cjs'], powershell: ['.ps1'], bash: ['.sh'] };
+          const trusted = page.items.filter(item => item.status === 'probed' && value.scripts.length > 0
+            && value.scripts.every(path => extensions[item.kind].some(extension => path.endsWith(extension))));
+          if (trusted.length === 1 && page.next_cursor === null) setChosen(trusted[0].id);
+        }
       }
     }
     load().catch(error => { if (!ignore) setError(windowError(error)); });
@@ -88,7 +95,7 @@ export default function SkillExecution({ client, version, scope, onChanged }: {
     {!settings ? <p>正在核对脚本设置…</p> : <>
       <ul>{settings.scripts.map(path => <li key={path}><code>{path}</code></li>)}</ul>
       {!binding?.environment_id ? <p>待绑定环境</p> : <>
-        <p>绑定环境 {environment?.kind ?? binding.environment_id} · 修订 {binding.environment_revision}</p>
+        <p>{ready ? `${environment!.kind} 可用` : '待核对运行环境'} · {environment?.executable_path} · 修订 {binding.environment_revision}</p>
         {!ready ? <p>待检测环境，请在设置中核对环境及修订</p> : permission?.status === 'active'
           ? <p>此版本已有执行许可</p> : <p>待执行许可</p>}
         {ready && permission?.status !== 'active' && <button disabled={busy || !!pending} onClick={() => void act(permit)}>允许此版本在绑定环境执行</button>}
@@ -98,13 +105,19 @@ export default function SkillExecution({ client, version, scope, onChanged }: {
         <button disabled={busy || !!pending} onClick={() => void act(async () => setOptions(await client.executionEnvironments()))}>更换绑定环境</button>
       </>}
       {options && <div>
-        <label>用户运行环境<select value={chosen} disabled={busy || !!pending} onChange={event => setChosen(event.target.value)}>
+         <label>用户运行环境<select value={chosen} disabled={busy || !!pending} onChange={event => setChosen(event.target.value)}>
           <option value="">请选择已检测环境</option>
-          {options.items.map(item => <option key={item.id} value={item.id} disabled={item.status !== 'probed'}>
+          {options.items.map(item => <option key={item.id} value={item.id}>
             {item.kind} · {item.executable_path} · 修订 {item.revision} · {item.status}
           </option>)}
         </select></label>
-        <button disabled={busy || !!pending || !chosen} onClick={() => void act(bind)}>绑定所选环境</button>
+         <p>系统安装记录仅用于发现候选。检测会启动所列解释器查询版本，不运行项目脚本或安装依赖。</p>
+         <button disabled={busy || !!pending || !chosen} onClick={() => void act(async () => {
+           const checked = await client.probeExecutionEnvironment(chosen);
+           setOptions(current => ({ ...current!, items: current!.items.map(item => item.id === checked.id ? checked : item) }));
+         })}>检测所选环境</button>
+         <button disabled={busy || !!pending || options.items.find(item => item.id === chosen)?.status !== 'probed'}
+           onClick={() => void act(bind)}>绑定所选环境</button>
         {options.next_cursor && <button disabled={busy} onClick={() => void act(async () => {
           const next = await client.executionEnvironments({ cursor: options.next_cursor! });
           setOptions({ ...next, items: [...options.items, ...next.items] });

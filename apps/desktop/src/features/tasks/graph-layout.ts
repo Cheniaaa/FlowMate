@@ -1,4 +1,5 @@
 import type { ActivityView, JoinFact, ResultConsumption, TaskSnapshot, WaitRecord } from '../../generated/contracts';
+import { operationLabel } from './operation-label';
 
 export interface GraphNode {
   id: string;
@@ -71,12 +72,12 @@ export function buildTaskGraph(
     for (const activity of activitiesByTask.get(task.id) ?? []) {
       allNodes.push({ id: activity.id, entity_kind: 'activity', x: 126 + (depth(task) + 1) * 16,
         y: 42 + allNodes.length * 84, state: activity.state,
-        label: `${activity.kind === 'model' ? '模型过程' : '工具过程'} · ${activity.operation}` });
+        label: activity.kind === 'model' ? '模型回复' : operationLabel(activity.operation, task) });
     }
   }
   for (const activity of orderedActivities.filter(item => !taskById.has(item.task_id))) {
     allNodes.push({ id: activity.id, entity_kind: 'activity', x: 126, y: 42 + allNodes.length * 84,
-      state: activity.state, label: `${activity.kind === 'model' ? '模型过程' : '工具过程'} · ${activity.operation}` });
+      state: activity.state, label: activity.kind === 'model' ? '模型回复' : operationLabel(activity.operation) });
   }
 
   // 先布局再过滤，折叠不会改变仍可见节点的坐标。

@@ -93,7 +93,10 @@ it('Conversation已发布二进制入口进入真实详情，可定位来源且�
   const reads = vi.spyOn(client, 'artifactContent');
   const view = render(<Conversation client={client} />);
   await user.click(await screen.findByRole('button', { name: '二进制会话' }, { timeout: 7000 }));
-  await user.click(await screen.findByRole('button', { name: `查看产物 ${fixture.artifact.id}` }));
+  await screen.findByRole('heading', { name: '二进制会话', exact: true }, { timeout: 7000 });
+  await user.click(screen.getByRole('button', { name: '产物', exact: true }));
+  const drawer = await screen.findByRole('dialog', { name: '产物', exact: true });
+  await user.click(await within(drawer).findByRole('button', { name: '二进制文件 1' }, { timeout: 7000 }));
   const detail = await screen.findByRole('region', { name: '产物详情' });
   expect(within(detail).queryByTitle('产物预览')).toBeNull();
   expect(within(detail).getByRole('button', { name: '定位来源' })).toBeTruthy();
@@ -106,9 +109,7 @@ it('重新定位当前会话时，等待工作区快照期间的输入保存在�
   const client = connect(), user = userEvent.setup(), drafts = createDraftStore();
   const view = render(<Conversation client={client} draftStore={drafts} />);
   const key = { workspaceId: fixture.workspace.id, sessionId: fixture.session.id };
-  const sessions = await screen.findByLabelText('会话');
-  await waitFor(() => expect(Array.from((sessions as HTMLSelectElement).options, option => option.value)).toContain(key.sessionId));
-  await user.selectOptions(sessions, key.sessionId);
+  await user.click(await screen.findByRole('button', { name: 'D 集成会话' }));
   await screen.findByRole('heading', { name: 'D 集成会话' });
   await user.type(screen.getByLabelText('消息'), '保留');
   const snapshot = client.workspaceSnapshot.bind(client);

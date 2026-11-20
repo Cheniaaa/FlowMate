@@ -33,7 +33,7 @@ export default function AssistantsPage({ client, refreshKey, skillsRevision, onC
     if (continuation.current) { const action = continuation.current; continuation.current = undefined; setConfirming(false); action(); }
   }
   return <section ref={root} className="assistants-page" role="dialog" aria-modal="true" aria-label="我的助理" onKeyDown={event => {
-    if (event.key === 'Escape') { event.preventDefault(); guard(onClose); }
+    if (event.key === 'Escape' && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); guard(onClose); }
     if (event.key === 'Tab') {
       const controls = [...root.current!.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)')].filter(element => element.getClientRects().length);
       const first = controls[0], last = controls.at(-1);
@@ -64,7 +64,9 @@ export default function AssistantsPage({ client, refreshKey, skillsRevision, onC
     </section>}
     <div onChangeCapture={event => { const form = (event.target as HTMLElement).closest('form'); if (form) { dirty.current.add(form); setHasChanges(true); } }}>
       <AssistantSettings client={client} manageMembers workspaceId={workspaceId || undefined} skillsRevision={skillsRevision} deferSkillRefresh={hasChanges || busy}
-        refreshKey={hasChanges || busy ? undefined : refreshKey} guard={guard} onBusyChange={setBusy} onSaved={complete} onDiscard={form => { dirty.current.delete(form); setHasChanges(dirty.current.size > 0); }} />
+        refreshKey={hasChanges || busy ? undefined : refreshKey} guard={guard} onBusyChange={setBusy} onSaved={complete} onViewReady={() => {
+          if (root.current && !root.current.contains(document.activeElement)) close.current?.focus();
+        }} onDiscard={form => { dirty.current.delete(form); setHasChanges(dirty.current.size > 0); }} />
     </div>
     {error && <p role="alert">{error}</p>}
     {onReturnToQuick && <button disabled={busy} onClick={() => guard(() => { void onReturnToQuick().catch(error => setError(windowError(error))); })}>返回快捷小窗</button>}

@@ -4,6 +4,8 @@ import { checkWorkspaceDirectoryCommand, createWorkspaceFromDirectory, retryWork
 import { laterCursor, mergeVersioned } from '../../api/events';
 import type { CommandMeta, InboxPage, NavigationView, PendingAction, SessionPage, Workspace, WorkspaceDirectoryResult } from '../../generated/contracts';
 import { PendingActionList } from '../notifications/Inbox';
+import Dialog from '../../components/Dialog';
+import { Sheet, SheetContent, SheetTitle } from '../../components/ui/sheet';
 
 export interface ProjectNavigation { workspaceId: string; sessionId?: string; runId?: string }
 
@@ -29,11 +31,11 @@ function mergeNavigation(current: NavigationView | undefined, incoming: Navigati
   } };
 }
 
-export default function ProjectSidebar({ client, onNavigate, onCreated, onSettings, children, allowDirectoryCreation = true, onDefaultWorkspace, onNewSession, deletedWorkspaceIds = [], deletedSessionIds = [], onFormActiveChange, onTaskCenter, onAssistants, onMemory, onCapabilities, onPendingOpen, onPendingAction, refreshKey }: {
+export default function ProjectSidebar({ client, onNavigate, onCreated, onSettings, children, allowDirectoryCreation = true, onDefaultWorkspace, onNewSession, deletedWorkspaceIds = [], deletedSessionIds = [], onFormActiveChange, onTaskCenter, onAssistants, onMemory, onCapabilities, onPendingOpen, onPendingAction, refreshKey, workspaceId, sessionId }: {
   client: RuntimeClient; onNavigate: (target: ProjectNavigation) => void; onCreated: (workspace: Workspace) => void;
   onSettings: () => void; children?: ReactNode;
   allowDirectoryCreation?: boolean; onDefaultWorkspace?: (id: string | null) => void;
-  onNewSession?: () => void;
+  onNewSession?: (workspaceId?: string, returnFocus?: () => void) => void; workspaceId?: string; sessionId?: string;
   deletedWorkspaceIds?: readonly string[]; deletedSessionIds?: readonly string[];
   onFormActiveChange?: (active: boolean) => void;
   onTaskCenter?: () => void; onPendingOpen?: (item: InboxPage['items'][number]) => void;
@@ -60,6 +62,14 @@ export default function ProjectSidebar({ client, onNavigate, onCreated, onSettin
   const formActive = creating || !!name || !!frozen || busy;
   useEffect(() => { onFormActiveChange?.(formActive); }, [formActive, onFormActiveChange]);
   const drawerToggle = useRef<HTMLButtonElement>(null);
+  const projectPlus = useRef<HTMLButtonElement>(null);
+  function newSession(target: string | undefined, trigger: HTMLButtonElement) {
+    onNewSession?.(target, () => {
+      if (trigger.isConnected) trigger.focus();
+      else drawerToggle.current?.focus();
+    });
+    setDrawer(false);
+  }
   const deletionKey = [...deletedWorkspaceIds, ...deletedSessionIds].join(',');
   const visible = (workspaceId: string, sessionId?: string) => !deletedWorkspaceIds.includes(workspaceId) && (!sessionId || !deletedSessionIds.includes(sessionId));
   async function readNavigation() {
@@ -101,17 +111,15 @@ export default function ProjectSidebar({ client, onNavigate, onCreated, onSettin
   }
   function installed(value: WorkspaceDirectoryResult | null) {
     if (!value) { setFrozen(undefined); return; }
-    onCreated(value.workspace); navigate({ workspaceId: value.workspace.id }); setFrozen(undefined); setCreating(false); setName('');
+    onCreated(value.workspace); navigate({ workspaceId: value.workspace.id }); setFrozen(undefined); setCreating(false); setName(''); projectPlus.current?.focus();
   }
-  return <>
-    <button ref={drawerToggle} className="sidebar-drawer-toggle" aria-label="打开项目导航" onClick={() => setDrawer(value => !value)}>☰</button>
-    <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''} ${drawer ? 'sidebar--open' : ''}`} aria-label="项目导航" onKeyDown={event => { if (event.key === 'Escape' && drawer) { setDrawer(false); drawerToggle.current?.focus(); } }}>
+  const sidebar = <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''} ${drawer ? 'sidebar--open' : ''}`} aria-label="项目导航">
       {drawer && <button className="sidebar-drawer-close" aria-label="关闭项目导航" onClick={() => { setDrawer(false); drawerToggle.current?.focus(); }}>×</button>}
       <header className="sidebar-brand"><span className="brand-mark" aria-hidden="true">F</span><strong>FlowMate</strong><button aria-label={collapsed ? '展开侧栏' : '折叠侧栏'} onClick={() => {
         setCollapsed(!collapsed); localStorage.setItem('flowmate.sidebar.collapsed', String(!collapsed));
       }}>{collapsed ? '›' : '‹'}</button></header>
       <nav className="global-navigation">
-        <button aria-label="新建会话" title="新建会话" onClick={() => { setCollapsed(false); onNewSession?.(); }}><span>＋</span><span>新建会话</span></button>
+        <button aria-label="新建会话" title="新建会话" onClick={event => { setCollapsed(false); newSession(workspaceId || navigation?.default_workspace_id || undefined, event.currentTarget); }}><span>＋</span><span>新建会话</span></button>
         <button title="日常助理" aria-label="日常助理" disabled={!navigation?.default_workspace_id || !visible(navigation.default_workspace_id)} onClick={() => navigate({ workspaceId: navigation!.default_workspace_id! })}><span>✦</span><span>日常助理</span></button>
         <button title="最近创建" aria-label="最近创建" aria-pressed={section === 'recent'} onClick={() => void act(() => open('recent'))}><span>◷</span><span>最近创建</span></button>
         <button title="待办" aria-pressed={section === 'inbox'} onClick={() => void act(() => open('inbox'))}><span>☷</span><span>待办 {navigation?.pending_count ?? ''}</span></button>
@@ -121,21 +129,24 @@ export default function ProjectSidebar({ client, onNavigate, onCreated, onSettin
         {onCapabilities && <button title="能力库" onClick={() => { onCapabilities(); setDrawer(false); }}><span>✦</span><span>能力库</span></button>}
       </nav>
       <div className="sidebar-content">
-        <div className="sidebar-section-heading"><button onClick={() => setSection('projects')}>项目</button><button aria-label="新建项目" onClick={() => setCreating(value => !value)}>＋</button></div>
-        {error && <p role="alert">{error}</p>}
-        {creating && <form className="project-create" onSubmit={event => { event.preventDefault(); void act(async () => {
-          const workspace = await client.createWorkspace({ meta: commandMeta(), data: { name } }); onCreated(workspace); navigate({ workspaceId: workspace.id }); setCreating(false); setName('');
-        }); }}><label>项目名称 <input required value={name} disabled={!!frozen || busy} onChange={event => setName(event.target.value)} /></label>
+        <div className="sidebar-section-heading"><button onClick={() => setSection('projects')}>项目</button><button ref={projectPlus} aria-label="新建项目" onClick={() => setCreating(true)}>＋</button></div>
+        {error && !creating && <p role="alert">{error}</p>}
+        {creating && <Dialog title="新建项目" onClose={() => { if (!busy && !frozen) { setCreating(false); setName(''); projectPlus.current?.focus(); } }}><form className="project-create" onSubmit={event => { event.preventDefault(); void act(async () => {
+          const workspace = await client.createWorkspace({ meta: commandMeta(), data: { name } }); onCreated(workspace); navigate({ workspaceId: workspace.id }); setCreating(false); setName(''); projectPlus.current?.focus();
+        }); }}><label>项目名称 <input autoFocus required value={name} disabled={!!frozen || busy} onChange={event => setName(event.target.value)} /></label>
           <button disabled={busy || !!frozen}>创建项目</button>{allowDirectoryCreation && <button type="button" disabled={busy || !name.trim() || !!frozen} onClick={() => void act(async () => {
             const command = { name, meta: commandMeta() }; setFrozen(command); installed(await createWorkspaceFromDirectory(command.name, command.meta));
           })}>从目录创建</button>}
           {frozen && <><p>目录创建结果待核对；查不到不表示未提交。</p><button type="button" disabled={busy} onClick={() => void act(async () => {
             const result = await checkWorkspaceDirectoryCommand(frozen.meta.command_id!); if (result.status === 'confirmed') installed(result.result);
           })}>核对目录创建</button><button type="button" disabled={busy} onClick={() => void act(async () => installed(await retryWorkspaceFromDirectory(frozen.name, frozen.meta)))}>重试目录创建</button></>}
-        </form>}
+          {error && <p role="alert">{error}</p>}
+          <button type="button" disabled={busy || !!frozen} onClick={() => { setCreating(false); setName(''); projectPlus.current?.focus(); }}>取消</button>
+        </form></Dialog>}
         {section === 'projects' && navigation?.workspaces.items.filter(item => visible(item.workspace.id)).map(item => <section className="project-group" key={item.workspace.id}>
-          <button className="project-name" onClick={() => navigate({ workspaceId: item.workspace.id })}>▱ {item.workspace.name}<span>{item.pending_count || ''}</span></button>
-          {item.sessions.items.filter(session => visible(session.workspace_id, session.id)).map(session => <button className="session-nav" key={session.id} onClick={() => navigate({ workspaceId: session.workspace_id, sessionId: session.id })}>{session.title}</button>)}
+          <div className="project-heading"><button className="project-name" aria-label={item.workspace.name} aria-current={workspaceId === item.workspace.id ? 'true' : undefined} onClick={() => navigate({ workspaceId: item.workspace.id })}>▱ {item.workspace.name}<span>{item.pending_count || ''}</span></button>
+            <button aria-label={`在${item.workspace.name}新建会话`} onClick={event => newSession(item.workspace.id, event.currentTarget)}>＋</button></div>
+          {item.sessions.items.filter(session => visible(session.workspace_id, session.id)).map(session => <button className="session-nav" aria-current={sessionId === session.id ? 'page' : undefined} key={session.id} onClick={() => navigate({ workspaceId: session.workspace_id, sessionId: session.id })}>{session.title}</button>)}
           {item.sessions.next_cursor && <button onClick={() => void act(async () => { const next = await client.sessions(item.workspace.id, { cursor: item.sessions.next_cursor! }); setNavigation(current => current && ({ ...current, workspaces: { ...current.workspaces, items: current.workspaces.items.map(value => value.workspace.id === item.workspace.id ? { ...value, sessions: { ...next, items: Object.values(mergeVersioned(Object.fromEntries(value.sessions.items.map(session => [session.id, session])), next.items)) } } : value) } })); })}>更多项目会话</button>}
         </section>)}
         {section === 'projects' && navigation?.workspaces.next_cursor && <button onClick={() => void act(async () => {
@@ -159,6 +170,10 @@ export default function ProjectSidebar({ client, onNavigate, onCreated, onSettin
         const pages = await readNavigation();
         setNavigation(current => pages.reduce((value, page) => mergeNavigation(value, page), current));
       })}>↻</button></footer>
-    </aside>
+    </aside>;
+  return <>
+    <button ref={drawerToggle} className="sidebar-drawer-toggle" aria-label="打开项目导航" onClick={() => setDrawer(true)}>☰</button>
+    {!drawer && sidebar}
+    <Sheet open={drawer} onOpenChange={setDrawer}><SheetContent className="sidebar-sheet" onCloseAutoFocus={event => { event.preventDefault(); drawerToggle.current?.focus(); }}><SheetTitle className="sr-only">项目导航</SheetTitle>{drawer && sidebar}</SheetContent></Sheet>
   </>;
 }

@@ -37,6 +37,7 @@ from flowmate.skills.contracts import (
     SkillView,
 )
 from flowmate.skills.packages import (
+    SkillPackage,
     SkillPackageError,
     export_zip,
     import_directory,
@@ -192,9 +193,8 @@ class SkillService:
         except SkillPackageError as error:
             raise DomainError(error.code, str(error)) from None
 
-    def _stage(self, package, scope, source, meta, *, skill_id, base_hash, extra=(), validate=None):
-        # SkillPackage 只来自既有格式/原生层；重新经过同一格式入口，不信任可变 DTO 副本。
-        package = self._package(package.directory_name, package.files)
+    def _stage(self, package: SkillPackage, scope, source, meta, *, skill_id, base_hash, extra=(), validate=None):
+        # 格式/原生入口已构造冻结的 SkillPackage；磁盘快照仍由 _load_package 核对。
         parameters = {"scope": scope.model_dump(mode="json"), "source": source.model_dump(mode="json"),
             "content_hash": package.content_hash, "directory_name": package.directory_name,
             "skill_id": skill_id, "base_hash": base_hash}
@@ -310,7 +310,6 @@ class SkillService:
             actual = self._candidate(tx, candidate.staging_ref, candidate.scope)
             if actual != candidate:
                 raise DomainError("skill_candidate_invalid", "候选身份或内容已经改变")
-            self._check_source(tx, actual)
             row = tx.execute("SELECT document FROM skills WHERE id=?", (candidate.skill_id,)).fetchone()
             if row is None:
                 if candidate.base_hash is not None or meta.expected_version is not None:

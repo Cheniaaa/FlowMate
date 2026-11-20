@@ -11,10 +11,11 @@ import { skillQuery } from './skill-query';
 import SkillExportRecovery from './SkillExportRecovery';
 
 export default function CapabilityLibrary({ client, workspaceId, refreshKey = 0, initialRecovery = false, onClose, onUse,
-  mcpTarget, compact, onReturnToQuick, mcpRevision = 0 }: {
+  mcpTarget, initialMcpScope, compact, onReturnToQuick, mcpRevision = 0 }: {
   client: RuntimeClient; workspaceId?: string; refreshKey?: number; initialRecovery?: boolean; onClose: () => void;
   onUse?: (version: SkillVersion) => Promise<void>;
   mcpTarget?: { server_id: string | null; workspace_id: string | null };
+  initialMcpScope?: ScopeRef;
   compact?: boolean; onReturnToQuick?: () => Promise<void>; mcpRevision?: number;
 }) {
   const [tab, setTab] = useState<'skills' | 'mcp'>(mcpTarget ? 'mcp' : 'skills');
@@ -22,8 +23,15 @@ export default function CapabilityLibrary({ client, workspaceId, refreshKey = 0,
   const mcpClient = useMemo(() => new McpClient(client.connection), [client]);
   const [scope, setScope] = useState<ScopeRef>(workspaceId ? { kind: 'workspace', workspace_id: workspaceId, session_id: null }
     : { kind: 'user_global', workspace_id: null, session_id: null });
+  const mcpScope: ScopeRef = target ? { kind: target.workspace_id ? 'workspace' : 'user_global',
+    workspace_id: target.workspace_id, session_id: null } : initialMcpScope ?? (workspaceId
+      ? { kind: 'workspace', workspace_id: workspaceId, session_id: null }
+      : { kind: 'user_global', workspace_id: null, session_id: null });
   const [query, setQuery] = useState(''), [page, setPage] = useState<SkillPage>(), [selected, select] = useState('');
   const [revision, refresh] = useState(0), [error, setError] = useState(''), [busy, setBusy] = useState(false);
+  const [childBusy, setChildBusy] = useState(false);
+  const locked = busy || childBusy;
+  const [observedRefresh, setObservedRefresh] = useState(refreshKey);
   const [editor, setEditor] = useState<{ directory: string; text: string; base?: SkillRecord }>();
   const [candidate, setCandidate] = useState<SkillCandidate>();
   const [recovery, setRecovery] = useState(initialRecovery);
@@ -33,6 +41,9 @@ export default function CapabilityLibrary({ client, workspaceId, refreshKey = 0,
   const [pendingImport, freezeImport] = useState<ImportSkillCommand>();
   const [pendingPublish, freezePublish] = useState<PublishSkillCommand>();
   const pending = useRef(false), root = useRef<HTMLElement>(null), close = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!locked && !editor && !candidate && !pendingStage && !pendingImport && !pendingPublish) setObservedRefresh(refreshKey);
+  }, [locked, editor, candidate, pendingStage, pendingImport, pendingPublish, refreshKey]);
   useEffect(() => { setReceipts(undefined); }, [recovery, scope]);
   useEffect(() => {
     if (!recovery) return;
@@ -42,11 +53,11 @@ export default function CapabilityLibrary({ client, workspaceId, refreshKey = 0,
     return () => { ignore = true; };
   }, [client, recovery, scope, refreshKey]);
   useEffect(() => {
-    if (mcpTarget && mcpTarget !== consumedTarget.current && !busy && !editor && !candidate &&
+    if (mcpTarget && mcpTarget !== consumedTarget.current && !locked && !editor && !candidate &&
         !pendingStage && !pendingImport && !pendingPublish) {
       consumedTarget.current = mcpTarget; setTarget(mcpTarget); setTab('mcp');
     }
-  }, [mcpTarget, busy, editor, candidate, pendingStage, pendingImport, pendingPublish]);
+  }, [mcpTarget, locked, editor, candidate, pendingStage, pendingImport, pendingPublish]);
   useEffect(() => { close.current?.focus(); }, []);
   useEffect(() => {
     let ignore = false; setPreview(undefined);
@@ -63,7 +74,7 @@ export default function CapabilityLibrary({ client, workspaceId, refreshKey = 0,
     client.skills({ ...skillQuery(scope), query }).then(value => { if (!ignore) { setPage(value); select(current => value.items.some(item => item.version.skill_id === current) ? current : value.items[0]?.version.skill_id ?? ''); } })
       .catch(error => { if (!ignore) setError(windowError(error)); });
     return () => { ignore = true; };
-  }, [client, scope, query, revision, refreshKey, tab]);
+  }, [client, scope, query, revision, observedRefresh, tab]);
   async function act(action: () => Promise<unknown>) {
     if (pending.current) return;
     pending.current = true; setBusy(true); setError('');
@@ -97,7 +108,7 @@ export default function CapabilityLibrary({ client, workspaceId, refreshKey = 0,
   }
   return <section ref={root} role="dialog" aria-modal="true" aria-label="能力库" className="capability-library"
     onKeyDown={event => {
-      if (event.key === 'Escape' && !busy && !editor && !candidate) { event.preventDefault(); onClose(); }
+       if (event.key === 'Escape' && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && !locked && !editor && !candidate && !pendingStage && !pendingImport && !pendingPublish) { event.preventDefault(); onClose(); }
       if (event.key === 'Tab') {
         const controls = [...root.current!.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled)')].filter(item => item.getClientRects().length);
         const first = controls[0], last = controls.at(-1);
@@ -106,26 +117,25 @@ export default function CapabilityLibrary({ client, workspaceId, refreshKey = 0,
       }
     }}>
     <header className="panel-header"><div><h1>能力库</h1><p>管理可复用的方法、参考材料与 MCP 连接。</p></div>
-      <button ref={close} disabled={busy || !!editor || !!candidate || !!pendingStage || !!pendingImport || !!pendingPublish} onClick={onClose}>返回对话与草稿</button></header>
+       <button ref={close} disabled={locked || !!editor || !!candidate || !!pendingStage || !!pendingImport || !!pendingPublish} onClick={onClose}>返回对话与草稿</button></header>
     <div role="tablist" aria-label="能力类型">
-      <button role="tab" disabled={busy || !!editor || !!candidate || !!pendingStage || !!pendingImport || !!pendingPublish}
+       <button role="tab" disabled={locked || !!editor || !!candidate || !!pendingStage || !!pendingImport || !!pendingPublish}
         aria-selected={tab === 'skills'} onClick={() => setTab('skills')}>Skills</button>
-      <button role="tab" disabled={busy || !!editor || !!candidate || !!pendingStage || !!pendingImport || !!pendingPublish}
+       <button role="tab" disabled={locked || !!editor || !!candidate || !!pendingStage || !!pendingImport || !!pendingPublish}
         aria-selected={tab === 'mcp'} onClick={() => {
-          if (compact) void showWorkbench({ kind: 'mcp', server_id: null, workspace_id: workspaceId ?? null });
+          if (compact) void showWorkbench({ kind: 'mcp', server_id: null, workspace_id: mcpScope.workspace_id });
           else setTab('mcp');
         }}>MCP</button>
     </div>
-    {onReturnToQuick && <button disabled={busy || !!editor || !!candidate || !!pendingStage || !!pendingImport || !!pendingPublish}
+     {onReturnToQuick && <button disabled={locked || !!editor || !!candidate || !!pendingStage || !!pendingImport || !!pendingPublish}
       onClick={async () => { await onReturnToQuick(); onClose(); }}>返回快捷小窗</button>}
-    {tab === 'mcp' && <McpPanel key={`${target?.workspace_id ?? ''}:${target?.server_id ?? ''}`}
+    {tab === 'mcp' && <McpPanel key={`${mcpScope.workspace_id ?? ''}:${target?.server_id ?? ''}`}
       client={mcpClient} workspaceId={target?.workspace_id ?? workspaceId}
       initialServerId={target?.server_id ?? undefined} refreshKey={mcpRevision}
-      initialScope={target ? { kind: target.workspace_id ? 'workspace' : 'user_global',
-        workspace_id: target.workspace_id, session_id: null } : undefined} onBusyChange={setBusy} />}
+      initialScope={mcpScope} onBusyChange={setBusy} />}
     {tab === 'skills' && <>
     {error && <p role="alert">{error}</p>}
-    <fieldset disabled={busy || !!editor || !!candidate || !!pendingStage || !!pendingImport || !!pendingPublish} className="library-toolbar">
+     <fieldset disabled={locked || !!editor || !!candidate || !!pendingStage || !!pendingImport || !!pendingPublish} className="library-toolbar">
       <label>能力范围 <select value={scope.kind} onChange={event => setScope(event.target.value === 'workspace'
         ? { kind: 'workspace', workspace_id: workspaceId!, session_id: null }
         : { kind: 'user_global', workspace_id: null, session_id: null })}>
@@ -169,13 +179,13 @@ export default function CapabilityLibrary({ client, workspaceId, refreshKey = 0,
     {!editor && !candidate && !recovery && <div className="library-layout">
       <aside aria-label="Skill 列表" className="skill-list">{!page && <p>正在读取 Skills…</p>}
         {page?.items.length === 0 && <p>没有匹配的 Skill。</p>}
-        {page?.items.map(item => <button className="skill-item" key={item.version.skill_id} aria-pressed={selected === item.version.skill_id}
+         {page?.items.map(item => <button disabled={locked} className="skill-item" key={item.version.skill_id} aria-pressed={selected === item.version.skill_id}
           onClick={() => select(item.version.skill_id)}><strong>{item.version.name}</strong><p>{item.version.description}</p>
           <small>{item.version.scope.kind === 'user_global' ? '个人' : '项目'} · {item.binding?.enabled ? '已启用' : '未启用'} · {item.version.content_hash.slice(0, 12)}</small></button>)}
         {page?.next_cursor && <button disabled={busy} onClick={() => void act(async () => { const next = await client.skills({ ...skillQuery(scope), query, cursor: page.next_cursor! }); setPage({ ...next, items: [...page.items, ...next.items] }); })}>更多 Skills</button>}
       </aside>
-      {view && <SkillDetail key={`${view.version.skill_id}:${scope.kind}`} client={client} view={view} scope={scope} workspaceId={workspaceId} refreshKey={refreshKey}
-        onChanged={() => refresh(value => value + 1)} onUse={onUse} onEdit={async () => {
+      {view && <SkillDetail key={`${view.version.skill_id}:${scope.kind}`} client={client} view={view} scope={scope} workspaceId={workspaceId} refreshKey={observedRefresh}
+         onBusyChange={setChildBusy} onChanged={() => refresh(value => value + 1)} onUse={onUse} onEdit={async () => {
           await act(async () => {
             const record = await client.skillRecord(view.version.skill_id, skillQuery(view.version.scope));
             let text = '', offset = 0, total = 1;

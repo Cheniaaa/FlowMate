@@ -180,7 +180,7 @@ def delivered_result(tx, task, handle, *, input_only=False):
             dependencies.extend(item for artifact in artifacts for item in artifact.dependencies)
         result = output.model_dump(mode="json") if delivered else None
     else:
-        result, found = None, False
+        result, found, explicit_ids = None, False, set()
         for row in tx.execute("SELECT document FROM messages WHERE task_id=? ORDER BY event_id,event_index", (task.id,)):
             message = ModelMessage.model_validate_json(row[0])
             for part in message.parts:
@@ -188,10 +188,21 @@ def delivered_result(tx, task, handle, *, input_only=False):
                     dependencies.extend(message.source_dependencies)
                     if task.state != "cancelled":
                         result, error, found = part.result, part.error, True
+                        if message.activity_id is not None:
+                            activity = load(tx, ActivitySnapshot, message.activity_id)
+                            if (activity.intent.operation == "skills.run_script" and activity.receipt is not None
+                                    and activity.receipt.result is not None):
+                                from flowmate.skills.execution.contracts import (
+                                    ScriptExecutionResult,
+                                )
+                                execution = ScriptExecutionResult.model_validate_json(json.dumps(activity.receipt.result))
+                                explicit_ids.update(item.artifact.id for item in execution.outputs)
         if task.state == "completed" and not found:
             raise DomainError("task_result_unavailable", "任务缺少已提交工具结果")
         # 工具结果只有显式引用的产物属于交付，不把内部全部产物暴露给总结。
-        ids = set(result.get("artifact_ids", [])) if isinstance(result, dict) else set()
+        ids = explicit_ids | (set(result.get("artifact_ids", [])) if isinstance(result, dict) else set())
+        if isinstance(result, dict) and result.get("truncated") is True and "artifact_id" in result:
+            ids.add(result["artifact_id"])
         artifacts = [ArtifactRef.model_validate_json(row[0]) for row in tx.execute(
             "SELECT document FROM artifacts WHERE task_id=? ORDER BY id", (task.id,))]
         if input_only:

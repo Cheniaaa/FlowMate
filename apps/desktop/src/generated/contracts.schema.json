@@ -231,6 +231,18 @@
                 "title": "Attempt Id",
                 "type": "string"
               },
+              "collection_error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Collection Error"
+              },
               "content_hash": {
                 "pattern": "^[0-9a-f]{64}$",
                 "title": "Content Hash",
@@ -305,6 +317,7 @@
               "termination_reason",
               "truncated",
               "outputs",
+              "collection_error",
               "external_costs"
             ],
             "title": "ScriptExecutionSummary",
@@ -567,6 +580,18 @@
                 "title": "Attempt Id",
                 "type": "string"
               },
+              "collection_error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Collection Error"
+              },
               "content_hash": {
                 "pattern": "^[0-9a-f]{64}$",
                 "title": "Content Hash",
@@ -641,6 +666,7 @@
               "termination_reason",
               "truncated",
               "outputs",
+              "collection_error",
               "external_costs"
             ],
             "title": "ScriptExecutionSummary",
@@ -1452,6 +1478,7 @@
           "call_id": {
             "maxLength": 256,
             "minLength": 1,
+            "pattern": "\\S",
             "title": "Call Id",
             "type": "string"
           },
@@ -1677,6 +1704,7 @@
               "call_id": {
                 "maxLength": 256,
                 "minLength": 1,
+                "pattern": "\\S",
                 "title": "Call Id",
                 "type": "string"
               },
@@ -3419,6 +3447,43 @@
       "mode": "serialization",
       "schema": {
         "$defs": {
+          "McpToolSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "catalog_hash": {
+                "title": "Catalog Hash",
+                "type": "string"
+              },
+              "config_revision": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Config Revision",
+                "type": "integer"
+              },
+              "destination": {
+                "title": "Destination",
+                "type": "string"
+              },
+              "original_name": {
+                "title": "Original Name",
+                "type": "string"
+              },
+              "server_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Server Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "server_id",
+              "config_revision",
+              "catalog_hash",
+              "original_name",
+              "destination"
+            ],
+            "title": "McpToolSnapshot",
+            "type": "object"
+          },
           "ScopeRef": {
             "additionalProperties": false,
             "properties": {
@@ -3494,6 +3559,13 @@
             "title": "Id",
             "type": "string"
           },
+          "mcp_queries": {
+            "items": {
+              "$ref": "#/$defs/McpToolSnapshot"
+            },
+            "title": "Mcp Queries",
+            "type": "array"
+          },
           "mcp_versions": {
             "patternProperties": {
               "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$": {
@@ -3560,6 +3632,7 @@
           "resource_ids",
           "memory_scopes",
           "mcp_versions",
+          "mcp_queries",
           "purposes",
           "destination",
           "id",
@@ -4670,6 +4743,13 @@
                 "title": "Id",
                 "type": "string"
               },
+              "mcp_queries": {
+                "items": {
+                  "$ref": "#/$defs/McpToolSnapshot"
+                },
+                "title": "Mcp Queries",
+                "type": "array"
+              },
               "mcp_versions": {
                 "patternProperties": {
                   "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$": {
@@ -4736,6 +4816,7 @@
               "resource_ids",
               "memory_scopes",
               "mcp_versions",
+              "mcp_queries",
               "purposes",
               "destination",
               "id",
@@ -4744,6 +4825,43 @@
               "status"
             ],
             "title": "DataUseGrant",
+            "type": "object"
+          },
+          "McpToolSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "catalog_hash": {
+                "title": "Catalog Hash",
+                "type": "string"
+              },
+              "config_revision": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Config Revision",
+                "type": "integer"
+              },
+              "destination": {
+                "title": "Destination",
+                "type": "string"
+              },
+              "original_name": {
+                "title": "Original Name",
+                "type": "string"
+              },
+              "server_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Server Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "server_id",
+              "config_revision",
+              "catalog_hash",
+              "original_name",
+              "destination"
+            ],
+            "title": "McpToolSnapshot",
             "type": "object"
           },
           "ScopeRef": {
@@ -4876,6 +4994,13 @@
                 "default": null,
                 "title": "Destination"
               },
+              "mcp_queries": {
+                "items": {
+                  "$ref": "#/$defs/McpToolSnapshot"
+                },
+                "title": "Mcp Queries",
+                "type": "array"
+              },
               "mcp_versions": {
                 "patternProperties": {
                   "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$": {
@@ -4926,6 +5051,43 @@
               "purposes"
             ],
             "title": "GrantCommand",
+            "type": "object"
+          },
+          "McpToolSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "catalog_hash": {
+                "title": "Catalog Hash",
+                "type": "string"
+              },
+              "config_revision": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Config Revision",
+                "type": "integer"
+              },
+              "destination": {
+                "title": "Destination",
+                "type": "string"
+              },
+              "original_name": {
+                "title": "Original Name",
+                "type": "string"
+              },
+              "server_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Server Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "server_id",
+              "config_revision",
+              "catalog_hash",
+              "original_name",
+              "destination"
+            ],
+            "title": "McpToolSnapshot",
             "type": "object"
           },
           "ScopeRef": {
@@ -5182,6 +5344,7 @@
               "call_id": {
                 "maxLength": 256,
                 "minLength": 1,
+                "pattern": "\\S",
                 "title": "Call Id",
                 "type": "string"
               },
@@ -6755,6 +6918,117 @@
       "mode": "serialization",
       "schema": {
         "$defs": {
+          "DataUseGrant": {
+            "additionalProperties": false,
+            "properties": {
+              "destination": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Destination"
+              },
+              "epoch": {
+                "default": 1,
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Epoch",
+                "type": "integer"
+              },
+              "id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Id",
+                "type": "string"
+              },
+              "mcp_queries": {
+                "items": {
+                  "$ref": "#/$defs/McpToolSnapshot"
+                },
+                "title": "Mcp Queries",
+                "type": "array"
+              },
+              "mcp_versions": {
+                "patternProperties": {
+                  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "title": "Mcp Versions",
+                "type": "object"
+              },
+              "memory_scopes": {
+                "items": {
+                  "$ref": "#/$defs/ScopeRef"
+                },
+                "title": "Memory Scopes",
+                "type": "array"
+              },
+              "purposes": {
+                "items": {
+                  "enum": [
+                    "read",
+                    "model_send",
+                    "export",
+                    "tool_send",
+                    "local_process_send"
+                  ],
+                  "type": "string"
+                },
+                "minItems": 1,
+                "title": "Purposes",
+                "type": "array"
+              },
+              "resource_ids": {
+                "items": {
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "title": "Resource Ids",
+                "type": "array"
+              },
+              "scope": {
+                "$ref": "#/$defs/ScopeRef"
+              },
+              "status": {
+                "default": "active",
+                "enum": [
+                  "active",
+                  "revoked"
+                ],
+                "title": "Status",
+                "type": "string"
+              },
+              "version": {
+                "default": 1,
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "scope",
+              "resource_ids",
+              "memory_scopes",
+              "mcp_versions",
+              "mcp_queries",
+              "purposes",
+              "destination",
+              "id",
+              "version",
+              "epoch",
+              "status"
+            ],
+            "title": "DataUseGrant",
+            "type": "object"
+          },
           "JsonValue": {},
           "McpCatalog": {
             "additionalProperties": false,
@@ -6938,6 +7212,13 @@
                 "default": null,
                 "title": "Error Code"
               },
+              "query_grants": {
+                "items": {
+                  "$ref": "#/$defs/DataUseGrant"
+                },
+                "title": "Query Grants",
+                "type": "array"
+              },
               "selection": {
                 "anyOf": [
                   {
@@ -6966,7 +7247,8 @@
               "state",
               "catalog",
               "error_code",
-              "selection"
+              "selection",
+              "query_grants"
             ],
             "title": "McpServerView",
             "type": "object"
@@ -7095,6 +7377,43 @@
             "title": "McpToolSelection",
             "type": "object"
           },
+          "McpToolSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "catalog_hash": {
+                "title": "Catalog Hash",
+                "type": "string"
+              },
+              "config_revision": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Config Revision",
+                "type": "integer"
+              },
+              "destination": {
+                "title": "Destination",
+                "type": "string"
+              },
+              "original_name": {
+                "title": "Original Name",
+                "type": "string"
+              },
+              "server_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Server Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "server_id",
+              "config_revision",
+              "catalog_hash",
+              "original_name",
+              "destination"
+            ],
+            "title": "McpToolSnapshot",
+            "type": "object"
+          },
           "ScopeRef": {
             "additionalProperties": false,
             "properties": {
@@ -7184,6 +7503,117 @@
       "mode": "serialization",
       "schema": {
         "$defs": {
+          "DataUseGrant": {
+            "additionalProperties": false,
+            "properties": {
+              "destination": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Destination"
+              },
+              "epoch": {
+                "default": 1,
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Epoch",
+                "type": "integer"
+              },
+              "id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Id",
+                "type": "string"
+              },
+              "mcp_queries": {
+                "items": {
+                  "$ref": "#/$defs/McpToolSnapshot"
+                },
+                "title": "Mcp Queries",
+                "type": "array"
+              },
+              "mcp_versions": {
+                "patternProperties": {
+                  "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "title": "Mcp Versions",
+                "type": "object"
+              },
+              "memory_scopes": {
+                "items": {
+                  "$ref": "#/$defs/ScopeRef"
+                },
+                "title": "Memory Scopes",
+                "type": "array"
+              },
+              "purposes": {
+                "items": {
+                  "enum": [
+                    "read",
+                    "model_send",
+                    "export",
+                    "tool_send",
+                    "local_process_send"
+                  ],
+                  "type": "string"
+                },
+                "minItems": 1,
+                "title": "Purposes",
+                "type": "array"
+              },
+              "resource_ids": {
+                "items": {
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "title": "Resource Ids",
+                "type": "array"
+              },
+              "scope": {
+                "$ref": "#/$defs/ScopeRef"
+              },
+              "status": {
+                "default": "active",
+                "enum": [
+                  "active",
+                  "revoked"
+                ],
+                "title": "Status",
+                "type": "string"
+              },
+              "version": {
+                "default": 1,
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "scope",
+              "resource_ids",
+              "memory_scopes",
+              "mcp_versions",
+              "mcp_queries",
+              "purposes",
+              "destination",
+              "id",
+              "version",
+              "epoch",
+              "status"
+            ],
+            "title": "DataUseGrant",
+            "type": "object"
+          },
           "JsonValue": {},
           "McpCatalog": {
             "additionalProperties": false,
@@ -7462,6 +7892,43 @@
             "title": "McpToolSelection",
             "type": "object"
           },
+          "McpToolSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "catalog_hash": {
+                "title": "Catalog Hash",
+                "type": "string"
+              },
+              "config_revision": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Config Revision",
+                "type": "integer"
+              },
+              "destination": {
+                "title": "Destination",
+                "type": "string"
+              },
+              "original_name": {
+                "title": "Original Name",
+                "type": "string"
+              },
+              "server_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Server Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "server_id",
+              "config_revision",
+              "catalog_hash",
+              "original_name",
+              "destination"
+            ],
+            "title": "McpToolSnapshot",
+            "type": "object"
+          },
           "ScopeRef": {
             "additionalProperties": false,
             "properties": {
@@ -7539,6 +8006,13 @@
             "default": null,
             "title": "Error Code"
           },
+          "query_grants": {
+            "items": {
+              "$ref": "#/$defs/DataUseGrant"
+            },
+            "title": "Query Grants",
+            "type": "array"
+          },
           "selection": {
             "anyOf": [
               {
@@ -7567,7 +8041,8 @@
           "state",
           "catalog",
           "error_code",
-          "selection"
+          "selection",
+          "query_grants"
         ],
         "title": "McpServerView",
         "type": "object"
@@ -8907,6 +9382,18 @@
                 "title": "Attempt Id",
                 "type": "string"
               },
+              "collection_error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Collection Error"
+              },
               "content_hash": {
                 "pattern": "^[0-9a-f]{64}$",
                 "title": "Content Hash",
@@ -8981,6 +9468,7 @@
               "termination_reason",
               "truncated",
               "outputs",
+              "collection_error",
               "external_costs"
             ],
             "title": "ScriptExecutionSummary",
@@ -10706,6 +11194,18 @@
                 "title": "Attempt Id",
                 "type": "string"
               },
+              "collection_error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Collection Error"
+              },
               "content_hash": {
                 "pattern": "^[0-9a-f]{64}$",
                 "title": "Content Hash",
@@ -10780,6 +11280,7 @@
               "termination_reason",
               "truncated",
               "outputs",
+              "collection_error",
               "external_costs"
             ],
             "title": "ScriptExecutionSummary",
@@ -12968,6 +13469,11 @@
                 "title": "Role",
                 "type": "string"
               },
+              "run_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Run Id",
+                "type": "string"
+              },
               "source_dependencies": {
                 "items": {
                   "$ref": "#/$defs/ScopeDependency"
@@ -12984,6 +13490,7 @@
               "activity_id",
               "private_ref",
               "origin",
+              "run_id",
               "event_id",
               "event_index"
             ],
@@ -13058,11 +13565,18 @@
             "additionalProperties": false,
             "properties": {
               "arguments": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/JsonValue"
-                },
-                "title": "Arguments",
-                "type": "object"
+                "anyOf": [
+                  {
+                    "additionalProperties": {
+                      "$ref": "#/$defs/JsonValue"
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "title": "Arguments"
               },
               "call_id": {
                 "title": "Call Id",
@@ -13674,11 +14188,18 @@
             "additionalProperties": false,
             "properties": {
               "arguments": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/JsonValue"
-                },
-                "title": "Arguments",
-                "type": "object"
+                "anyOf": [
+                  {
+                    "additionalProperties": {
+                      "$ref": "#/$defs/JsonValue"
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "title": "Arguments"
               },
               "call_id": {
                 "title": "Call Id",
@@ -13843,6 +14364,11 @@
             "title": "Role",
             "type": "string"
           },
+          "run_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Run Id",
+            "type": "string"
+          },
           "source_dependencies": {
             "items": {
               "$ref": "#/$defs/ScopeDependency"
@@ -13859,6 +14385,7 @@
           "activity_id",
           "private_ref",
           "origin",
+          "run_id",
           "event_id",
           "event_index"
         ],
@@ -18866,6 +19393,7 @@
               "call_id": {
                 "maxLength": 256,
                 "minLength": 1,
+                "pattern": "\\S",
                 "title": "Call Id",
                 "type": "string"
               },
@@ -19296,6 +19824,13 @@
                 "title": "Id",
                 "type": "string"
               },
+              "mcp_queries": {
+                "items": {
+                  "$ref": "#/$defs/McpToolSnapshot"
+                },
+                "title": "Mcp Queries",
+                "type": "array"
+              },
               "mcp_versions": {
                 "patternProperties": {
                   "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$": {
@@ -19362,6 +19897,7 @@
               "resource_ids",
               "memory_scopes",
               "mcp_versions",
+              "mcp_queries",
               "purposes",
               "destination",
               "id",
@@ -20919,6 +21455,11 @@
                 "title": "Role",
                 "type": "string"
               },
+              "run_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Run Id",
+                "type": "string"
+              },
               "source_dependencies": {
                 "items": {
                   "$ref": "#/$defs/ScopeDependency"
@@ -20935,6 +21476,7 @@
               "activity_id",
               "private_ref",
               "origin",
+              "run_id",
               "event_id",
               "event_index"
             ],
@@ -23129,6 +23671,18 @@
                 "title": "Attempt Id",
                 "type": "string"
               },
+              "collection_error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Collection Error"
+              },
               "content_hash": {
                 "pattern": "^[0-9a-f]{64}$",
                 "title": "Content Hash",
@@ -23203,6 +23757,7 @@
               "termination_reason",
               "truncated",
               "outputs",
+              "collection_error",
               "external_costs"
             ],
             "title": "ScriptExecutionSummary",
@@ -24082,11 +24637,18 @@
             "additionalProperties": false,
             "properties": {
               "arguments": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/JsonValue"
-                },
-                "title": "Arguments",
-                "type": "object"
+                "anyOf": [
+                  {
+                    "additionalProperties": {
+                      "$ref": "#/$defs/JsonValue"
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "title": "Arguments"
               },
               "call_id": {
                 "title": "Call Id",
@@ -26108,6 +26670,76 @@
         "type": "object"
       }
     },
+    "ResourceCoverage": {
+      "mode": "serialization",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "missing_model_send": {
+            "items": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "title": "Missing Model Send",
+            "type": "array"
+          },
+          "missing_read": {
+            "items": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "title": "Missing Read",
+            "type": "array"
+          }
+        },
+        "required": [
+          "allowed",
+          "destination",
+          "missing_read",
+          "missing_model_send"
+        ],
+        "title": "ResourceCoverage",
+        "type": "object"
+      }
+    },
+    "ResourceCoverageRequest": {
+      "mode": "validation",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "model_profile_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Model Profile Id",
+            "type": "string"
+          },
+          "resource_ids": {
+            "items": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Resource Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "resource_ids",
+          "model_profile_id"
+        ],
+        "title": "ResourceCoverageRequest",
+        "type": "object"
+      }
+    },
     "ResourcePage": {
       "mode": "serialization",
       "schema": {
@@ -27040,6 +27672,7 @@
               "call_id": {
                 "maxLength": 256,
                 "minLength": 1,
+                "pattern": "\\S",
                 "title": "Call Id",
                 "type": "string"
               },
@@ -27788,6 +28421,11 @@
                 "title": "Role",
                 "type": "string"
               },
+              "run_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Run Id",
+                "type": "string"
+              },
               "source_dependencies": {
                 "items": {
                   "$ref": "#/$defs/ScopeDependency"
@@ -27804,6 +28442,7 @@
               "activity_id",
               "private_ref",
               "origin",
+              "run_id",
               "event_id",
               "event_index"
             ],
@@ -29510,6 +30149,18 @@
                 "title": "Attempt Id",
                 "type": "string"
               },
+              "collection_error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Collection Error"
+              },
               "content_hash": {
                 "pattern": "^[0-9a-f]{64}$",
                 "title": "Content Hash",
@@ -29584,6 +30235,7 @@
               "termination_reason",
               "truncated",
               "outputs",
+              "collection_error",
               "external_costs"
             ],
             "title": "ScriptExecutionSummary",
@@ -29925,11 +30577,18 @@
             "additionalProperties": false,
             "properties": {
               "arguments": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/JsonValue"
-                },
-                "title": "Arguments",
-                "type": "object"
+                "anyOf": [
+                  {
+                    "additionalProperties": {
+                      "$ref": "#/$defs/JsonValue"
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "title": "Arguments"
               },
               "call_id": {
                 "title": "Call Id",
@@ -30275,6 +30934,1078 @@
           "watermark"
         ],
         "title": "RunDetail",
+        "type": "object"
+      }
+    },
+    "RunFeedback": {
+      "mode": "serialization",
+      "schema": {
+        "$defs": {
+          "ActivityView": {
+            "additionalProperties": false,
+            "properties": {
+              "actual_units": {
+                "anyOf": [
+                  {
+                    "pattern": "^(0|[1-9][0-9]*)$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Actual Units"
+              },
+              "dependencies": {
+                "items": {
+                  "$ref": "#/$defs/ScopeDependency"
+                },
+                "title": "Dependencies",
+                "type": "array"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Error"
+              },
+              "id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Id",
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "model",
+                  "tool"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "operation": {
+                "title": "Operation",
+                "type": "string"
+              },
+              "run_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Run Id",
+                "type": "string"
+              },
+              "script_execution": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ScriptExecutionSummary"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "state": {
+                "enum": [
+                  "prepared",
+                  "dispatched",
+                  "succeeded",
+                  "failed",
+                  "uncertain"
+                ],
+                "title": "State",
+                "type": "string"
+              },
+              "task_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Task Id",
+                "type": "string"
+              },
+              "usage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Usage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "version": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "version",
+              "run_id",
+              "task_id",
+              "kind",
+              "operation",
+              "state",
+              "error",
+              "usage",
+              "actual_units",
+              "dependencies",
+              "script_execution"
+            ],
+            "title": "ActivityView",
+            "type": "object"
+          },
+          "ArtifactRef": {
+            "additionalProperties": false,
+            "properties": {
+              "activity_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Activity Id",
+                "type": "string"
+              },
+              "content_hash": {
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Content Hash",
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "$ref": "#/$defs/ScopeDependency"
+                },
+                "title": "Dependencies",
+                "type": "array"
+              },
+              "id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Id",
+                "type": "string"
+              },
+              "media_type": {
+                "enum": [
+                  "text/plain",
+                  "text/markdown",
+                  "application/octet-stream"
+                ],
+                "title": "Media Type",
+                "type": "string"
+              },
+              "task_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Task Id",
+                "type": "string"
+              },
+              "version": {
+                "default": 1,
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "version",
+              "content_hash",
+              "task_id",
+              "activity_id",
+              "dependencies",
+              "media_type"
+            ],
+            "title": "ArtifactRef",
+            "type": "object"
+          },
+          "ScopeDependency": {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Epoch",
+                "type": "integer"
+              },
+              "scope_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Scope Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "scope_id",
+              "epoch"
+            ],
+            "title": "ScopeDependency",
+            "type": "object"
+          },
+          "ScriptArtifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact": {
+                "$ref": "#/$defs/ArtifactRef"
+              },
+              "relative_path": {
+                "title": "Relative Path",
+                "type": "string"
+              }
+            },
+            "required": [
+              "relative_path",
+              "artifact"
+            ],
+            "title": "ScriptArtifact",
+            "type": "object"
+          },
+          "ScriptExecutionSummary": {
+            "additionalProperties": false,
+            "description": "过程投影只含事实和公开引用，不复制脚本日志、env 或执行路径。",
+            "properties": {
+              "attempt_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Attempt Id",
+                "type": "string"
+              },
+              "collection_error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Collection Error"
+              },
+              "content_hash": {
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Content Hash",
+                "type": "string"
+              },
+              "environment_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Environment Id",
+                "type": "string"
+              },
+              "environment_revision": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Environment Revision",
+                "type": "integer"
+              },
+              "exit_code": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Exit Code"
+              },
+              "external_costs": {
+                "const": "unknown",
+                "default": "unknown",
+                "title": "External Costs",
+                "type": "string"
+              },
+              "outputs": {
+                "items": {
+                  "$ref": "#/$defs/ScriptArtifact"
+                },
+                "title": "Outputs",
+                "type": "array"
+              },
+              "script_relative_path": {
+                "title": "Script Relative Path",
+                "type": "string"
+              },
+              "skill_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Skill Id",
+                "type": "string"
+              },
+              "termination_reason": {
+                "enum": [
+                  "exited",
+                  "cancelled",
+                  "timed_out"
+                ],
+                "title": "Termination Reason",
+                "type": "string"
+              },
+              "truncated": {
+                "title": "Truncated",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "skill_id",
+              "content_hash",
+              "script_relative_path",
+              "environment_id",
+              "environment_revision",
+              "attempt_id",
+              "exit_code",
+              "termination_reason",
+              "truncated",
+              "outputs",
+              "collection_error",
+              "external_costs"
+            ],
+            "title": "ScriptExecutionSummary",
+            "type": "object"
+          },
+          "Usage": {
+            "additionalProperties": false,
+            "properties": {
+              "cache_write_1h_tokens": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Cache Write 1H Tokens"
+              },
+              "cache_write_tokens": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Cache Write Tokens"
+              },
+              "cached_input_tokens": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Cached Input Tokens"
+              },
+              "input_tokens": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Input Tokens"
+              },
+              "output_tokens": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Output Tokens"
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Source"
+              },
+              "status": {
+                "default": "unknown",
+                "enum": [
+                  "unknown",
+                  "known"
+                ],
+                "title": "Status",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input_tokens",
+              "output_tokens",
+              "cached_input_tokens",
+              "cache_write_tokens",
+              "cache_write_1h_tokens",
+              "source",
+              "status"
+            ],
+            "title": "Usage",
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "model_activity": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ActivityView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "root_task_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Root Task Id",
+            "type": "string"
+          },
+          "run_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "session_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "waiting_user",
+              "waiting_approval",
+              "waiting_children",
+              "interrupted",
+              "blocked_incompatible",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "workspace_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "version",
+          "workspace_id",
+          "session_id",
+          "root_task_id",
+          "connection_id",
+          "state",
+          "reason",
+          "model_activity"
+        ],
+        "title": "RunFeedback",
+        "type": "object"
+      }
+    },
+    "RunFeedbackPage": {
+      "mode": "serialization",
+      "schema": {
+        "$defs": {
+          "ActivityView": {
+            "additionalProperties": false,
+            "properties": {
+              "actual_units": {
+                "anyOf": [
+                  {
+                    "pattern": "^(0|[1-9][0-9]*)$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Actual Units"
+              },
+              "dependencies": {
+                "items": {
+                  "$ref": "#/$defs/ScopeDependency"
+                },
+                "title": "Dependencies",
+                "type": "array"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Error"
+              },
+              "id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Id",
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "model",
+                  "tool"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "operation": {
+                "title": "Operation",
+                "type": "string"
+              },
+              "run_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Run Id",
+                "type": "string"
+              },
+              "script_execution": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ScriptExecutionSummary"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "state": {
+                "enum": [
+                  "prepared",
+                  "dispatched",
+                  "succeeded",
+                  "failed",
+                  "uncertain"
+                ],
+                "title": "State",
+                "type": "string"
+              },
+              "task_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Task Id",
+                "type": "string"
+              },
+              "usage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Usage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "version": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "version",
+              "run_id",
+              "task_id",
+              "kind",
+              "operation",
+              "state",
+              "error",
+              "usage",
+              "actual_units",
+              "dependencies",
+              "script_execution"
+            ],
+            "title": "ActivityView",
+            "type": "object"
+          },
+          "ArtifactRef": {
+            "additionalProperties": false,
+            "properties": {
+              "activity_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Activity Id",
+                "type": "string"
+              },
+              "content_hash": {
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Content Hash",
+                "type": "string"
+              },
+              "dependencies": {
+                "items": {
+                  "$ref": "#/$defs/ScopeDependency"
+                },
+                "title": "Dependencies",
+                "type": "array"
+              },
+              "id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Id",
+                "type": "string"
+              },
+              "media_type": {
+                "enum": [
+                  "text/plain",
+                  "text/markdown",
+                  "application/octet-stream"
+                ],
+                "title": "Media Type",
+                "type": "string"
+              },
+              "task_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Task Id",
+                "type": "string"
+              },
+              "version": {
+                "default": 1,
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "version",
+              "content_hash",
+              "task_id",
+              "activity_id",
+              "dependencies",
+              "media_type"
+            ],
+            "title": "ArtifactRef",
+            "type": "object"
+          },
+          "RunFeedback": {
+            "additionalProperties": false,
+            "properties": {
+              "connection_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Connection Id",
+                "type": "string"
+              },
+              "model_activity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ActivityView"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Reason"
+              },
+              "root_task_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Root Task Id",
+                "type": "string"
+              },
+              "run_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Run Id",
+                "type": "string"
+              },
+              "session_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Session Id",
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "queued",
+                  "running",
+                  "waiting_user",
+                  "waiting_approval",
+                  "waiting_children",
+                  "interrupted",
+                  "blocked_incompatible",
+                  "completed",
+                  "failed",
+                  "cancelled"
+                ],
+                "title": "State",
+                "type": "string"
+              },
+              "version": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Version",
+                "type": "integer"
+              },
+              "workspace_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Workspace Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "run_id",
+              "version",
+              "workspace_id",
+              "session_id",
+              "root_task_id",
+              "connection_id",
+              "state",
+              "reason",
+              "model_activity"
+            ],
+            "title": "RunFeedback",
+            "type": "object"
+          },
+          "ScopeDependency": {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Epoch",
+                "type": "integer"
+              },
+              "scope_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Scope Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "scope_id",
+              "epoch"
+            ],
+            "title": "ScopeDependency",
+            "type": "object"
+          },
+          "ScriptArtifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact": {
+                "$ref": "#/$defs/ArtifactRef"
+              },
+              "relative_path": {
+                "title": "Relative Path",
+                "type": "string"
+              }
+            },
+            "required": [
+              "relative_path",
+              "artifact"
+            ],
+            "title": "ScriptArtifact",
+            "type": "object"
+          },
+          "ScriptExecutionSummary": {
+            "additionalProperties": false,
+            "description": "过程投影只含事实和公开引用，不复制脚本日志、env 或执行路径。",
+            "properties": {
+              "attempt_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Attempt Id",
+                "type": "string"
+              },
+              "collection_error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Collection Error"
+              },
+              "content_hash": {
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Content Hash",
+                "type": "string"
+              },
+              "environment_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Environment Id",
+                "type": "string"
+              },
+              "environment_revision": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Environment Revision",
+                "type": "integer"
+              },
+              "exit_code": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Exit Code"
+              },
+              "external_costs": {
+                "const": "unknown",
+                "default": "unknown",
+                "title": "External Costs",
+                "type": "string"
+              },
+              "outputs": {
+                "items": {
+                  "$ref": "#/$defs/ScriptArtifact"
+                },
+                "title": "Outputs",
+                "type": "array"
+              },
+              "script_relative_path": {
+                "title": "Script Relative Path",
+                "type": "string"
+              },
+              "skill_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Skill Id",
+                "type": "string"
+              },
+              "termination_reason": {
+                "enum": [
+                  "exited",
+                  "cancelled",
+                  "timed_out"
+                ],
+                "title": "Termination Reason",
+                "type": "string"
+              },
+              "truncated": {
+                "title": "Truncated",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "skill_id",
+              "content_hash",
+              "script_relative_path",
+              "environment_id",
+              "environment_revision",
+              "attempt_id",
+              "exit_code",
+              "termination_reason",
+              "truncated",
+              "outputs",
+              "collection_error",
+              "external_costs"
+            ],
+            "title": "ScriptExecutionSummary",
+            "type": "object"
+          },
+          "Usage": {
+            "additionalProperties": false,
+            "properties": {
+              "cache_write_1h_tokens": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Cache Write 1H Tokens"
+              },
+              "cache_write_tokens": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Cache Write Tokens"
+              },
+              "cached_input_tokens": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Cached Input Tokens"
+              },
+              "input_tokens": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Input Tokens"
+              },
+              "output_tokens": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Output Tokens"
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Source"
+              },
+              "status": {
+                "default": "unknown",
+                "enum": [
+                  "unknown",
+                  "known"
+                ],
+                "title": "Status",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input_tokens",
+              "output_tokens",
+              "cached_input_tokens",
+              "cache_write_tokens",
+              "cache_write_1h_tokens",
+              "source",
+              "status"
+            ],
+            "title": "Usage",
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/RunFeedback"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Next Cursor"
+          },
+          "watermark": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "title": "Watermark",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "watermark"
+        ],
+        "title": "RunFeedbackPage",
         "type": "object"
       }
     },
@@ -39243,6 +40974,7 @@
               "call_id": {
                 "maxLength": 256,
                 "minLength": 1,
+                "pattern": "\\S",
                 "title": "Call Id",
                 "type": "string"
               },
@@ -39673,6 +41405,13 @@
                 "title": "Id",
                 "type": "string"
               },
+              "mcp_queries": {
+                "items": {
+                  "$ref": "#/$defs/McpToolSnapshot"
+                },
+                "title": "Mcp Queries",
+                "type": "array"
+              },
               "mcp_versions": {
                 "patternProperties": {
                   "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$": {
@@ -39739,6 +41478,7 @@
               "resource_ids",
               "memory_scopes",
               "mcp_versions",
+              "mcp_queries",
               "purposes",
               "destination",
               "id",
@@ -41406,6 +43146,11 @@
                 "title": "Role",
                 "type": "string"
               },
+              "run_id": {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "title": "Run Id",
+                "type": "string"
+              },
               "source_dependencies": {
                 "items": {
                   "$ref": "#/$defs/ScopeDependency"
@@ -41422,6 +43167,7 @@
               "activity_id",
               "private_ref",
               "origin",
+              "run_id",
               "event_id",
               "event_index"
             ],
@@ -43616,6 +45362,18 @@
                 "title": "Attempt Id",
                 "type": "string"
               },
+              "collection_error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Collection Error"
+              },
               "content_hash": {
                 "pattern": "^[0-9a-f]{64}$",
                 "title": "Content Hash",
@@ -43690,6 +45448,7 @@
               "termination_reason",
               "truncated",
               "outputs",
+              "collection_error",
               "external_costs"
             ],
             "title": "ScriptExecutionSummary",
@@ -44569,11 +46328,18 @@
             "additionalProperties": false,
             "properties": {
               "arguments": {
-                "additionalProperties": {
-                  "$ref": "#/$defs/JsonValue"
-                },
-                "title": "Arguments",
-                "type": "object"
+                "anyOf": [
+                  {
+                    "additionalProperties": {
+                      "$ref": "#/$defs/JsonValue"
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "title": "Arguments"
               },
               "call_id": {
                 "title": "Call Id",
@@ -54144,6 +55910,18 @@
                 "title": "Attempt Id",
                 "type": "string"
               },
+              "collection_error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Collection Error"
+              },
               "content_hash": {
                 "pattern": "^[0-9a-f]{64}$",
                 "title": "Content Hash",
@@ -54218,6 +55996,7 @@
               "termination_reason",
               "truncated",
               "outputs",
+              "collection_error",
               "external_costs"
             ],
             "title": "ScriptExecutionSummary",
@@ -55300,6 +57079,7 @@
               "call_id": {
                 "maxLength": 256,
                 "minLength": 1,
+                "pattern": "\\S",
                 "title": "Call Id",
                 "type": "string"
               },
@@ -55584,6 +57364,13 @@
                 "title": "Id",
                 "type": "string"
               },
+              "mcp_queries": {
+                "items": {
+                  "$ref": "#/$defs/McpToolSnapshot"
+                },
+                "title": "Mcp Queries",
+                "type": "array"
+              },
               "mcp_versions": {
                 "patternProperties": {
                   "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$": {
@@ -55650,6 +57437,7 @@
               "resource_ids",
               "memory_scopes",
               "mcp_versions",
+              "mcp_queries",
               "purposes",
               "destination",
               "id",

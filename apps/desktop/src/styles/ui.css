@@ -1,0 +1,21 @@
+@import "tailwindcss" source(none);
+@source "../components";
+@source "../features";
+@source "../windows";
+@source "../App.tsx";
+
+@theme inline {
+  --color-background: var(--panel);
+  --color-foreground: var(--ink);
+  --color-primary: var(--accent);
+  --color-primary-foreground: #fff;
+  --color-secondary: var(--accent-soft);
+  --color-destructive: var(--danger);
+  --color-border: var(--line);
+}
+
+.ui-overlay { z-index: 90; }
+.ui-dialog { z-index: 91; width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; }
+.ui-sheet { z-index: 91; width: min(460px, 100vw); overflow: auto; }
+.ui-menu { z-index: 100; max-width: calc(100vw - 24px); }
+[data-sonner-toaster] { z-index: 120; }

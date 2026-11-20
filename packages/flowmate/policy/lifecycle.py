@@ -70,9 +70,6 @@ def _save_command(tx, meta, fingerprint, result):
 def apply_deletion(tx, receipt, event_id):
     """由 reducer 在围栏和计费归档之后调用；本函数不另开事务或发送事件。"""
     scope = receipt.scope
-    # 删除来源前先消除其派生记忆正文，保留无内容 tombstone 抑制迟到提案。
-    from flowmate.memory.lifecycle import invalidate_sources
-    invalidate_sources(tx)
     from flowmate.skills.service import SkillService
     SkillService.invalidate_sources(tx)
     where, params = _where(scope)
@@ -228,7 +225,7 @@ class ScopeLifecycle:
         with self.artifacts.publication.deletion_guard(scope_ids), (
             self.skill_exports.operation_guard() if self.skill_exports is not None else nullcontext()
         ):
-            with self.store.transaction() as tx:
+            with self.policy.memory_provider.atomic(), self.store.transaction() as tx:
                 receipt = self._delete(tx, scope, meta)
             self.artifacts.publication.forget_scope(scope_ids)
             self._collect_skill_exports()
@@ -240,7 +237,7 @@ class ScopeLifecycle:
         with self.artifacts.publication.deletion_guard([session_id]), (
             self.skill_exports.operation_guard() if self.skill_exports is not None else nullcontext()
         ):
-            with self.store.transaction() as tx:
+            with self.policy.memory_provider.atomic(), self.store.transaction() as tx:
                 previous = tx.previous_command(meta.command_id)
                 if previous is not None:
                     if previous["session_id"] != session_id:
@@ -325,7 +322,10 @@ class ScopeLifecycle:
         tx.append_event(NewEvent(kind="scope.deleted", workspace_id=scope.workspace_id,
             session_id=scope.session_id, causation_id=meta.command_id,
             payload=LifecycleChange(scopes=scopes, deletions=[receipt],
-                                    accounting_budgets=budgets, accounting_activities=activities)))
+                                     accounting_budgets=budgets, accounting_activities=activities)))
+        # 围栏已在 reducer 写入；同事务清理实际 Provider，失败时一并回滚。
+        from flowmate.memory.lifecycle import invalidate_sources
+        invalidate_sources(tx, self.policy.memory_provider.using(tx))
         _save_command(tx, meta, fingerprint, receipt)
         return receipt
 

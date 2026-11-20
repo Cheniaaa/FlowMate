@@ -18,7 +18,6 @@ export function TaskList({ tasks, activities, selectedId, onSelect }: TaskListPr
           onClick={() => onSelect(node.id, node.entity_kind)}>
           <span>{node.entity_kind === 'task' ? '任务' : '过程'} · {node.label}</span>
           <span className="task-list-state">{graphStateLabels[node.state]}</span>
-          <code>{node.id}</code>
         </button>
       </li>)}
     </ul>}

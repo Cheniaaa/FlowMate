@@ -68,3 +68,30 @@ it('后台授权仅属本次草稿；旧ack不清新选项，当前ack重置，�
   a.acknowledge(key, a.read(key).revision);
   expect(a.read(key).allowManaged).toBe(false);
 });
+
+it('明确记住来源偏好后跨会话和窗口复用，项目/模型地址隔离，清除后停止默认选入', () => {
+  localStorage.clear();
+  const project = '00000000-0000-4000-8000-000000000001';
+  const key = { workspaceId: project, sessionId: 'a' };
+  const scope = { kind: 'workspace' as const, workspace_id: project, session_id: null };
+  const store = createDraftStore();
+  store.applyPreference(key, 'https://model.invalid/v1');
+  store.update(key, { memoryScopes: [scope], skillVersions: {}, resourceIds: ['private-attachment'], allowFollowUp: true });
+  store.rememberPreference(key, 'https://model.invalid/v1');
+  store.acknowledge(key, store.read(key).revision);
+  expect(store.read(key).memoryScopes).toEqual([scope]);
+  expect(store.read(key).resourceIds).toEqual([]);
+  expect(store.read(key).allowFollowUp).toBe(false);
+  const next = createDraftStore(), otherSession = { ...key, sessionId: 'b' };
+  next.applyPreference(otherSession, 'https://model.invalid/v1');
+  expect(next.read(otherSession).memoryScopes).toEqual([scope]);
+  next.applyPreference(otherSession, 'https://new.invalid/v1');
+  expect(next.read(otherSession).memoryScopes).toEqual([]);
+  next.applyPreference(b, 'https://model.invalid/v1');
+  expect(next.read(b).memoryScopes).toEqual([]);
+  next.forgetPreference(key, 'https://model.invalid/v1');
+  const reopened = createDraftStore();
+  reopened.applyPreference(key, 'https://model.invalid/v1');
+  expect(reopened.read(key).memoryScopes).toEqual([]);
+  localStorage.clear();
+});

@@ -65,7 +65,7 @@ it('真实view命令/SSE交叠保留同身份ResultInbox挂载，命令后正文
     throw new Error(`未定义HTTP ${path}`);
   });
   render(<TaskDetail client={client} store={store} runId={id} onCommand={command => store.dispatch(command)} onQuestion={vi.fn()} onOpen={vi.fn()} />);
-  await userEvent.click(await screen.findByRole('button', { name: `查看产物 ${artifact.id.slice(0, 8)}` }));
+  await userEvent.click(await screen.findByRole('button', { name: '查看产物 1' }));
   const artifactPreview = await screen.findByTitle('产物预览');
   await userEvent.click(await screen.findByRole('button', { name: '任务列表' }));
   const inbox = await screen.findByRole('region', { name: '结果收件箱' });
@@ -150,7 +150,7 @@ it.each(['scope.revoked', 'scope.deleted'] as const)('%s保持详情外壳但清
     throw new Error(`未定义HTTP ${path}`);
   });
   render(<TaskDetail client={client} store={store} runId={id} onCommand={async () => ({ status: 'confirmed', sync: 'ready', commandId: id })} onQuestion={vi.fn()} onOpen={vi.fn()} />);
-  await userEvent.click(await screen.findByRole('button', { name: `查看产物 ${artifact.id.slice(0, 8)}` }));
+  await userEvent.click(await screen.findByRole('button', { name: '查看产物 1' }));
   await artifactStarted.promise;
   await userEvent.click(await screen.findByRole('button', { name: '查看结果' }));
   await resultStarted.promise;
@@ -161,13 +161,15 @@ it.each(['scope.revoked', 'scope.deleted'] as const)('%s保持详情外壳但清
   const wire: StreamEvent = { kind: 'durable', event_id: position, event: { ...event, kind, event_id: position,
     payload: { scopes: [{ id, scope, epoch: 2, status }], deletions: status === 'deleted' ? [{ scope, epoch: 2, status }] : [] } } };
   await act(async () => { stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(wire)}\n\n`)); });
+  expect(screen.queryByTitle('产物预览')).toBeNull();
+  // 详情刷新与续页已串行；来源围栏须先屏蔽旧正文，再放行在途尾页。
+  await act(async () => { resultReply.resolve(); artifactReply.resolve(); pageReply.resolve(); });
   await refreshStarted.promise;
-  await act(async () => { resultReply.resolve(); artifactReply.resolve(); refreshReply.resolve(); });
+  await act(async () => { refreshReply.resolve(); });
   await waitFor(() => expect(screen.queryByRole('button', { name: '更多 artifacts' })).toBeNull());
-  await act(async () => { pageReply.resolve(); });
   expect(screen.queryByText(/迟到结果正文/)).toBeNull();
   expect(screen.queryByTitle('产物预览')).toBeNull();
-  expect(screen.queryByRole('button', { name: `查看产物 ${artifact.id.slice(0, 8)}` })).toBeNull();
+  expect(screen.queryByRole('button', { name: '查看产物 1' })).toBeNull();
   expect(screen.getByRole('heading', { name: '任务详情' })).toBeTruthy();
 });
 
@@ -242,9 +244,8 @@ it.each(['shared', 'detail'] as const)('双真实SSE订阅%s先处理；同deliv
     await act(async () => { send(0, { kind: 'durable', event_id: watermark, event: { ...event, kind: 'delivery.changed', event_id: watermark, payload: { deliveries: [entry] } } }); });
     await screen.findByText(/模型消费记录 1/);
     expect(store.getSnapshot().deliveries[entry.id].version).toBe(version);
-    expect(screen.queryByText(/双订阅后仍可见正文/)).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: '查看结果' }));
-    await screen.findByText(/双订阅后仍可见正文/);
+    // 消费记录变化没有撤销正文来源，保留正在阅读的内容。
+    expect(screen.queryByText(/双订阅后仍可见正文/)).not.toBeNull();
     const viewedVersion = entry.version;
     entry = { ...entry, source_valid: false };
     watermark = (BigInt(watermark) + 1n).toString();
@@ -252,7 +253,7 @@ it.each(['shared', 'detail'] as const)('双真实SSE订阅%s先处理；同deliv
     await screen.findByText('来源已失效，正文不可用');
     expect(store.getSnapshot().deliveries[entry.id].version).toBe(viewedVersion);
     expect(screen.queryByText(/双订阅后仍可见正文/)).toBeNull();
-    expect(viewCalls).toBe(2);
+    expect(viewCalls).toBe(1);
   } finally {
     view.unmount();
     sharedAbort.abort();
@@ -289,7 +290,7 @@ it('任务详情泳道查询随真实成员事件刷新，固定两成员/工具
   await act(async () => { await handlers.event({ kind: 'durable', event_id: position, event: { ...event, kind: 'task.stepped', event_id: position,
     payload: { tasks: [lanes[1].task], runs: [], activities: [], artifacts: [], messages: [], questions: [], budgets: [], waits: [], consumptions: [], joins: [], pending_commands: [], follow_up_intents: [] } } }); });
   await waitFor(() => expect(screen.queryByText('context_authorization_required')).toBeNull());
-  await userEvent.click(screen.getByRole('button', { name: `查看成员任务 ${secondId}` }));
+  await userEvent.click(screen.getByRole('button', { name: '查看研究成员的任务' }));
   await waitFor(() => expect(bodyReply).toBeTypeOf('function'));
   const sourcePosition = (BigInt(position) + 1n).toString();
   await act(async () => { await handlers.event({ kind: 'durable', event_id: sourcePosition, event: { ...event, kind: 'scope.revoked', event_id: sourcePosition,

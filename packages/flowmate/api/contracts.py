@@ -24,6 +24,7 @@ from flowmate.contracts.execution import (
     SourceSelection,
     TaskHandle,
     TaskSnapshot,
+    TaskState,
     Usage,
     WaitRecord,
 )
@@ -161,8 +162,21 @@ class MemberLane(Contract):
 
 
 class MessageView(ModelMessage):
+    run_id: Id
     event_id: Units
     event_index: Count
+
+
+class RunFeedback(Contract):
+    run_id: Id
+    version: Version
+    workspace_id: Id
+    session_id: Id
+    root_task_id: Id
+    connection_id: Id
+    state: TaskState
+    reason: str | None
+    model_activity: ActivityView | None
 
 
 class PublicChange(Contract):

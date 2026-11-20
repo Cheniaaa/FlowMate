@@ -17,7 +17,7 @@ export default function McpConnectionForm({ client, scope, initial, generatedJso
   const [args, setArgs] = useState(JSON.stringify(initial?.args ?? []));
   const [cwd, setCwd] = useState(initial?.cwd ?? ''), [url, setUrl] = useState(initial?.url ?? '');
   const [env, setEnv] = useState(JSON.stringify(Object.fromEntries(Object.keys(initial?.env_refs ?? {}).map(key => [key, '']))));
-  const [token, setToken] = useState(''), [enabled, setEnabled] = useState(initial?.enabled ?? true);
+  const [token, setToken] = useState(''), [enabled, setEnabled] = useState(initial?.enabled ?? !generatedJson);
   const [preview, setPreview] = useState<McpImportPreview>();
   const [pending, setPending] = useState<McpSaveCommand[]>();
   const [saved, setSaved] = useState<McpConfiguredServer[]>([]);
@@ -99,8 +99,13 @@ export default function McpConnectionForm({ client, scope, initial, generatedJso
           else missing = true;
         }
       }
-      if (missing) { setStatus('配置已保存；凭据待填写。连接与发现需要另行操作。'); return; }
-      setStatus('配置已保存；连接与发现需要另行操作。');
+      if (missing) { setStatus('配置已保存；请补填凭据后连接。'); return; }
+      for (const config of configs) {
+        if (config.enabled) {
+          const result = await client.discoverMcp(config.id, commandMeta(config.revision));
+          if (result.state !== 'connected') { setStatus('配置已保存，连接失败；可从详情重试。'); }
+        }
+      }
       configs.forEach(onSaved);
     } catch { setError('配置已保存，凭据未完成；请重新填写后补存凭据。'); }
   }
@@ -111,7 +116,7 @@ export default function McpConnectionForm({ client, scope, initial, generatedJso
         <legend>{initial ? '编辑 MCP 配置' : '添加 MCP 配置'}</legend>
         {!initial && <div className="mcp-actions">
           <button type="button" onClick={() => { setMode('form'); setRaw(''); }}>连接表单</button>
-          <button type="button" onClick={() => setMode('json')}>导入 JSON</button>
+           <button type="button" onClick={() => { setMode('json'); setEnabled(false); }}>导入 JSON</button>
         </div>}
         {mode === 'json' ? <label>mcpServers JSON<textarea autoComplete="off" rows={10} maxLength={262144}
           value={raw} onChange={event => setRaw(event.target.value)} /></label> : <>
@@ -139,15 +144,17 @@ export default function McpConnectionForm({ client, scope, initial, generatedJso
         <strong>{config.display_name}</strong><p>{config.scope.kind === 'user_global' ? '个人' : '项目'} · {config.transport}</p>
         {config.transport === 'stdio' ? <><p>Command：<code>{config.command}</code></p><pre>{JSON.stringify(config.args, null, 2)}</pre>
           <p>工作目录：{config.cwd ?? '未指定'}</p>
+          {initial && (initial.command !== config.command || JSON.stringify(initial.args) !== JSON.stringify(config.args)
+            || initial.cwd !== config.cwd) && <p>原配置：{initial.command} {JSON.stringify(initial.args)} · 工作目录 {initial.cwd ?? '未指定'}</p>}
           <p>连接与发现会以当前用户权限运行此命令，请确认信任此本机服务。</p></> : <p>URL：<code>{config.url}</code></p>}
       </article>)}
-      <p>保存不会连接服务。环境变量和认证仅存入系统凭据，未填写的位置保留待配置引用。</p>
+      <p>启用后将连接上述服务并发现工具，首次连接后仍须选择允许的工具。环境变量和认证仅存入系统凭据。</p>
       {preview.required_secret_slots.map(slot => <label key={slot.slot}>
         {slot.purpose === 'env' ? `环境变量 ${slot.env_name}` : 'API token'}（待填写可留空）
         <input type="password" autoComplete="new-password" disabled={busy} value={secrets.current.get(slot.slot) ?? ''}
           onChange={event => { secrets.current.set(slot.slot, event.target.value); refreshSecrets(value => value + 1); }} />
       </label>)}
-      {!saved.length && <button disabled={busy} onClick={() => void confirm()}>{pending ? '按原命令核对保存' : '确认保存配置'}</button>}
+      {!saved.length && <button disabled={busy} onClick={() => void confirm()}>{pending ? '按原命令核对保存' : enabled ? '连接并启用' : '确认保存配置'}</button>}
       {!!saved.length && <button disabled={busy} onClick={() => void act(async () => {
         try { await credentials(saved); } finally { secrets.current.clear(); refreshSecrets(value => value + 1); }
       })}>补存凭据</button>}

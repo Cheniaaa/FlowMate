@@ -40,7 +40,7 @@ function setup({ loseFirst = false, stale = false, paginated = false, afterWrite
       config: { id: serverId, revision: stale ? 5 : 4, display_name: '真实笔记服务', scope: { kind: 'workspace', workspace_id: id, session_id: null },
         transport: 'http', url: 'https://notes.example.invalid/mcp', command: null, args: [], cwd: null,
         env_refs: {}, credential_ref: null, enabled: true },
-      catalog: null, state: 'saved', error_code: null, selection: null,
+      catalog: null, state: 'saved', error_code: null, selection: null, query_grants: [],
     }]));
     throw new Error(path);
   });

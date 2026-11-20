@@ -18,6 +18,7 @@ Id = Annotated[str, StringConstraints(
     pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
 )]
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)]
+CallId = Annotated[str, StringConstraints(min_length=1, max_length=256, pattern=r"\S")]
 Count = Annotated[int, Field(ge=0, le=9007199254740991, strict=True)]
 Version = Annotated[int, Field(ge=1, le=9007199254740991, strict=True)]
 

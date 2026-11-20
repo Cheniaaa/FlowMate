@@ -15,18 +15,24 @@ const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'p
 const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
 const workspace = { id, version: 1, name: '工作区', directory_resource_id: null };
 const session = { id, version: 1, workspace_id: id, title: '会话', agent_profile_id: id, kind: 'interaction' as const, archived: false };
-const message = { id: secondId, role: 'assistant', parts: [{ kind: 'text', text: '持久历史' }], source_dependencies: [], activity_id: null, private_ref: null, origin: 'conversation', event_id: '9007199254740993', event_index: 0 };
+const message = { id: secondId, run_id: id, role: 'assistant', parts: [{ kind: 'text', text: '持久历史' }], source_dependencies: [], activity_id: null, private_ref: null, origin: 'conversation', event_id: '9007199254740993', event_index: 0 };
 
 function server(active = false, pending: { questions?: Question[]; approvals?: Approval[] } = {}) {
   const commands: { path: string; body: any }[] = [];
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname.replace('/v3', '');
+    if (path.endsWith('/resource-coverage')) {
+      const allowed = commands.some(command => command.path === '/grants');
+      const ids = JSON.parse(init.body as string).resource_ids;
+      return json({ allowed, destination: connection.endpoint, missing_read: allowed ? [] : ids,
+        missing_model_send: allowed ? [] : ids });
+    }
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return json(page([]));
     if (init.method === 'POST') {
       commands.push({ path, body: JSON.parse(init.body as string) });
       if (path.endsWith('/cancel')) return json({ ...run, version: 2, state: 'completed' });
       const body = JSON.parse(init.body as string);
-      if (path === '/grants') return json({ ...body.data, memory_scopes: [], mcp_versions: {}, id: secondId, version: 1, epoch: 1, status: 'active' });
+      if (path === '/grants') return json({ ...body.data, memory_scopes: [], mcp_versions: {}, mcp_queries: [], id: secondId, version: 1, epoch: 1, status: 'active' });
       if (path.endsWith('/decision')) return json({ ...pending.approvals![0], version: 2, status: body.data.allow ? 'approved' : 'denied' });
       return json(run);
     }
@@ -80,12 +86,12 @@ describe('最小产品对话', () => {
     const commands = server(true);
     const user = userEvent.setup();
     render(<Conversation client={client} />);
-    await user.click(await screen.findByRole('button', { name: '停止本次对话' }));
+    await user.click(await screen.findByRole('button', { name: '停止当前运行' }));
     await waitFor(() => expect(document.querySelector('.run-state .status')?.textContent).toContain('已完成'));
     expect(commands[0]).toMatchObject({ path: `/runs/${id}/cancel`, body: { expected_version: 1 } });
     expect(commands[0].body).not.toHaveProperty('data');
   });
-  it('资料只由原生 Ref 选择，明确确认读取范围和固定目的地后发送', async () => {
+  it('资料只由原生 Ref 选择，发送意图先授权读取和固定目的地再发送', async () => {
     const commands = server();
     vi.mocked(invoke).mockResolvedValue({ resources: [{ id: secondId, version: 1, scope: { kind: 'session', workspace_id: id, session_id: id }, label: 'notes.md', kind: 'file', source_version: null }] });
     const user = userEvent.setup();
@@ -96,9 +102,8 @@ describe('最小产品对话', () => {
     await screen.findByText('notes.md');
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('select_resources', { scope: { kind: 'session', workspace_id: id, session_id: id }, kind: 'file' });
     await user.type(screen.getByLabelText('消息'), '整理资料');
-    expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(true);
-    await user.click(screen.getByRole('button', { name: '授权读取并发送' }));
-    await screen.findByRole('button', { name: '当前范围已授权' });
+    await waitFor(() => expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getByText(/点击发送即同意本次读取/).textContent).toContain(connection.endpoint);
     await user.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(commands).toHaveLength(2));
     expect(commands[0]).toMatchObject({ path: '/grants', body: { data: { purposes: ['read', 'model_send'], destination: connection.endpoint, resource_ids: [secondId] } } });
@@ -130,7 +135,7 @@ describe('最小产品对话', () => {
     server();
     const previousFetch = globalThis.fetch;
     let stream!: ReadableStreamDefaultController<Uint8Array>;
-    const userMessage: ModelMessage = { id: '00000000-0000-4000-8000-000000000003', role: 'user', parts: [{ kind: 'text', text: 'T7-CHAT plain conversation' }], source_dependencies: [], activity_id: null, private_ref: null, origin: 'conversation', event_id: '9007199254740994', event_index: 0 };
+    const userMessage: ModelMessage = { id: '00000000-0000-4000-8000-000000000003', run_id: id, role: 'user', parts: [{ kind: 'text', text: 'T7-CHAT plain conversation' }], source_dependencies: [], activity_id: null, private_ref: null, origin: 'conversation', event_id: '9007199254740994', event_index: 0 };
     const assistantMessage: ModelMessage = { ...userMessage, id: '00000000-0000-4000-8000-000000000004', role: 'assistant', parts: [{ kind: 'text', text: 'T7 conversation complete' }], event_id: '9007199254740995' };
     vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
       const path = new URL(url).pathname;
@@ -165,7 +170,7 @@ describe('最小产品对话', () => {
     server(true);
     const previousFetch = globalThis.fetch;
     let stream!: ReadableStreamDefaultController<Uint8Array>;
-    const currentUser: ModelMessage = { id: '00000000-0000-4000-8000-000000000003', role: 'user', parts: [{ kind: 'text', text: 'current-user' }], source_dependencies: [], activity_id: null, private_ref: null, origin: 'conversation', event_id: '9007199254740992', event_index: 0 };
+    const currentUser: ModelMessage = { id: '00000000-0000-4000-8000-000000000003', run_id: id, role: 'user', parts: [{ kind: 'text', text: 'current-user' }], source_dependencies: [], activity_id: null, private_ref: null, origin: 'conversation', event_id: '9007199254740992', event_index: 0 };
     const currentAssistant: ModelMessage = { ...currentUser, id: '00000000-0000-4000-8000-000000000004', role: 'assistant', parts: [{ kind: 'text', text: 'current-assistant' }], event_id: '9007199254740995' };
     const olderUser: ModelMessage = { ...currentUser, id: '00000000-0000-4000-8000-000000000005', parts: [{ kind: 'text', text: 'older-user' }], event_id: '9007199254740990' };
     const olderAssistant: ModelMessage = { ...currentAssistant, id: '00000000-0000-4000-8000-000000000006', parts: [{ kind: 'text', text: 'older-assistant' }], event_id: '9007199254740991' };
@@ -228,6 +233,9 @@ function deletionServer() {
   const data = (url: URL) => {
     const path = url.pathname.replace('/v3', '');
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return page([]);
+    if (path === '/navigation') return { default_workspace_id: id, workspaces: { ...page([{ workspace, sessions: { ...page([session, other]), next_cursor: 'sessions-next' }, pending_count: 0 }]), next_cursor: 'workspaces-next' }, recent_sessions: page([]), pending_count: 0, watermark: event.event_id };
+    if (path === `/sessions/${id}`) return session;
+    if (path === `/sessions/${other.id}`) return other;
     if (path === '/workspaces') return { ...page([workspace]), next_cursor: 'workspaces-next' };
     if (path === '/profiles') return page([agent]);
     if (path === '/models') return page([model]);
@@ -271,11 +279,11 @@ describe('删除与本地异步响应围栏', () => {
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('本机事件流已连接');
-    await user.click(screen.getByRole('button', { name: '更多会话' }));
+    await user.click(await screen.findByRole('button', { name: '更多项目会话' }));
     await fixture.deleted();
     await act(async () => { lateSessions.resolve(json(page([session, fixture.other]))); });
     await waitFor(() => expect(screen.queryByRole('option', { name: '会话' })).toBeNull());
-    await user.selectOptions(screen.getByLabelText('会话'), fixture.other.id);
+    await user.click(await screen.findByRole('button', { name: fixture.other.title }));
     await screen.findByText('另一会话历史');
     await user.click(screen.getByRole('button', { name: '更多审批' }));
     await act(async () => { lateApprovals.resolve(json(page([fixture.approval]))); });
@@ -289,16 +297,18 @@ describe('删除与本地异步响应围栏', () => {
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('本机事件流已连接');
-    await user.click(screen.getByRole('button', { name: `预览产物 ${fixture.artifact.id}` }));
+    await user.click(screen.getByRole('button', { name: '产物' }));
+    await user.click(screen.getByRole('button', { name: '文本产物 1' }));
     if (mode === 'delete') await fixture.deleted();
-    else await user.selectOptions(screen.getByLabelText('会话'), fixture.other.id);
-    if (mode === 'roundtrip') await user.selectOptions(screen.getByLabelText('会话'), id);
+    else { await user.click(screen.getByRole('button', { name: '关闭详情' })); await user.click(screen.getByRole('button', { name: fixture.other.title })); }
+    if (mode === 'roundtrip') await user.click(screen.getByRole('button', { name: session.title }));
     await act(async () => { content.resolve(json({ text: 'deleted-artifact-content', start: 0, end: 24, total_chars: 24, source_version: 'v1' })); });
     await waitFor(() => expect(screen.queryByTitle('产物预览')).toBeNull());
-    await user.selectOptions(screen.getByLabelText('会话'), fixture.other.id);
+    if (screen.queryByRole('button', { name: '关闭详情' })) await user.click(screen.getByRole('button', { name: '关闭详情' }));
+    await user.click(screen.getByRole('button', { name: fixture.other.title }));
     await screen.findByText('另一会话历史');
     if (mode !== 'delete') {
-      await user.selectOptions(screen.getByLabelText('会话'), id);
+      await user.click(screen.getByRole('button', { name: session.title }));
       await screen.findByText('持久历史');
       expect(screen.queryByTitle('产物预览')).toBeNull();
     }
@@ -312,14 +322,14 @@ describe('删除与本地异步响应围栏', () => {
     await screen.findByText('本机事件流已连接');
     await user.click(screen.getByRole('button', { name: '选择文本文件' }));
     if (mode === 'delete') await fixture.deleted();
-    else await user.selectOptions(screen.getByLabelText('会话'), fixture.other.id);
-    if (mode === 'roundtrip') await user.selectOptions(screen.getByLabelText('会话'), id);
+    else await user.click(screen.getByRole('button', { name: fixture.other.title }));
+    if (mode === 'roundtrip') await user.click(screen.getByRole('button', { name: session.title }));
     await act(async () => { selected.resolve({ resources: [{ id: secondId, version: 1,
       scope: { kind: 'session', workspace_id: id, session_id: id }, label: 'deleted-selected-notes.md', kind: 'file', source_version: null }] }); });
     expect(screen.queryByText('deleted-selected-notes.md')).toBeNull();
-    await user.selectOptions(screen.getByLabelText('会话'), fixture.other.id);
+    await user.click(screen.getByRole('button', { name: fixture.other.title }));
     await screen.findByText('另一会话历史');
-    if (mode === 'switch') await user.selectOptions(screen.getByLabelText('会话'), id);
+    if (mode === 'switch') await user.click(screen.getByRole('button', { name: session.title }));
     expect(screen.queryByText('deleted-selected-notes.md')).toBeNull();
   });
   it('已显示的产物原文、选择资料与历史在删除后立即清理，已删除选择不保留', async () => {
@@ -333,26 +343,26 @@ describe('删除与本地异步响应围栏', () => {
     await screen.findByText('本机事件流已连接');
     await user.click(screen.getByRole('button', { name: '选择文本文件' }));
     await screen.findByText('selected-original.md');
-    await user.click(screen.getByRole('button', { name: `预览产物 ${fixture.artifact.id}` }));
+    await user.click(screen.getByRole('button', { name: '产物' }));
+    await user.click(screen.getByRole('button', { name: '文本产物 1' }));
     expect((await screen.findByTitle('产物预览')).getAttribute('srcdoc')).toContain('already-visible-content');
     await fixture.deleted();
     await waitFor(() => expect(screen.queryByTitle('产物预览')).toBeNull());
     expect(screen.queryByText('selected-original.md')).toBeNull();
     expect(screen.queryByText('持久历史')).toBeNull();
-    expect((screen.getByLabelText('会话') as HTMLSelectElement).value).not.toBe(id);
+    expect(screen.queryByRole('heading', { name: session.title })).toBeNull();
   });
   it('删除工作区后迟到工作区分页不能恢复选项，本地资料/预览/会话选择一并清理', async () => {
     const fixture = deletionServer();
-    const workspaces = fixture.hold('GET /v3/workspaces?cursor=workspaces-next');
+    const workspaces = fixture.hold('GET /v3/navigation?cursor=workspaces-next');
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('本机事件流已连接');
-    await user.click(screen.getByRole('button', { name: '更多工作区' }));
+    await user.click(await screen.findByRole('button', { name: '更多项目' }));
     await fixture.deleted(null);
-    await act(async () => { workspaces.resolve(json(page([workspace]))); });
-    expect(screen.queryByRole('option', { name: '工作区' })).toBeNull();
-    expect((screen.getByLabelText('工作区') as HTMLSelectElement).value).toBe('');
-    expect((screen.getByLabelText('会话') as HTMLSelectElement).value).toBe('');
+    await act(async () => { workspaces.resolve(json({ default_workspace_id: id, workspaces: page([{ workspace, sessions: page([session]), pending_count: 0 }]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id })); });
+    expect(screen.queryByRole('button', { name: workspace.name })).toBeNull();
+    expect(screen.queryByRole('button', { name: session.title })).toBeNull();
     expect(screen.queryByText('持久历史')).toBeNull();
   });
   it('创建会话响应之前收到其删除事实，不恢复新会话或抢走当前会话选择', async () => {
@@ -362,12 +372,13 @@ describe('删除与本地异步响应围栏', () => {
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('本机事件流已连接');
+    await user.click(screen.getByRole('button', { name: '新建会话' }));
     await user.type(screen.getByLabelText('新会话标题'), 'deleted-created-session');
     await user.click(screen.getByRole('button', { name: '创建会话' }));
     await fixture.deleted(deletedId);
     await act(async () => { created.resolve(json({ ...session, id: deletedId, title: 'deleted-created-session' })); });
     expect(screen.queryByRole('option', { name: 'deleted-created-session' })).toBeNull();
-    expect((screen.getByLabelText('会话') as HTMLSelectElement).value).toBe(id);
+    expect(screen.getByRole('heading', { name: session.title })).toBeTruthy();
     expect(screen.getByText('持久历史')).toBeDefined();
   });
   it.each(['questions', 'approvals', 'history'] as const)('请求%s补页期间删除当前会话，不安装旧页内容，另一session正常', async kind => {

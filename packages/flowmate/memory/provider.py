@@ -16,6 +16,10 @@ class MemoryProvider(Protocol):
     capabilities: MemoryCapabilities
 
     def query(self, scope, confirmed_only: bool, limit: int) -> list[MemoryRecord]: ...
+    def list_records(self, scope=None, *, status=None, claim=None, after=None, upper=None,
+                     limit=None, descending=False) -> list[MemoryRecord]: ...
+    def candidates_for(self, scope, *, claim=None, record_id=None) -> list[MemoryCandidate]: ...
+    def scrub_history(self, invalid) -> None: ...
     def get(self, id: str) -> MemoryRecord: ...
     def put(self, record: MemoryRecord, expected_revision: int | None) -> MemoryRecord: ...
     def export_scope(self, scope) -> MemoryArchive: ...
@@ -84,11 +88,54 @@ class SQLiteMemoryProvider:
     def query(self, scope, confirmed_only, limit):
         if not 1 <= limit <= 500:
             raise DomainError("invalid_query", "记忆查询数量须在1至500之间")
+        return self.list_records(scope, status="confirmed" if confirmed_only else None, limit=limit)
+
+    def list_records(self, scope=None, *, status=None, claim=None, after=None, upper=None,
+                     limit=None, descending=False):
         with self.transaction() as tx:
-            rows = tx.execute("SELECT document FROM memory_records WHERE scope_id=? "
-                + ("AND json_extract(document,'$.status')='confirmed' " if confirmed_only else "")
-                + "ORDER BY id LIMIT ?", (scope_id(tx, scope), limit))
+            clauses, params = [], []
+            if scope is not None:
+                clauses.append("scope_id=?")
+                params.append(scope_id(tx, scope))
+            for field, value in (("status", status), ("claim_key", claim)):
+                if value is not None:
+                    clauses.append(f"json_extract(document,'$.{field}')=?")
+                    params.append(value)
+            for operator, value in ((">", after), ("<=", upper)):
+                if value is not None:
+                    clauses.append(f"id{operator}?")
+                    params.append(value)
+            sql = "SELECT document FROM memory_records"
+            if clauses:
+                sql += " WHERE " + " AND ".join(clauses)
+            sql += " ORDER BY id" + (" DESC" if descending else "")
+            if limit is not None:
+                sql += " LIMIT ?"
+                params.append(limit)
+            rows = tx.execute(sql, params)
             return [MemoryRecord.model_validate_json(row[0]) for row in rows]
+
+    def candidates_for(self, scope, *, claim=None, record_id=None):
+        with self.transaction() as tx:
+            clauses, params = ["scope_id=?"], [scope_id(tx, scope)]
+            if claim is not None:
+                clauses.append("normalized_claim=?")
+                params.append(claim)
+            if record_id is not None:
+                clauses.append("json_extract(document,'$.record_id')=?")
+                params.append(record_id)
+            return [MemoryCandidate.model_validate_json(row[0]) for row in tx.execute(
+                "SELECT document FROM memory_candidates WHERE " + " AND ".join(clauses) + " ORDER BY id", params)]
+
+    def scrub_history(self, invalid):
+        with self.transaction(write=True) as tx:
+            for row in tx.execute("SELECT document FROM memory_revisions").fetchall():
+                revision = MemoryRecord.model_validate_json(row[0])
+                if invalid(revision.dependencies):
+                    scrubbed = revision.model_copy(update={
+                        "status": "deleted", "text": "", "evidence": [], "dependencies": []})
+                    tx.execute("UPDATE memory_revisions SET document=? WHERE record_id=? AND revision=?",
+                        (scrubbed.model_dump_json(), revision.id, revision.revision))
 
     def get(self, id):
         with self.transaction() as tx:

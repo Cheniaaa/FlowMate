@@ -1,4 +1,6 @@
-"""在既有 PluginHost 装配 MCP 管理；启动时不自动连接已保存配置。"""
+"""在既有 PluginHost 装配 MCP 管理及已信任配置的自动发现。"""
+
+import asyncio
 
 from flowmate import __version__
 from flowmate.contracts.events import NewEvent
@@ -12,19 +14,35 @@ from flowmate.plugins.host import PluginManifest, SlotSpec
 
 
 class _McpProvider:
-    def __init__(self, configuration):
+    def __init__(self, configuration, publisher):
         self.service = configuration
+        self.publisher = publisher
+        self.reconnection = None
 
     async def start(self):
         await self.service.manager.start()
+        configs = self.service.reconnect_snapshot()
+        self.service.reconnection = asyncio.create_task(self.service.reconnect(
+            publisher=self.publisher, configs=configs))
+        self.reconnection = self.service.reconnection
 
     async def drain(self):
+        task = self.reconnection
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await self.service.manager.drain()
 
     async def stop(self):
+        await self.drain()
         await self.service.manager.stop()
 
     async def dispose(self):
+        await self.drain()
         await self.service.manager.dispose()
 
 
@@ -44,7 +62,7 @@ def register_mcp(runtime, host, *, limits):
     runtime.plugins.register(PluginManifest(
         plugin_id="builtin.mcp", version=__version__, requires=("builtin.tools",),
         provides=(SlotSpec(name="mcp_manager", exclusive=True),),
-    ), lambda config, dependencies: _McpProvider(configuration))
+    ), lambda config, dependencies: _McpProvider(configuration, runtime.mcp_tools))
     runtime.mcp = configuration
     runtime.service.catalog.plugins = runtime.plugins.snapshot()
     return configuration

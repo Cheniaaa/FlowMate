@@ -3,6 +3,8 @@
 import asyncio
 import json
 
+from pydantic import TypeAdapter, ValidationError
+
 from flowmate.agents.checkpoint import (
     ControlResult,
     agent_output_validator,
@@ -10,9 +12,10 @@ from flowmate.agents.checkpoint import (
     content_dependencies,
 )
 from flowmate.context.compaction import CompactionPlan, ContextCompaction
-from flowmate.contracts.base import DomainError
+from flowmate.contracts.base import CallId, DomainError
 from flowmate.contracts.execution import (
     ActivityIntent,
+    ActivitySnapshot,
     AgentResult,
     Checkpoint,
     ModelMessage,
@@ -28,8 +31,11 @@ from flowmate.contracts.execution import (
     ToolResultPart,
 )
 from flowmate.models.contracts import ModelOutcome, ModelRequest
+from flowmate.models.tool_names import wire_names
+from flowmate.models.wire import strict_json
 from flowmate.policy.contracts import ToolInvocation
 from flowmate.runtime.transitions import check_scopes, load, utc_now
+from flowmate.tools.catalog import ToolArgumentsError
 
 
 class AgentExecutor:
@@ -161,32 +167,56 @@ class AgentExecutor:
             except DomainError:
                 return StepDecision(kind="wait_user", reason="context_authorization_required",
                     checkpoint=checkpoint.model_copy(update={"phase": "waiting_user"}))
-            first = calls[0]
-            if first.name in {"task.submit", "task.status", "task.result", "task.await", "task.cancel"}:
-                return StepDecision(kind="task_control", control_call=first,
-                                    control_origin_message_id=message.id,
-                                     control_dependencies=content_dependencies(checkpoint, message.source_dependencies,
-                                         delegate=first.name == "task.submit"))
-            if first.name in {"user.ask", "run.finish", "agent.finish"}:
-                return self._control(ctx, checkpoint, message, first, run)
             intents = []
             for call in calls:
-                if call.name in {"user.ask", "run.finish", "agent.finish", "task.submit", "task.status", "task.result", "task.await", "task.cancel"}:
-                    break
                 version = task.binding.config.catalog.tools.get(call.name)
-                if version is None:
-                    # 未注册身份仍返回结构化拒绝，永不发起用户专属入口。
+                tool = self.catalog.get(call.name, version) if version is not None else None
+                error, details = None, None
+                if tool is None or not tool.spec.model_visible:
+                    error = "tool_unavailable"
+                    with self.store.transaction(write=False) as tx:
+                        activity = load(tx, ActivitySnapshot, message.activity_id)
+                    details = {"tool": call.name, "available_tools": list(wire_names(
+                        tool["name"] for tool in activity.intent.arguments["tools"]).values())}
+                else:
+                    try:
+                        args = call.arguments
+                        if isinstance(args, str):
+                            try:
+                                args = strict_json(args)
+                            except (ValueError, TypeError):
+                                raise ToolArgumentsError([{"schema_path": [], "rule": "json", "expected": "object"}]) from None
+                        args = tool.validate_input(args)
+                    except ToolArgumentsError as failure:
+                        error = failure.code
+                        details = {"tool": call.name, "issues": failure.issues}
+                if error:
+                    if intents:
+                        break
                     rejection = ModelMessage(role="tool", parts=[ToolResultPart(call_id=call.call_id, origin_message_id=message.id,
-                        error="tool_unavailable")])
+                        error=error, result=details)],
+                        source_dependencies=content_dependencies(checkpoint, message.source_dependencies))
                     return StepDecision(kind="continue", messages=[rejection], checkpoint=checkpoint.model_copy(
                         update={"pending_call_ids": [id for id in checkpoint.pending_call_ids if id != call.call_id],
+                                "phase": "dispatch_tools" if len(checkpoint.pending_call_ids) > 1 else "ready_model",
                                 "message_boundary": checkpoint.message_boundary + 1}))
-                tool = self.catalog.get(call.name, version)
+                call = call.model_copy(update={"arguments": args})
+                if call.name in {"task.submit", "task.status", "task.result", "task.await", "task.cancel"}:
+                    if intents:
+                        break
+                    return StepDecision(kind="task_control", control_call=call,
+                        control_origin_message_id=message.id,
+                        control_dependencies=content_dependencies(checkpoint, message.source_dependencies,
+                            delegate=call.name == "task.submit"))
+                if call.name in {"user.ask", "run.finish", "agent.finish"}:
+                    if intents:
+                        break
+                    return self._control(ctx, checkpoint, message, call, run)
                 parallel = tool.spec.retry_class == "read_only" and not tool.spec.requires_approval
                 if intents and not parallel:
                     break
                 invocation = ToolInvocation(call_id=call.call_id, name=call.name, version=version,
-                                            arguments=call.arguments)
+                                            arguments=args)
                 # 请求来源仅由可信Agent入口构造，不接受模型自报origin/dependencies。
                 intents.append(ActivityIntent(kind="tool", origin="agent", operation=call.name,
                     arguments=invocation.model_dump(mode="json"),
@@ -248,7 +278,11 @@ class AgentExecutor:
                     next_decision=StepDecision(kind="wait_user" if pause else "fail", reason=outcome.error or "invalid_output"))
             message = outcome.response
             calls = [part for part in message.parts if isinstance(part, ToolCallPart)]
-            if len({call.call_id for call in calls}) != len(calls) or any(not call.call_id for call in calls):
+            try:
+                TypeAdapter(list[CallId]).validate_python([call.call_id for call in calls])
+            except ValidationError:
+                return ReceiptCommit(checkpoint=checkpoint, next_decision=StepDecision(kind="fail", reason="invalid_response"))
+            if len({call.call_id for call in calls}) != len(calls):
                 return ReceiptCommit(checkpoint=checkpoint, next_decision=StepDecision(kind="fail", reason="invalid_response"))
             output = None if calls else RunOutput(summary="".join(part.text for part in message.parts if isinstance(part, TextPart)))
             member = False
@@ -357,7 +391,8 @@ class AgentExecutor:
             with self.store.transaction(write=False) as tx:
                 activity = load(tx, ActivitySnapshot, ctx.activity_id)
                 task = load(tx, TaskSnapshot, ctx.task_id)
-            if activity.intent.operation not in task.binding.config.catalog.mcp_tools:
+            if (activity.intent.operation != "skills.run_script"
+                    and activity.intent.operation not in task.binding.config.catalog.mcp_tools):
                 return outcome
         # 当前候选观察尚未提交：暂存先按派发前的版本授权，引用发布再绑定同事务观察版本。
         observed = {item.resource_id: item for item in outcome.source_observations}

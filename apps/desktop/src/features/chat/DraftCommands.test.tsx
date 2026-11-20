@@ -29,11 +29,15 @@ function server(active: 'agent' | 'tool' | 'follow_up' | null = null, questions 
   vi.mocked(invoke).mockImplementation(async name => name === 'select_resources' ? { resources: [resource] } : undefined);
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname.replace('/v3', ''), method = init.method ?? 'GET';
-    const body = init.body ? JSON.parse(init.body as string) : null; requests.push({ path, method, body });
+    const body = init.body ? JSON.parse(init.body as string) : null;
+    if (path.endsWith('/resource-coverage')) return json({ allowed: true, destination: connection.endpoint, missing_read: [], missing_model_send: [] });
+    requests.push({ path, method, body });
     if (method === 'POST') return json(path.endsWith('/steering') ? { message_id: id, run_id: id, version: 2 } : path.endsWith('/commands') ? pendingUserCommand : run);
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return json(page([]));
     if (path.endsWith('/events')) return new Response(new ReadableStream());
-    if (path === '/navigation') return json({ default_workspace_id: id, workspaces: page([]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id });
+    if (path === '/navigation') return json({ default_workspace_id: id, workspaces: page([{ workspace, sessions: page([session, otherSession]), pending_count: 0 }]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id });
+    if (path === `/sessions/${id}`) return json(session);
+    if (path === `/sessions/${secondId}`) return json(otherSession);
     if (path.endsWith('/export-recovery')) return json([]);
     if (path.endsWith('/directory')) return json({ workspace_id: id, workspace_version: 1, state: 'unlinked', resource: null, reason: null });
     const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([{ ...agent, default_model_profile_id: model.id }]),
@@ -80,7 +84,7 @@ it('待办收起/重开保留回答，后台到达不抢普通草稿焦点；com
 });
 it('quick 从待办定位可直接回答，不在小窗展开复杂任务图或强制打开主窗', async () => {
   server('agent', true); const user = userEvent.setup(); render(<Conversation client={client} compact />);
-  await user.click(await screen.findByRole('button', { name: `定位运行 ${id}` }));
+  await user.click(await screen.findByRole('button', { name: '回答问题' }));
   expect(screen.getByLabelText('回答')).toBeTruthy(); expect(document.querySelector('.task-graph')).toBeNull();
   expect(vi.mocked(invoke).mock.calls.some(([name]) => name === 'show_workbench')).toBe(false);
 });
@@ -88,7 +92,7 @@ it('quick 从待办定位可直接回答，不在小窗展开复杂任务图或�
 it('A 提交期间编辑新 B、切换会话往返恢复文字/附件/模型，旧响应不清新输入', async () => {
   server(); const previous = globalThis.fetch;
   let finish!: (response: Response) => void;
-  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => init.method === 'POST'
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => init.method === 'POST' && new URL(url).pathname.endsWith('/runs')
     ? new Promise<Response>(resolve => { finish = resolve; }) : previous(url, init));
   const user = userEvent.setup(); render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
@@ -97,11 +101,11 @@ it('A 提交期间编辑新 B、切换会话往返恢复文字/附件/模型，�
   await user.type(screen.getByLabelText('消息'), 'A');
   await user.click(screen.getByRole('button', { name: '发送' }));
   await user.clear(screen.getByLabelText('消息')); await user.type(screen.getByLabelText('消息'), '新 B');
-  await user.selectOptions(screen.getByLabelText('会话'), secondId);
+  await user.click(screen.getByRole('button', { name: otherSession.title }));
   await user.type(screen.getByLabelText('消息'), '另一个会话草稿');
   await act(async () => { finish(json(run)); });
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('另一个会话草稿');
-  await user.selectOptions(screen.getByLabelText('会话'), id);
+  await user.click(screen.getByRole('button', { name: session.title }));
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('新 B');
   expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe(id);
   expect(screen.getByText(resource.label)).toBeTruthy();
@@ -115,6 +119,7 @@ it('跨项目返回恢复草稿 ID；附件尚未同步齐不能把已加载子�
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
     if (path === '/v3/workspaces') return json(page([{ id, version: 1, name: '项目 A', directory_resource_id: null }, other]));
+    if (path === '/v3/navigation') return json({ default_workspace_id: id, workspaces: page([{ workspace: { id, version: 1, name: '项目 A', directory_resource_id: null }, sessions: page([session]), pending_count: 0 }, { workspace: other, sessions: page([{ ...otherSession, workspace_id: secondId }]), pending_count: 0 }]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id });
     if (path === `/v3/workspaces/${secondId}/snapshot`) return json({ workspace: other, sessions: page([{ ...otherSession, workspace_id: secondId }]),
       active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id });
     if (path === `/v3/workspaces/${id}/snapshot`) {
@@ -127,9 +132,9 @@ it('跨项目返回恢复草稿 ID；附件尚未同步齐不能把已加载子�
   await screen.findByRole('heading', { name: session.title });
   await user.type(screen.getByLabelText('消息'), '项目 A 草稿'); await user.selectOptions(screen.getByLabelText('模型'), id);
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
-  await user.selectOptions(screen.getByLabelText('工作区'), secondId);
+  await user.click(screen.getByRole('button', { name: '项目 B' }));
   await screen.findByRole('heading', { name: otherSession.title }); await user.type(screen.getByLabelText('消息'), '项目 B 草稿');
-  await user.selectOptions(screen.getByLabelText('工作区'), id);
+  await user.click(screen.getByRole('button', { name: '项目 A' }));
   await screen.findByRole('heading', { name: session.title });
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('项目 A 草稿');
   expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe(id);
@@ -174,6 +179,84 @@ it('提交响应丢失保留命令身份，not_found 仍待确认；显式原命
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('B');
 });
 
+it.each(['late', 'grant-check', 'run-check', 'run-retry'] as const)(
+  '附件发送链固定 A 的归属，切至相同 revision 的 B 后迟到或核对只清 A：%s', async mode => {
+    server(); const previous = globalThis.fetch;
+    const writes: { path: string; body: any }[] = [], checks: string[] = [], coverageSessions: string[] = [];
+    let releaseGrant!: (response: Response) => void;
+    const grantResponse = new Promise<Response>(resolve => { releaseGrant = resolve; });
+    let grantBody: any;
+    let savedRunCommand: any;
+    const created = { ...run, state: 'completed' as const };
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+      const path = new URL(url).pathname.replace('/v3', '');
+      if (path.endsWith('/resource-coverage')) {
+        coverageSessions.push(path);
+        expect(JSON.parse(String(init.body))).toEqual({ resource_ids: [resource.id], model_profile_id: model.id });
+        return json({ allowed: !!grantBody, destination: connection.endpoint,
+          missing_read: grantBody ? [] : [resource.id], missing_model_send: grantBody ? [] : [resource.id] });
+      }
+      if (init.method === 'POST') {
+        const body = JSON.parse(String(init.body)); writes.push({ path, body });
+        if (path === '/grants') {
+          grantBody = body;
+          if (mode === 'grant-check') throw new TypeError('synthetic lost grant receipt');
+          return grantResponse;
+        }
+        if (path === `/sessions/${id}/runs`) {
+          savedRunCommand = body;
+          if (mode === 'run-check' || mode === 'run-retry' && writes.filter(item => item.path === path).length === 1) {
+            throw new TypeError('synthetic lost run receipt');
+          }
+          return json(created);
+        }
+      }
+      if (path.includes('/commands/')) {
+        checks.push(path);
+        const isGrant = path.endsWith(grantBody.meta.command_id);
+        return json(mode === 'run-retry' && !isGrant ? { status: 'not_found', result: null }
+          : { status: 'confirmed', result: isGrant ? { ...grant, ...grantBody.data } : created });
+      }
+      if (path === `/workspaces/${id}/grants`) return json(page(grantBody ? [{ ...grant, ...grantBody.data }] : []));
+      if (path === `/workspaces/${id}/snapshot`) {
+        const snapshot = await (await previous(url, init)).json();
+        return json({ ...snapshot, grants: page([]) });
+      }
+      return previous(url, init);
+    });
+    const drafts = createDraftStore(), a = { workspaceId: id, sessionId: id }, b = { workspaceId: id, sessionId: secondId };
+    const user = userEvent.setup(); render(<Conversation client={client} draftStore={drafts} />);
+    await screen.findByRole('heading', { name: session.title });
+    await user.click(screen.getByRole('button', { name: '选择文本文件' }));
+    fireEvent.change(screen.getByLabelText('消息'), { target: { value: 'A 的附件目标' } });
+    const submitted = drafts.read(a);
+    await user.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    await user.click(screen.getByRole('button', { name: otherSession.title }));
+    await screen.findByRole('heading', { name: otherSession.title });
+    fireEvent.change(screen.getByLabelText('消息'), { target: { value: 'B 的未提交草稿' } });
+    act(() => {
+      while (drafts.read(b).revision < submitted.revision) drafts.update(b, { text: 'B 的未提交草稿' });
+    });
+    expect(drafts.read(b).revision).toBe(submitted.revision);
+    if (mode === 'grant-check') await user.click(await screen.findByRole('button', { name: '核对提交状态' }));
+    else await act(async () => { releaseGrant(json({ ...grant, ...grantBody.data })); });
+    if (mode === 'run-check' || mode === 'run-retry') {
+      await user.click(await screen.findByRole('button', { name: '核对提交状态' }));
+      if (mode === 'run-retry') await user.click(await screen.findByRole('button', { name: '使用原命令重试' }));
+    }
+    await waitFor(() => expect(drafts.read(a).text).toBe(''));
+    expect(drafts.read(b).text).toBe('B 的未提交草稿');
+    expect(screen.getByLabelText('消息')).toHaveProperty('value', 'B 的未提交草稿');
+    expect(writes.every(write => write.path === '/grants' || write.path === `/sessions/${id}/runs`)).toBe(true);
+    expect(checks.every(path => path.startsWith(`/sessions/${id}/commands/`))).toBe(true);
+    expect(coverageSessions.length).toBeGreaterThanOrEqual(2);
+    expect(coverageSessions.every(path => path === `/sessions/${id}/resource-coverage`)).toBe(true);
+    const starts = writes.filter(write => write.path.endsWith('/runs'));
+    expect(starts).toHaveLength(mode === 'run-retry' ? 2 : 1);
+    expect(starts.every(write => JSON.stringify(write.body) === JSON.stringify(savedRunCommand))).toBe(true);
+  });
+
 it('ToolRun 不显示 steering，保留草稿并说明导出结束后发送，不抢输入焦点', async () => {
   const requests = server('tool'); const user = userEvent.setup(); render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
@@ -190,9 +273,9 @@ it('Question 答案按 ID/version 与普通草稿分离，切会话往返不丢�
   server('agent', true); const user = userEvent.setup(); render(<Conversation client={client} />);
   await screen.findByText(question.question);
   await user.type(screen.getByLabelText('回答'), '问题草稿'); await user.type(screen.getByLabelText('消息'), '普通草稿');
-  await user.selectOptions(screen.getByLabelText('会话'), secondId);
+  await user.click(screen.getByRole('button', { name: otherSession.title }));
   await user.type(screen.getByLabelText('消息'), 'B 草稿');
-  await user.selectOptions(screen.getByLabelText('会话'), id);
+  await user.click(screen.getByRole('button', { name: session.title }));
   expect((screen.getByLabelText('回答') as HTMLTextAreaElement).value).toBe('问题草稿');
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('普通草稿');
 });
@@ -229,6 +312,7 @@ it('导出用途授权待确认时切换会话，后续冻结导出仍归属原�
     }
     if (path.includes('/commands/')) { checks.push(path); return json({ status: 'not_found', result: null }); }
     if (path.endsWith('/grants')) return json(page([]));
+    if (path === `/v3/tasks/${task.id}`) return json(task);
     if (path.endsWith(`/sessions/${id}/runs`)) return json(page([{ ...run, state: 'completed' }]));
     if (path === `/v3/runs/${id}`) {
       const detail = await (await previous(url, init)).json();
@@ -238,11 +322,13 @@ it('导出用途授权待确认时切换会话，后续冻结导出仍归属原�
     return previous(url, init);
   });
   const user = userEvent.setup(); render(<Conversation client={client} />);
-  await user.click(await screen.findByRole('button', { name: `预览产物 ${secondId}` }));
+  await user.click(await screen.findByRole('button', { name: '产物' }));
+  await user.click(await screen.findByRole('button', { name: '文本产物 1' }));
   await user.click(await screen.findByRole('button', { name: '导出产物' }));
   expect(screen.queryByRole('button', { name: '确认导出到此文件' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: '关闭详情' }));
   await screen.findByText('提交状态待确认');
-  await user.selectOptions(screen.getByLabelText('会话'), secondId);
+  await user.click(screen.getByRole('button', { name: otherSession.title }));
   await user.click(screen.getByRole('button', { name: '使用原命令重试' }));
   await waitFor(() => expect(commands).toHaveLength(3));
   expect(commands[1]).toEqual(commands[0]);
@@ -303,7 +389,7 @@ it('managed不成为当前推进者；后台问答不切会话/模型/来源/草
   await waitFor(() => expect(screen.queryByRole('button', { name: '返回原页与草稿' })).toBeNull());
   expect((input as HTMLTextAreaElement).value).toBe('另一个目标的草稿');
   expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe(id);
-  expect((screen.getByLabelText('会话') as HTMLSelectElement).value).toBe(session.id);
+  expect(screen.getByRole('heading', { name: session.title })).toBeTruthy();
   expect(requests.filter(request => request.method === 'POST').map(request => request.path)).toEqual([`/questions/${question.id}/answer`]);
 });
 

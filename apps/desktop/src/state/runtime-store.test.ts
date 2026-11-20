@@ -145,11 +145,11 @@ describe('RuntimeStore真实客户端边界', () => {
     });
     const store = createRuntimeStore(client()); const meta = commandMeta();
     const command: UiCommand = { type: 'startRun', args: [id, { meta, data: { agent_profile_id: id, model_profile_id: secondId, text: 'A' } }] };
-    expect(await store.dispatch(command)).toEqual({ status: 'confirmed', sync: 'pending', commandId: meta.command_id });
+    expect(await store.dispatch(command)).toEqual({ status: 'confirmed', sync: 'pending', commandId: meta.command_id, runId: id });
     expect(store.getSnapshot().runs[id]).toEqual(run);
     expect(store.getCommandsSnapshot()[0].runId).toBe(id);
     fail = false;
-    expect(await store.retry(meta.command_id!)).toEqual({ status: 'confirmed', sync: 'ready', commandId: meta.command_id });
+    expect(await store.retry(meta.command_id!)).toEqual({ status: 'confirmed', sync: 'ready', commandId: meta.command_id, runId: id });
     await store.dispatch(command);
     expect(requests).toEqual(['POST', 'GET', 'GET']);
   });
@@ -171,7 +171,7 @@ describe('RuntimeStore真实客户端边界', () => {
     await store.retry(meta.command_id!);
     expect(bodies).toEqual([original.args[1], original.args[1]]);
     found = true;
-    expect(await store.check(meta.command_id!, id)).toEqual({ status: 'confirmed', sync: 'ready', commandId: meta.command_id });
+    expect(await store.check(meta.command_id!, id)).toEqual({ status: 'confirmed', sync: 'ready', commandId: meta.command_id, runId: id });
     expect(bodies).toHaveLength(2);
   });
 
@@ -269,7 +269,8 @@ describe('RuntimeStore真实客户端边界', () => {
       });
       const store = createRuntimeStore(client());
       store.update(state => ({ ...mergeRunSnapshot(state, run), grants: { [grant.id]: grant }, publications: { [publication.id]: publication } }));
-      const expected = { commandId: meta.command_id, status: 'confirmed', sync: 'pending' };
+      const expected = { commandId: meta.command_id, status: 'confirmed', sync: 'pending',
+        runId: type === 'revoke' || type === 'setWorkspaceDirectory' ? undefined : id };
       expect(await store.dispatch(command)).toEqual(expected);
       expect(await store.retry(meta.command_id!)).toEqual(expected);
       expect(writes).toBe(1);

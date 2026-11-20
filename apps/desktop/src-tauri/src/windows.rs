@@ -22,6 +22,7 @@ pub enum WorkbenchTarget {
     Memory {},
     Capabilities {},
     Mcp { server_id: Option<String>, workspace_id: Option<String> },
+    Connection { connection_id: String },
 }
 
 impl WorkbenchTarget {
@@ -31,6 +32,7 @@ impl WorkbenchTarget {
             Self::Task { task_id } => Some(task_id),
             Self::Tasks { workspace_id } => workspace_id.as_ref(),
             Self::Mcp { server_id, .. } => server_id.as_ref(),
+            Self::Connection { connection_id } => Some(connection_id),
             Self::Assistants {} | Self::Memory {} | Self::Capabilities {} => None,
         };
         if let Self::Mcp { workspace_id: Some(id), .. } = self {

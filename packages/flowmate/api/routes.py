@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path as FilePath
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Request
+from fastapi import APIRouter, Depends, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import TypeAdapter
 
@@ -43,6 +43,8 @@ from flowmate.models.metadata import ModelMetadataResolver, list_provider_preset
 from flowmate.policy.contracts import (
     DeletionReceipt,
     GrantCommand,
+    ResourceCoverage,
+    ResourceCoverageRequest,
     ResourceRecord,
     ResourceRef,
     ScopeState,
@@ -88,7 +90,8 @@ def router(runtime):
     @route.get("/inbox", response_model=api.Page[api.InboxItem])
     async def inbox(limit: int = 100, cursor: str | None = None):
         with runtime.store.transaction(write=False) as tx:
-            return queries.inbox(tx, limit=limit, cursor=cursor)
+            return queries.inbox(tx, policy=runtime.service.policy,
+                catalog=runtime.service.catalog.snapshot(), limit=limit, cursor=cursor)
 
     @route.get("/runs/{id}/export-recovery", response_model=list[PublicationView])
     async def export_recovery(id: Id):
@@ -306,6 +309,10 @@ def router(runtime):
     async def approve(id: Id, command=body(api.Command[api.ApprovalDecision])):
         return runtime.approvals.decide(id, command.data.allow, command.meta)
 
+    @route.post("/sessions/{id}/resource-coverage", response_model=ResourceCoverage)
+    async def resource_coverage(id: Id, request=body(ResourceCoverageRequest)):
+        return runtime.policy.resource_coverage(id, request)
+
     @route.post("/grants", status_code=201)
     async def grant(command=body(api.Command[GrantCommand])):
         return runtime.policy.grant(command.data, command.meta)
@@ -360,6 +367,11 @@ def router(runtime):
                         limit: int = 100, cursor: str | None = None):
         with runtime.store.transaction(write=False) as tx:
             return queries.run_items(tx, id, kind, limit=limit, cursor=cursor)
+
+    @route.get("/sessions/{id}/run-feedback")
+    async def run_feedback(id: Id, run_id: Annotated[list[Id], Query(min_length=1, max_length=100)]):
+        with runtime.store.transaction(write=False) as tx:
+            return queries.run_feedback(tx, id, run_id)
 
     @route.get("/sessions/{id}/messages")
     async def messages(id: Id, limit: int = 100, cursor: str | None = None):

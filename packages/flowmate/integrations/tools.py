@@ -12,7 +12,6 @@ from flowmate.contracts.base import DomainError
 from flowmate.contracts.execution import McpToolSnapshot, ScopeDependency
 from flowmate.integrations.contracts import McpServerConfig
 from flowmate.integrations.mcp import _json_bytes, _validator
-from flowmate.integrations.public import public_catalog
 from flowmate.tools.catalog import BoundTool, ToolOutcome, ToolSpec
 
 
@@ -57,24 +56,6 @@ class McpTools:
         self.manager = manager
         self.store = store
         runtime_catalog.tool_catalog = catalog
-
-    def read(self, server_id):
-        return public_catalog(self.manager.catalog(server_id))
-
-    def apply(self, server_id, catalog_hash, selected_names):
-        with self.store.transaction(write=False) as tx:
-            config = configured_server(tx, server_id)
-        snapshot = self.manager.catalog(server_id)
-        if snapshot.content_hash != catalog_hash:
-            raise DomainError("blocked_incompatible", "所确认目录已改变，请重新读取并确认")
-        self.publish(config, snapshot, selected_names)
-        return public_catalog(snapshot)
-
-    async def select(self, server_id, selected_names, *, catalog_hash=None):
-        # 保持异步调用接口；选择只消费已有目录，调用前复核由 manager.call 负责。
-        if catalog_hash is None:
-            catalog_hash = self.manager.catalog(server_id).content_hash
-        return self.apply(server_id, catalog_hash, selected_names)
 
     def publish(self, config, snapshot, selected_names, *, tx=None):
         if tx is None:
@@ -140,7 +121,7 @@ class McpTools:
             result = await self.manager.call(config.id, snapshot.content_hash, definition.name, args, cancel,
                 before_send=before_send)
             payload = result.model_dump(mode="json")
-            return ToolOutcome(result={**payload, "result_hash": hashlib.sha256(_json_bytes(payload)).hexdigest(),
+            return ToolOutcome(result={**payload,
                 "destination": binding.destination, "external_cost_status": "unknown"},
                 error="mcp_tool_error" if result.is_error else None,
                 dependencies=[ScopeDependency(scope_id=config.id, epoch=config.revision)])

@@ -102,3 +102,73 @@ it('来源失效或会话归档/正在steer时不能选择总结引用；不通�
   await act(async () => { store.update(state => ({ ...state, deliveries: { [id]: { ...entry, source_valid: false } } })); });
   expect((button as HTMLButtonElement).disabled).toBe(true);
 });
+
+it('键盘查看等待时保留可聚焦按钮，拦截同一提交内重复激活并保持其他操作禁用', async () => {
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  vi.spyOn(client, 'sessionResults').mockResolvedValue(page([{ ...entry, delivery_state: 'failed' }]));
+  let reply!: (result: Awaited<ReturnType<RuntimeClient['taskResult']>>) => void;
+  const query = vi.spyOn(client, 'taskResult').mockImplementation(() => new Promise(resolve => { reply = resolve; }));
+  const command = vi.fn().mockResolvedValue({ status: 'confirmed', sync: 'ready', commandId: id });
+  const store = createRuntimeStore(client), user = userEvent.setup();
+  render(<ResultInbox client={client} store={store} sessionId={id} onCommand={command} onOpen={vi.fn()} onSummarize={vi.fn()} />);
+  const button = await screen.findByRole('button', { name: '查看结果' }) as HTMLButtonElement;
+  await user.tab(); await user.tab();
+  expect(document.activeElement).toBe(button);
+  // 在 React 提交 busy 之前连续触发，不能仅依赖下一次渲染的状态。
+  act(() => { button.click(); button.click(); });
+  await waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+  expect(command).toHaveBeenCalledTimes(1);
+  expect(button.disabled).toBe(false);
+  expect(button.getAttribute('aria-disabled')).toBe('true');
+  for (const name of ['刷新结果', '重新投递', '在会话中总结'])
+    expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: '定位结果任务' }) as HTMLButtonElement).disabled).toBe(false);
+  await user.keyboard('{Enter} ');
+  expect(command).toHaveBeenCalledTimes(1);
+  await act(async () => { reply({ handle: entry.result, result_version: 1, state: 'completed',
+    result: { summary: '键盘查看正文' }, artifacts: [], dependencies: [], error: null }); });
+  expect(screen.getByText(/键盘查看正文/)).toBeTruthy();
+  expect(document.activeElement).toBe(button);
+  expect(button.getAttribute('aria-disabled')).toBe('false');
+});
+
+it.each(['success', 'error', 'revoked'] as const)('查看期间移至定位按钮后，%s不抢焦点且不泄漏撤权正文', async outcome => {
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  vi.spyOn(client, 'sessionResults').mockResolvedValue(page([entry]));
+  let reply!: (result: Awaited<ReturnType<RuntimeClient['taskResult']>>) => void, reject!: (error: Error) => void;
+  vi.spyOn(client, 'taskResult').mockImplementation(() => new Promise((resolve, fail) => { reply = resolve; reject = fail; }));
+  const store = createRuntimeStore(client), user = userEvent.setup();
+  render(<ResultInbox client={client} store={store} sessionId={id}
+    onCommand={vi.fn().mockResolvedValue({ status: 'confirmed', sync: 'ready', commandId: id })} onOpen={vi.fn()} onSummarize={vi.fn()} />);
+  await user.click(await screen.findByRole('button', { name: '查看结果' }));
+  await waitFor(() => expect(reply).toBeTypeOf('function'));
+  await user.tab();
+  const locate = screen.getByRole('button', { name: '定位结果任务' });
+  expect(document.activeElement).toBe(locate);
+  if (outcome === 'revoked') await act(async () => { store.update(state => ({ ...state, deliveries: { [id]: { ...entry, source_valid: false } } })); });
+  await act(async () => {
+    if (outcome === 'error') reject(new Error('合成正文读取失败'));
+    else reply({ handle: entry.result, result_version: 1, state: 'completed',
+      result: { summary: '迟到焦点正文' }, artifacts: [], dependencies: [], error: null });
+  });
+  expect(document.activeElement).toBe(locate);
+  expect(!!screen.queryByText(/迟到焦点正文/)).toBe(outcome === 'success');
+  if (outcome === 'error') expect(screen.getByRole('alert').textContent).toContain('合成正文读取失败');
+  if (outcome === 'revoked') expect((screen.getByRole('button', { name: '在会话中总结' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('未确认查看命令保持可聚焦但不能再次激活', async () => {
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  vi.spyOn(client, 'sessionResults').mockResolvedValue(page([entry]));
+  const store = createRuntimeStore(client), command = vi.fn(), user = userEvent.setup();
+  const pending = [{ commandId: secondId, type: 'viewResult' as const, targetId: id, status: 'unconfirmed' as const, sync: 'pending' as const, busy: false, error: '' }];
+  vi.spyOn(store, 'getCommandsSnapshot').mockReturnValue(pending);
+  render(<ResultInbox client={client} store={store} sessionId={id} onCommand={command} onOpen={vi.fn()} />);
+  const button = await screen.findByRole('button', { name: '查看结果' }) as HTMLButtonElement;
+  await user.tab(); await user.tab();
+  expect(document.activeElement).toBe(button);
+  expect(button.getAttribute('aria-disabled')).toBe('true');
+  await user.keyboard('{Enter} ');
+  await user.click(button);
+  expect(command).not.toHaveBeenCalled();
+});

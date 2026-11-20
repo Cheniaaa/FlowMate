@@ -67,8 +67,8 @@ def candidate_for_receipt(memory, tx, id, receipt_message_id):
             or call.version != "1" or call.call_id != part.call_id or actual != proposal):
         invalid()
     record = memory._get(tx, id)
-    candidate = next((item for item in memory.provider.using(tx).export_scope(record.scope).candidates
-        if item.record_id == id and item.proposal_activity_id == activity.id), None)
+    candidate = next((item for item in memory.provider.using(tx).candidates_for(record.scope, record_id=id)
+        if item.proposal_activity_id == activity.id), None)
     if (candidate is None or candidate.extraction_run_id != activity.run_id
             or candidate.extraction_task_id != activity.task_id or candidate.proposal_message_id != origin.id):
         invalid()

@@ -43,10 +43,11 @@ export default function ResourcePanel({ client, workspaceId, sessionId, onRevoke
     }} />}
     {syncing && <p role="status">资料与授权同步中；未加载部分状态未知。</p>}{error && <p role="alert">{error}</p>}
     {Object.values(grants).filter(grant => sessionId === null || grant.scope.session_id === null || grant.scope.session_id === sessionId).map(grant => <article className="grant-card" key={grant.id}>
-      <p>{grant.scope.kind === 'user_global' ? '个人' : `项目 ${grant.scope.workspace_id} · ${grant.scope.session_id ? `会话 ${grant.scope.session_id}` : '整个项目'}`} · {grant.status === 'active' ? '有效' : '已撤销'}</p>
+      <p>{grant.scope.kind === 'user_global' ? '个人' : grant.scope.session_id ? '指定会话' : '整个项目'} · {grant.status === 'active' ? '有效' : '已撤销'}</p>
+      <details><summary>授权范围详情</summary><p>项目 {grant.scope.workspace_id} · 会话 {grant.scope.session_id ?? '整个项目'} · 授权 {grant.id}</p>
+        {Object.entries(grant.mcp_versions).map(([id, revision]) => <p key={id}>MCP 返回资料：服务器 {id} · 配置修订 {revision}</p>)}</details>
       <ul>{grant.resource_ids.map(id => <li key={id}>{resources[id]?.label ?? `资料尚未同步 · ${id}`}</li>)}</ul>
-      {grant.memory_scopes.map(scope => <p key={`${scope.kind}:${scope.workspace_id}`}>记忆范围：{scope.kind === 'user_global' ? '个人' : `项目 ${scope.workspace_id}`}</p>)}
-      {Object.entries(grant.mcp_versions).map(([id, revision]) => <p key={id}>MCP 返回资料：服务器 {id} · 配置修订 {revision}</p>)}
+      {grant.memory_scopes.map(scope => <p key={`${scope.kind}:${scope.workspace_id}`}>记忆范围：{scope.kind === 'user_global' ? '个人' : '项目记忆'}</p>)}
       <p>{grant.purposes.map(purpose => purposes[purpose]).join(' · ')}</p><p>目的地：{grant.destination ?? '本地导出，无模型目的地'}</p>
       {confirmation === grant.id ? <div className="inline-confirmation"><p>将撤销此授权的全部来源及以上用途，阻止依赖它的新派发；已经发送的内容无法收回，历史不删除。</p>
         <button disabled={busy} onClick={() => setConfirmation(undefined)}>取消撤销</button><button disabled={busy || syncing || isRevokePending?.(grant.id)} onClick={async () => {

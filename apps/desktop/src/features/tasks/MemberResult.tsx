@@ -6,7 +6,7 @@ import { windowError } from '../../api/windows';
 import AgentResultView from './AgentResultView';
 import ArtifactPanel from '../artifacts/ArtifactPanel';
 
-export default function MemberResult({ client, lane }: { client: RuntimeClient; lane: MemberLane }) {
+export default function MemberResult({ client, lane, onExport, exportBlocked }: { client: RuntimeClient; lane: MemberLane; onExport?: (artifact: ArtifactRef) => Promise<void>; exportBlocked?: boolean }) {
   const [result, setResult] = useState<AgentResult>(), [error, setError] = useState('');
   const [artifacts, setArtifacts] = useState<ArtifactRef[]>([]), [artifactId, setArtifactId] = useState('');
   useEffect(() => {
@@ -20,7 +20,7 @@ export default function MemberResult({ client, lane }: { client: RuntimeClient; 
     return () => { ignore = true; };
   }, [client, lane.task.id, lane.task.result_version]);
   return <section aria-label="成员结果预览">{error && <p role="alert">{error}</p>}{result ? <AgentResultView result={result} /> : !error && <p>正在读取已提交成员交付…</p>}
-    {artifacts.map(artifact => <button key={artifact.id} onClick={() => setArtifactId(artifact.id)}>预览成员交付产物 {artifact.id}</button>)}
-    {artifactId && <ArtifactPanel client={client} artifact={artifacts.find(artifact => artifact.id === artifactId) ?? null} />}
+    {artifacts.map((artifact, index) => <button key={artifact.id} onClick={() => setArtifactId(artifact.id)}>预览成员交付产物 {index + 1}</button>)}
+    {artifactId && <ArtifactPanel client={client} artifact={artifacts.find(artifact => artifact.id === artifactId) ?? null} onExport={onExport} exportBlocked={exportBlocked} />}
     <p className="muted">用户查看不等于模型消费。</p></section>;
 }

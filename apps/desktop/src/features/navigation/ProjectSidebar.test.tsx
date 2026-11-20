@@ -120,7 +120,7 @@ it('重投事件水位推进后待办4→3自动刷新，保留已加载项目/�
   expect(document.activeElement).toBe(target);
   await act(async () => { finishRefresh(Response.json(navigation(null))); });
   await screen.findByRole('button', { name: /待办 3/ });
-  expect(screen.getByRole('button', { name: /尾页当前项目3/ })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '尾页当前项目' }).textContent).toContain('3');
   expect(screen.getByRole('button', { name: tailSession.title })).toBeTruthy();
   expect(screen.getByRole('button', { name: targetSession.title })).toBe(target);
   expect(document.activeElement).toBe(target);
@@ -129,7 +129,7 @@ it('重投事件水位推进后待办4→3自动刷新，保留已加载项目/�
   await waitFor(() => expect((screen.getByRole('button', { name: '刷新导航' }) as HTMLButtonElement).disabled).toBe(false));
   expect(screen.getByRole('button', { name: tailSession.title })).toBeTruthy();
   expect(screen.getByRole('button', { name: targetSession.title })).toBe(target);
-  const firstProject = screen.getByRole('button', { name: /研究项目/ }).closest('section')!;
+  const firstProject = screen.getByRole('button', { name: '研究项目' }).closest('section')!;
   await userEvent.click(within(firstProject).getByRole('button', { name: '更多项目会话' }));
   expect(requests.at(-1)).toBe(`/v3/workspaces/${id}/sessions?cursor=session-next`);
   await userEvent.click(screen.getByRole('button', { name: '更多项目' }));
@@ -158,7 +158,7 @@ it('导航旧水位响应不把已更新的待办3回退成4，也不切换当�
   expect(screen.getByRole('button', { name: /待办 3/ })).toBeTruthy();
   expect(screen.getByRole('region', { name: '最近创建会话' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: '项目' }));
-  expect(screen.getByRole('button', { name: /研究项目3/ })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '研究项目' }).textContent).toContain('3');
 });
 
 it('全局待办复用导航已知名称，跨项目相同问题/恢复原因仍显示准确Task并操作原对象，未知项目不额外查询', async () => {

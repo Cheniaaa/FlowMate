@@ -10,7 +10,7 @@ import MessageList from './MessageList';
 afterEach(() => vi.unstubAllGlobals());
 const call: ModelMessage = { id, role: 'assistant', origin: 'conversation', parts: [{ kind: 'tool_call', name: 'memory.propose',
   call_id: 'proposal', arguments: { text: memory.text, scope: memory.scope, kind: memory.kind, author_kind: 'user', evidence: memory.evidence } }],
-  activity_id: null, source_dependencies: [], private_ref: null, event_id: '1', event_index: 0 };
+  activity_id: null, run_id: id, source_dependencies: [], private_ref: null, event_id: '1', event_index: 0 };
 const result: ModelMessage = { ...call, id: secondId, role: 'tool', parts: [{ kind: 'tool_result', origin_message_id: id, call_id: 'proposal',
   result: { id: memory.id, revision: 1, status: 'candidate' }, error: null }] };
 

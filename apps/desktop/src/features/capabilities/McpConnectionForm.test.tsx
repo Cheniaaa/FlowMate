@@ -28,6 +28,8 @@ function server(failNative = false) {
         transport: entry.url ? 'http' : 'stdio', url: entry.url ?? null, command: entry.command ?? null,
         args: entry.args ?? [] }], errors: [], required_secret_slots: slots });
     }
+    if (path.endsWith('/discover')) return Response.json({ config: mcpConfig, state: 'connected',
+      catalog: null, selection: null, error_code: null, query_grants: [] });
     return Response.json(body.data.config);
   }));
   return requests;
@@ -87,7 +89,7 @@ describe('McpConnectionForm', () => {
     fireEvent.change(screen.getByLabelText('Command'), { target: { value: mcpConfig.command } });
     fireEvent.change(screen.getByLabelText('Args（JSON 字符串数组）'), { target: { value: JSON.stringify(mcpConfig.args) } });
     fireEvent.click(screen.getByRole('button', { name: '预览配置' }));
-    await screen.findByRole('button', { name: '确认保存配置' });
+    await screen.findByRole('button', { name: '连接并启用' });
     const entry = JSON.parse(requests[0].body.sanitized_json).mcpServers['Local Notes'];
     expect(entry.command).toBe(mcpConfig.command);
     expect(entry.args).toEqual(mcpConfig.args);
@@ -127,10 +129,10 @@ describe('McpConnectionForm', () => {
     render(<McpConnectionForm client={new McpClient(mcpConnection)} scope={mcpScope} initial={original}
       onSaved={() => {}} onCancel={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: '预览配置' }));
-    await screen.findByRole('button', { name: '确认保存配置' });
+    await screen.findByRole('button', { name: '连接并启用' });
     expect(screen.getByLabelText('API token（待填写可留空）')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '确认保存配置' }));
-    await screen.findByText(/凭据待填写/);
+    fireEvent.click(screen.getByRole('button', { name: '连接并启用' }));
+    await screen.findByText(/补填凭据/);
     expect(requests[1].body.data.config.credential_ref).toBeTruthy();
     expect(requests[1].body.data.config.credential_ref).not.toBe(original.credential_ref);
     expect(requests[1].body.data.config.revision).toBe(2);

@@ -14,14 +14,14 @@ const summary: Summary = {
 describe('完整费用摘要', () => {
   it('machine code 缓存假设明确映射，小额非零不显示为0', async () => {
     render(<RunCostSummary disclosureName="cost-test" summary={{ ...summary, calculated_units: '1', pricing_basis: { ...summary.pricing_basis, assumptions: ['cache_read_at_input_rate', 'cache_write_at_input_rate', 'cache_write_1h_at_cache_write_rate'] } }} />);
-    expect(screen.getByText('已计算费用 $0.000000001')).toBeTruthy(); await userEvent.click(screen.getByText('计价详情'));
+    expect(screen.getByText('费用 $0.000000001 · 按用量计算')).toBeTruthy(); await userEvent.click(screen.getByText('计价详情'));
     expect(screen.getByText('缓存读取按输入单价计费')).toBeTruthy();
     expect(screen.getByText('缓存写入按输入单价计费')).toBeTruthy();
     expect(screen.getByText('1 小时缓存写入按缓存写入单价计费')).toBeTruthy();
   });
   it('精确显示超JS安全整数金额，并区分unknown、在途与预留', async () => {
     render(<RunCostSummary disclosureName="cost-test" summary={summary} />);
-    expect(screen.getByText('已计算费用 $1,152,921,504.606847099')).toBeTruthy();
+    expect(screen.getByText('费用 $1,152,921,504.606847099 · 按用量计算')).toBeTruthy();
     expect(screen.getByText('待确认费用 3 次')).toBeTruthy();
     expect(screen.getByText('在途 1 次')).toBeTruthy();
     await userEvent.click(screen.getByText('计价详情'));
@@ -36,7 +36,7 @@ describe('完整费用摘要', () => {
     const { rerender } = render(<RunCostSummary disclosureName="cost-test" summary={{ ...summary, calculated_units: '0',
       pricing_basis: { source: null, snapshot_id: null, catalog_version: null,
         effective_multiplier: null, assumptions: [], unknown_reason: 'price_unknown' } }} />);
-    expect(screen.getByText('已计算费用 $0')).toBeTruthy();
+    expect(screen.getByText('费用 $0 · 按用量计算')).toBeTruthy();
     expect(screen.getByText('待确认费用 3 次')).toBeTruthy();
     await userEvent.click(screen.getByText('计价详情'));
     expect(screen.getByText('单价未知')).toBeTruthy();

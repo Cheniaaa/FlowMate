@@ -10,6 +10,7 @@ export namespace ActivityPageSchema {
   export type Operation = string;
   export type RunId = string;
   export type AttemptId = string;
+  export type CollectionError = string | null;
   export type ContentHash = string;
   export type EnvironmentId = string;
   export type EnvironmentRevision = number;
@@ -70,6 +71,7 @@ export namespace ActivityPageSchema {
    */
   export interface ScriptExecutionSummary {
     attempt_id: AttemptId;
+    collection_error: CollectionError;
     content_hash: ContentHash;
     environment_id: EnvironmentId;
     environment_revision: EnvironmentRevision;
@@ -118,6 +120,7 @@ export namespace ActivityViewSchema {
   export type Operation = string;
   export type RunId = string;
   export type AttemptId = string;
+  export type CollectionError = string | null;
   export type ContentHash = string;
   export type EnvironmentId = string;
   export type EnvironmentRevision = number;
@@ -170,6 +173,7 @@ export namespace ActivityViewSchema {
    */
   export interface ScriptExecutionSummary {
     attempt_id: AttemptId;
+    collection_error: CollectionError;
     content_hash: ContentHash;
     environment_id: EnvironmentId;
     environment_revision: EnvironmentRevision;
@@ -935,6 +939,12 @@ export namespace DataUseGrantSchema {
   export type Destination = string | null;
   export type Epoch = number;
   export type Id = string;
+  export type CatalogHash = string;
+  export type ConfigRevision = number;
+  export type Destination1 = string;
+  export type OriginalName = string;
+  export type ServerId = string;
+  export type McpQueries = McpToolSnapshot[];
   export type Kind = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
@@ -954,6 +964,7 @@ export namespace DataUseGrantSchema {
     destination: Destination;
     epoch: Epoch;
     id: Id;
+    mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes;
     purposes: Purposes;
@@ -961,6 +972,13 @@ export namespace DataUseGrantSchema {
     scope: ScopeRef;
     status: Status;
     version: Version;
+  }
+  export interface McpToolSnapshot {
+    catalog_hash: CatalogHash;
+    config_revision: ConfigRevision;
+    destination: Destination1;
+    original_name: OriginalName;
+    server_id: ServerId;
   }
   export interface McpVersions {
     /**
@@ -1278,6 +1296,12 @@ export namespace GrantPageSchema {
   export type Destination = string | null;
   export type Epoch = number;
   export type Id = string;
+  export type CatalogHash = string;
+  export type ConfigRevision = number;
+  export type Destination1 = string;
+  export type OriginalName = string;
+  export type ServerId = string;
+  export type McpQueries = McpToolSnapshot[];
   export type Kind = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
@@ -1305,6 +1329,7 @@ export namespace GrantPageSchema {
     destination: Destination;
     epoch: Epoch;
     id: Id;
+    mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes;
     purposes: Purposes;
@@ -1312,6 +1337,13 @@ export namespace GrantPageSchema {
     scope: ScopeRef;
     status: Status;
     version: Version;
+  }
+  export interface McpToolSnapshot {
+    catalog_hash: CatalogHash;
+    config_revision: ConfigRevision;
+    destination: Destination1;
+    original_name: OriginalName;
+    server_id: ServerId;
   }
   export interface McpVersions {
     /**
@@ -1331,6 +1363,12 @@ export type GrantPage = GrantPageSchema.GrantPage;
 
 export namespace GrantRequestSchema {
   export type Destination = string | null;
+  export type CatalogHash = string;
+  export type ConfigRevision = number;
+  export type Destination1 = string;
+  export type OriginalName = string;
+  export type ServerId = string;
+  export type McpQueries = McpToolSnapshot[];
   export type Kind = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
@@ -1352,11 +1390,19 @@ export namespace GrantRequestSchema {
   }
   export interface GrantCommand {
     destination?: Destination;
+    mcp_queries?: McpQueries;
     mcp_versions?: McpVersions;
     memory_scopes?: MemoryScopes;
     purposes: Purposes;
     resource_ids?: ResourceIds;
     scope: ScopeRef;
+  }
+  export interface McpToolSnapshot {
+    catalog_hash: CatalogHash;
+    config_revision: ConfigRevision;
+    destination: Destination1;
+    original_name: OriginalName;
+    server_id: ServerId;
   }
   export interface McpVersions {
     /**
@@ -1874,11 +1920,32 @@ export namespace McpServerPageSchema {
   export type Transport = 'stdio' | 'http';
   export type Url = string | null;
   export type ErrorCode = string | null;
+  export type Destination = string | null;
+  export type Epoch = number;
+  export type Id1 = string;
   export type CatalogHash = string;
   export type ConfigRevision1 = number;
-  export type SelectedNames = string[];
+  export type Destination1 = string;
+  export type OriginalName = string;
   export type ServerId1 = string;
+  export type McpQueries = McpToolSnapshot[];
+  export type MemoryScopes = ScopeRef[];
+  /**
+   * @minItems 1
+   */
+  export type Purposes = [
+    'read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send',
+    ...('read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send')[]
+  ];
+  export type ResourceIds = string[];
+  export type Status = 'active' | 'revoked';
   export type Version = number;
+  export type QueryGrants = DataUseGrant[];
+  export type CatalogHash1 = string;
+  export type ConfigRevision2 = number;
+  export type SelectedNames = string[];
+  export type ServerId2 = string;
+  export type Version1 = number;
   export type State = 'saved' | 'connecting' | 'connected' | 'failed' | 'stopped';
   export type Items = McpServerView[];
   export type NextCursor = string | null;
@@ -1893,6 +1960,7 @@ export namespace McpServerPageSchema {
     catalog: McpCatalog | null;
     config: McpConfiguredServer;
     error_code: ErrorCode;
+    query_grants: QueryGrants;
     selection: McpToolSelection | null;
     state: State;
   }
@@ -1935,13 +2003,40 @@ export namespace McpServerPageSchema {
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
-  export interface McpToolSelection {
+  export interface DataUseGrant {
+    destination: Destination;
+    epoch: Epoch;
+    id: Id1;
+    mcp_queries: McpQueries;
+    mcp_versions: McpVersions;
+    memory_scopes: MemoryScopes;
+    purposes: Purposes;
+    resource_ids: ResourceIds;
+    scope: ScopeRef;
+    status: Status;
+    version: Version;
+  }
+  export interface McpToolSnapshot {
     catalog_hash: CatalogHash;
     config_revision: ConfigRevision1;
+    destination: Destination1;
+    original_name: OriginalName;
+    server_id: ServerId1;
+  }
+  export interface McpVersions {
+    /**
+     * This interface was referenced by `McpVersions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface McpToolSelection {
+    catalog_hash: CatalogHash1;
+    config_revision: ConfigRevision2;
     scope: ScopeRef;
     selected_names: SelectedNames;
-    server_id: ServerId1;
-    version: Version;
+    server_id: ServerId2;
+    version: Version1;
   }
 
 }
@@ -1976,17 +2071,39 @@ export namespace McpServerViewSchema {
   export type Transport = 'stdio' | 'http';
   export type Url = string | null;
   export type ErrorCode = string | null;
+  export type Destination = string | null;
+  export type Epoch = number;
+  export type Id1 = string;
   export type CatalogHash = string;
   export type ConfigRevision1 = number;
-  export type SelectedNames = string[];
+  export type Destination1 = string;
+  export type OriginalName = string;
   export type ServerId1 = string;
+  export type McpQueries = McpToolSnapshot[];
+  export type MemoryScopes = ScopeRef[];
+  /**
+   * @minItems 1
+   */
+  export type Purposes = [
+    'read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send',
+    ...('read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send')[]
+  ];
+  export type ResourceIds = string[];
+  export type Status = 'active' | 'revoked';
   export type Version = number;
+  export type QueryGrants = DataUseGrant[];
+  export type CatalogHash1 = string;
+  export type ConfigRevision2 = number;
+  export type SelectedNames = string[];
+  export type ServerId2 = string;
+  export type Version1 = number;
   export type State = 'saved' | 'connecting' | 'connected' | 'failed' | 'stopped';
 
   export interface McpServerView {
     catalog: McpCatalog | null;
     config: McpConfiguredServer;
     error_code: ErrorCode;
+    query_grants: QueryGrants;
     selection: McpToolSelection | null;
     state: State;
   }
@@ -2029,13 +2146,40 @@ export namespace McpServerViewSchema {
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
-  export interface McpToolSelection {
+  export interface DataUseGrant {
+    destination: Destination;
+    epoch: Epoch;
+    id: Id1;
+    mcp_queries: McpQueries;
+    mcp_versions: McpVersions;
+    memory_scopes: MemoryScopes;
+    purposes: Purposes;
+    resource_ids: ResourceIds;
+    scope: ScopeRef;
+    status: Status;
+    version: Version;
+  }
+  export interface McpToolSnapshot {
     catalog_hash: CatalogHash;
     config_revision: ConfigRevision1;
+    destination: Destination1;
+    original_name: OriginalName;
+    server_id: ServerId1;
+  }
+  export interface McpVersions {
+    /**
+     * This interface was referenced by `McpVersions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface McpToolSelection {
+    catalog_hash: CatalogHash1;
+    config_revision: ConfigRevision2;
     scope: ScopeRef;
     selected_names: SelectedNames;
-    server_id: ServerId1;
-    version: Version;
+    server_id: ServerId2;
+    version: Version1;
   }
 
 }
@@ -2079,6 +2223,7 @@ export namespace MemberLaneSchema {
   export type Operation = string;
   export type RunId = string;
   export type AttemptId = string;
+  export type CollectionError = string | null;
   export type ContentHash = string;
   export type EnvironmentId = string;
   export type EnvironmentRevision = number;
@@ -2273,6 +2418,7 @@ export namespace MemberLaneSchema {
    */
   export interface ScriptExecutionSummary {
     attempt_id: AttemptId;
+    collection_error: CollectionError;
     content_hash: ContentHash;
     environment_id: EnvironmentId;
     environment_revision: EnvironmentRevision;
@@ -2535,6 +2681,7 @@ export namespace MemberLaneListSchema {
   export type Operation = string;
   export type RunId = string;
   export type AttemptId = string;
+  export type CollectionError = string | null;
   export type ContentHash = string;
   export type EnvironmentId = string;
   export type EnvironmentRevision = number;
@@ -2730,6 +2877,7 @@ export namespace MemberLaneListSchema {
    */
   export interface ScriptExecutionSummary {
     attempt_id: AttemptId;
+    collection_error: CollectionError;
     content_hash: ContentHash;
     environment_id: EnvironmentId;
     environment_revision: EnvironmentRevision;
@@ -3426,6 +3574,11 @@ export namespace MessagePageSchema {
   export type Text = string;
   export type Kind1 = 'reasoning';
   export type Text1 = string;
+  export type Arguments =
+    | {
+        [k: string]: JsonValue;
+      }
+    | string;
   export type JsonValue = unknown;
   export type CallId = string;
   export type Kind2 = 'tool_call';
@@ -3437,6 +3590,7 @@ export namespace MessagePageSchema {
   export type Parts = (TextPart | ReasoningPart | ToolCallPart | ToolResultPart)[];
   export type PrivateRef = string | null;
   export type Role = 'user' | 'assistant' | 'tool';
+  export type RunId = string;
   export type Epoch = number;
   export type ScopeId = string;
   export type SourceDependencies = ScopeDependency[];
@@ -3458,6 +3612,7 @@ export namespace MessagePageSchema {
     parts: Parts;
     private_ref: PrivateRef;
     role: Role;
+    run_id: RunId;
     source_dependencies: SourceDependencies;
   }
   export interface TextPart {
@@ -3473,9 +3628,6 @@ export namespace MessagePageSchema {
     call_id: CallId;
     kind: Kind2;
     name: Name;
-  }
-  export interface Arguments {
-    [k: string]: JsonValue;
   }
   export interface ToolResultPart {
     call_id: CallId1;
@@ -3612,6 +3764,11 @@ export namespace ModelMessageSchema {
   export type Text = string;
   export type Kind1 = 'reasoning';
   export type Text1 = string;
+  export type Arguments =
+    | {
+        [k: string]: JsonValue;
+      }
+    | string;
   export type JsonValue = unknown;
   export type CallId = string;
   export type Kind2 = 'tool_call';
@@ -3623,6 +3780,7 @@ export namespace ModelMessageSchema {
   export type Parts = (TextPart | ReasoningPart | ToolCallPart | ToolResultPart)[];
   export type PrivateRef = string | null;
   export type Role = 'user' | 'assistant' | 'tool';
+  export type RunId = string;
   export type Epoch = number;
   export type ScopeId = string;
   export type SourceDependencies = ScopeDependency[];
@@ -3636,6 +3794,7 @@ export namespace ModelMessageSchema {
     parts: Parts;
     private_ref: PrivateRef;
     role: Role;
+    run_id: RunId;
     source_dependencies: SourceDependencies;
   }
   export interface TextPart {
@@ -3651,9 +3810,6 @@ export namespace ModelMessageSchema {
     call_id: CallId;
     kind: Kind2;
     name: Name;
-  }
-  export interface Arguments {
-    [k: string]: JsonValue;
   }
   export interface ToolResultPart {
     call_id: CallId1;
@@ -4936,6 +5092,7 @@ export namespace PublicEventSchema {
   export type Operation = string;
   export type RunId5 = string;
   export type AttemptId = string;
+  export type CollectionError = string | null;
   export type ContentHash = string;
   export type EnvironmentId = string;
   export type EnvironmentRevision = number;
@@ -5021,6 +5178,11 @@ export namespace PublicEventSchema {
   export type Text = string;
   export type Kind9 = 'reasoning';
   export type Text1 = string;
+  export type Arguments =
+    | {
+        [k: string]: JsonValue;
+      }
+    | string;
   export type JsonValue = unknown;
   export type CallId = string;
   export type Kind10 = 'tool_call';
@@ -5032,6 +5194,7 @@ export namespace PublicEventSchema {
   export type Parts = (TextPart | ReasoningPart | ToolCallPart | ToolResultPart)[];
   export type PrivateRef = string | null;
   export type Role = 'user' | 'assistant' | 'tool';
+  export type RunId10 = string;
   export type SourceDependencies = ScopeDependency[];
   export type Messages = MessageView[];
   export type CommandId = string;
@@ -5095,7 +5258,7 @@ export namespace PublicEventSchema {
   export type DeadlineAt = string;
   export type Dependencies2 = ScopeDependency[];
   export type Lifetime = 'run_bound' | 'managed';
-  export type RunId10 = string;
+  export type RunId11 = string;
   export type SubmittedState =
     | 'queued'
     | 'running'
@@ -5113,7 +5276,7 @@ export namespace PublicEventSchema {
   export type SourceEventId = string;
   export type TargetSessionId1 = string;
   export type Reason1 = string | null;
-  export type RunId11 = string | null;
+  export type RunId12 = string | null;
   export type ScopeDependencies = ScopeDependency[];
   export type SessionId5 = string;
   export type AgentProfileId1 = string;
@@ -5137,7 +5300,7 @@ export namespace PublicEventSchema {
   export type Id13 = string;
   export type MessageId = string;
   export type Question1 = string;
-  export type RunId12 = string;
+  export type RunId13 = string;
   export type Status2 = 'pending' | 'answered' | 'cancelled';
   export type TaskId9 = string;
   export type Version10 = number;
@@ -5209,7 +5372,7 @@ export namespace PublicEventSchema {
   export type ParentTaskId = string | null;
   export type Reason4 = string | null;
   export type ResultVersion3 = number | null;
-  export type RunId13 = string;
+  export type RunId14 = string;
   export type State3 =
     | 'queued'
     | 'running'
@@ -5228,12 +5391,12 @@ export namespace PublicEventSchema {
   export type Id16 = string;
   export type OwnerTaskId = string;
   export type ResultVersion4 = number | null;
-  export type RunId14 = string;
+  export type RunId15 = string;
   export type State4 = 'pending' | 'ready' | 'timeout' | 'cancelled';
   export type TargetTaskId1 = string;
   export type Version13 = number;
   export type Waits = WaitRecord[];
-  export type RunId15 = string | null;
+  export type RunId16 = string | null;
   export type Seq5 = number | null;
   export type SessionId8 = string | null;
   export type TaskId11 = string | null;
@@ -5260,7 +5423,7 @@ export namespace PublicEventSchema {
   export type TargetExists = boolean;
   export type TargetPath = string;
   export type Id17 = string;
-  export type RunId16 = string;
+  export type RunId17 = string;
   export type SessionId9 = string | null;
   export type Status4 = 'pending' | 'approved' | 'denied' | 'superseded' | 'expired';
   export type Target = string | null;
@@ -5273,6 +5436,7 @@ export namespace PublicEventSchema {
   export type Destination1 = string | null;
   export type Epoch1 = number;
   export type Id18 = string;
+  export type McpQueries = McpToolSnapshot[];
   export type MemoryScopes1 = ScopeRef[];
   /**
    * @minItems 1
@@ -5291,7 +5455,7 @@ export namespace PublicEventSchema {
   export type SourceVersion = string | null;
   export type Version16 = number;
   export type Resources = ResourceRef[];
-  export type RunId17 = string | null;
+  export type RunId18 = string | null;
   export type Seq6 = number | null;
   export type SessionId10 = string | null;
   export type TaskId13 = string | null;
@@ -5309,7 +5473,7 @@ export namespace PublicEventSchema {
   export type Id20 = string;
   export type Status7 = 'active' | 'revoked' | 'deleted';
   export type Scopes = ScopeState[];
-  export type RunId18 = string | null;
+  export type RunId19 = string | null;
   export type Seq7 = number | null;
   export type SessionId11 = string | null;
   export type TaskId14 = string | null;
@@ -5333,7 +5497,7 @@ export namespace PublicEventSchema {
   export type Version17 = number;
   export type ViewedAt = string | null;
   export type Deliveries = SessionInboxEntry[];
-  export type RunId19 = string | null;
+  export type RunId20 = string | null;
   export type Seq8 = number | null;
   export type SessionId12 = string | null;
   export type TaskId15 = string | null;
@@ -5346,7 +5510,7 @@ export namespace PublicEventSchema {
   export type Kind21 = 'admission.stopped';
   export type Generation = number;
   export type AdmissionFences = AdmissionFence[];
-  export type RunId20 = string | null;
+  export type RunId21 = string | null;
   export type Seq9 = number | null;
   export type SessionId13 = string | null;
   export type TaskId16 = string | null;
@@ -5366,7 +5530,7 @@ export namespace PublicEventSchema {
   export type Revision = number;
   export type Status8 = 'candidate' | 'confirmed' | 'rejected' | 'deleted';
   export type Records = MemoryNotice[];
-  export type RunId21 = string | null;
+  export type RunId22 = string | null;
   export type Seq10 = number | null;
   export type SessionId14 = string | null;
   export type TaskId17 = string | null;
@@ -5381,8 +5545,8 @@ export namespace PublicEventSchema {
   export type PolicyVersion1 = number;
   export type Reason5 = string | null;
   export type EventId14 = string;
-  export type RunId22 = string;
-  export type RunId23 = string | null;
+  export type RunId23 = string;
+  export type RunId24 = string | null;
   export type Seq11 = number | null;
   export type SessionId15 = string | null;
   export type TaskId18 = string | null;
@@ -5396,7 +5560,7 @@ export namespace PublicEventSchema {
   export type Revision1 = number;
   export type SkillId1 = string;
   export type Status9 = 'active' | 'deleted';
-  export type RunId24 = string | null;
+  export type RunId25 = string | null;
   export type Seq12 = number | null;
   export type SessionId16 = string | null;
   export type TaskId19 = string | null;
@@ -5408,7 +5572,7 @@ export namespace PublicEventSchema {
   export type EventVersion13 = 1;
   export type Kind25 = 'environment.changed';
   export type EnvironmentId1 = string;
-  export type RunId25 = string | null;
+  export type RunId26 = string | null;
   export type Seq13 = number | null;
   export type SessionId17 = string | null;
   export type TaskId20 = string | null;
@@ -5421,7 +5585,7 @@ export namespace PublicEventSchema {
   export type Kind26 = 'mcp.changed';
   export type ConfigRevision1 = number;
   export type ServerId1 = string;
-  export type RunId26 = string | null;
+  export type RunId27 = string | null;
   export type Seq14 = number | null;
   export type SessionId18 = string | null;
   export type TaskId21 = string | null;
@@ -5573,7 +5737,7 @@ export namespace PublicEventSchema {
     event_version: EventVersion5;
     kind: Kind6;
     payload: PublicChange;
-    run_id: RunId15;
+    run_id: RunId16;
     seq: Seq5;
     session_id: SessionId8;
     task_id: TaskId11;
@@ -5616,6 +5780,7 @@ export namespace PublicEventSchema {
    */
   export interface ScriptExecutionSummary {
     attempt_id: AttemptId;
+    collection_error: CollectionError;
     content_hash: ContentHash;
     environment_id: EnvironmentId;
     environment_revision: EnvironmentRevision;
@@ -5711,6 +5876,7 @@ export namespace PublicEventSchema {
     parts: Parts;
     private_ref: PrivateRef;
     role: Role;
+    run_id: RunId10;
     source_dependencies: SourceDependencies;
   }
   export interface TextPart {
@@ -5726,9 +5892,6 @@ export namespace PublicEventSchema {
     call_id: CallId;
     kind: Kind10;
     name: Name1;
-  }
-  export interface Arguments {
-    [k: string]: JsonValue;
   }
   export interface ToolResultPart {
     call_id: CallId1;
@@ -5747,7 +5910,7 @@ export namespace PublicEventSchema {
     deadline_at: DeadlineAt;
     input_result: ResultInput | null;
     reason: Reason1;
-    run_id: RunId11;
+    run_id: RunId12;
     scope_dependencies: ScopeDependencies;
     session_id: SessionId5;
     start: StartRun;
@@ -5889,7 +6052,7 @@ export namespace PublicEventSchema {
   }
   export interface TaskHandle {
     lifetime: Lifetime;
-    run_id: RunId10;
+    run_id: RunId11;
     submitted_state: SubmittedState;
     task_id: TaskId8;
   }
@@ -5930,7 +6093,7 @@ export namespace PublicEventSchema {
     id: Id13;
     message_id: MessageId;
     question: Question1;
-    run_id: RunId12;
+    run_id: RunId13;
     status: Status2;
     task_id: TaskId9;
     version: Version10;
@@ -6000,7 +6163,7 @@ export namespace PublicEventSchema {
     parent_task_id: ParentTaskId;
     reason: Reason4;
     result_version: ResultVersion3;
-    run_id: RunId13;
+    run_id: RunId14;
     state: State3;
     version: Version12;
   }
@@ -6031,7 +6194,7 @@ export namespace PublicEventSchema {
     id: Id16;
     owner_task_id: OwnerTaskId;
     result_version: ResultVersion4;
-    run_id: RunId14;
+    run_id: RunId15;
     state: State4;
     target_task_id: TargetTaskId1;
     version: Version13;
@@ -6044,7 +6207,7 @@ export namespace PublicEventSchema {
     event_version: EventVersion6;
     kind: Kind17;
     payload: PublicPolicyChange;
-    run_id: RunId17;
+    run_id: RunId18;
     seq: Seq6;
     session_id: SessionId10;
     task_id: TaskId13;
@@ -6065,7 +6228,7 @@ export namespace PublicEventSchema {
     id: Id17;
     mcp: McpToolSnapshot | null;
     parameters: Parameters;
-    run_id: RunId16;
+    run_id: RunId17;
     session_id: SessionId9;
     status: Status4;
     target: Target;
@@ -6091,6 +6254,7 @@ export namespace PublicEventSchema {
     destination: Destination1;
     epoch: Epoch1;
     id: Id18;
+    mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes1;
     purposes: Purposes;
@@ -6122,7 +6286,7 @@ export namespace PublicEventSchema {
     event_version: EventVersion7;
     kind: Kind19;
     payload: PublicLifecycleChange;
-    run_id: RunId18;
+    run_id: RunId19;
     seq: Seq7;
     session_id: SessionId11;
     task_id: TaskId14;
@@ -6151,7 +6315,7 @@ export namespace PublicEventSchema {
     event_version: EventVersion8;
     kind: Kind20;
     payload: DeliveryChange;
-    run_id: RunId19;
+    run_id: RunId20;
     seq: Seq8;
     session_id: SessionId12;
     task_id: TaskId15;
@@ -6183,7 +6347,7 @@ export namespace PublicEventSchema {
     event_version: EventVersion9;
     kind: Kind21;
     payload: AdmissionChange;
-    run_id: RunId20;
+    run_id: RunId21;
     seq: Seq9;
     session_id: SessionId13;
     task_id: TaskId16;
@@ -6204,7 +6368,7 @@ export namespace PublicEventSchema {
     event_version: EventVersion10;
     kind: Kind22;
     payload: MemoryChange;
-    run_id: RunId21;
+    run_id: RunId22;
     seq: Seq10;
     session_id: SessionId14;
     task_id: TaskId17;
@@ -6239,7 +6403,7 @@ export namespace PublicEventSchema {
     event_version: EventVersion11;
     kind: Kind23;
     payload: MemoryMaintenanceNotice;
-    run_id: RunId23;
+    run_id: RunId24;
     seq: Seq11;
     session_id: SessionId15;
     task_id: TaskId18;
@@ -6255,7 +6419,7 @@ export namespace PublicEventSchema {
   }
   export interface MemorySourceBoundary {
     event_id: EventId14;
-    run_id: RunId22;
+    run_id: RunId23;
   }
   export interface SkillEvent {
     activity_id: ActivityId15;
@@ -6265,7 +6429,7 @@ export namespace PublicEventSchema {
     event_version: EventVersion12;
     kind: Kind24;
     payload: SkillNotice;
-    run_id: RunId24;
+    run_id: RunId25;
     seq: Seq12;
     session_id: SessionId16;
     task_id: TaskId19;
@@ -6285,7 +6449,7 @@ export namespace PublicEventSchema {
     event_version: EventVersion13;
     kind: Kind25;
     payload: EnvironmentChanged;
-    run_id: RunId25;
+    run_id: RunId26;
     seq: Seq13;
     session_id: SessionId17;
     task_id: TaskId20;
@@ -6305,7 +6469,7 @@ export namespace PublicEventSchema {
     event_version: EventVersion14;
     kind: Kind26;
     payload: McpNotice;
-    run_id: RunId26;
+    run_id: RunId27;
     seq: Seq14;
     session_id: SessionId18;
     task_id: TaskId21;
@@ -6718,6 +6882,37 @@ export namespace ResolvedMemberSchema {
 }
 export type ResolvedMember = ResolvedMemberSchema.ResolvedMember;
 
+export namespace ResourceCoverageSchema {
+  export type Allowed = boolean;
+  export type Destination = string;
+  export type MissingModelSend = string[];
+  export type MissingRead = string[];
+
+  export interface ResourceCoverage {
+    allowed: Allowed;
+    destination: Destination;
+    missing_model_send: MissingModelSend;
+    missing_read: MissingRead;
+  }
+
+}
+export type ResourceCoverage = ResourceCoverageSchema.ResourceCoverage;
+
+export namespace ResourceCoverageRequestSchema {
+  export type ModelProfileId = string;
+  /**
+   * @maxItems 200
+   */
+  export type ResourceIds = string[];
+
+  export interface ResourceCoverageRequest {
+    model_profile_id: ModelProfileId;
+    resource_ids: ResourceIds;
+  }
+
+}
+export type ResourceCoverageRequest = ResourceCoverageRequestSchema.ResourceCoverageRequest;
+
 export namespace ResourcePageSchema {
   export type Id = string;
   export type Kind = 'file' | 'directory' | 'export';
@@ -6895,6 +7090,7 @@ export namespace RunDetailSchema {
   export type Operation = string;
   export type RunId = string;
   export type AttemptId = string;
+  export type CollectionError = string | null;
   export type ContentHash = string;
   export type EnvironmentId = string;
   export type EnvironmentRevision = number;
@@ -7024,6 +7220,11 @@ export namespace RunDetailSchema {
   export type Text = string;
   export type Kind2 = 'reasoning';
   export type Text1 = string;
+  export type Arguments =
+    | {
+        [k: string]: JsonValue;
+      }
+    | string;
   export type CallId1 = string;
   export type Kind3 = 'tool_call';
   export type Name = string;
@@ -7034,6 +7235,7 @@ export namespace RunDetailSchema {
   export type Parts = (TextPart | ReasoningPart | ToolCallPart | ToolResultPart)[];
   export type PrivateRef = string | null;
   export type Role = 'user' | 'assistant' | 'tool';
+  export type RunId5 = string;
   export type SourceDependencies = ScopeDependency[];
   export type Items5 = MessageView[];
   export type NextCursor5 = string | null;
@@ -7044,7 +7246,7 @@ export namespace RunDetailSchema {
   export type Id7 = string;
   export type MessageId = string;
   export type Question1 = string;
-  export type RunId5 = string;
+  export type RunId6 = string;
   export type Status2 = 'pending' | 'answered' | 'cancelled';
   export type TaskId4 = string;
   export type Version4 = number;
@@ -7187,7 +7389,7 @@ export namespace RunDetailSchema {
   export type InputArtifacts = ArtifactRef[];
   export type Dependencies4 = ScopeDependency[];
   export type Lifetime = 'run_bound' | 'managed';
-  export type RunId6 = string;
+  export type RunId7 = string;
   export type SubmittedState =
     | 'queued'
     | 'running'
@@ -7214,7 +7416,7 @@ export namespace RunDetailSchema {
   export type ParentTaskId = string | null;
   export type Reason2 = string | null;
   export type ResultVersion3 = number | null;
-  export type RunId7 = string;
+  export type RunId8 = string;
   export type State3 =
     | 'queued'
     | 'running'
@@ -7235,7 +7437,7 @@ export namespace RunDetailSchema {
   export type Id12 = string;
   export type OwnerTaskId = string;
   export type ResultVersion4 = number | null;
-  export type RunId8 = string;
+  export type RunId9 = string;
   export type State4 = 'pending' | 'ready' | 'timeout' | 'cancelled';
   export type TargetTaskId1 = string;
   export type Version10 = number;
@@ -7288,6 +7490,7 @@ export namespace RunDetailSchema {
    */
   export interface ScriptExecutionSummary {
     attempt_id: AttemptId;
+    collection_error: CollectionError;
     content_hash: ContentHash;
     environment_id: EnvironmentId;
     environment_revision: EnvironmentRevision;
@@ -7466,6 +7669,7 @@ export namespace RunDetailSchema {
     parts: Parts;
     private_ref: PrivateRef;
     role: Role;
+    run_id: RunId5;
     source_dependencies: SourceDependencies;
   }
   export interface TextPart {
@@ -7481,9 +7685,6 @@ export namespace RunDetailSchema {
     call_id: CallId1;
     kind: Kind3;
     name: Name;
-  }
-  export interface Arguments {
-    [k: string]: JsonValue;
   }
   export interface ToolResultPart {
     call_id: CallId2;
@@ -7507,7 +7708,7 @@ export namespace RunDetailSchema {
     id: Id7;
     message_id: MessageId;
     question: Question1;
-    run_id: RunId5;
+    run_id: RunId6;
     status: Status2;
     task_id: TaskId4;
     version: Version4;
@@ -7739,7 +7940,7 @@ export namespace RunDetailSchema {
     parent_task_id: ParentTaskId;
     reason: Reason2;
     result_version: ResultVersion3;
-    run_id: RunId7;
+    run_id: RunId8;
     state: State3;
     version: Version9;
   }
@@ -7774,7 +7975,7 @@ export namespace RunDetailSchema {
   }
   export interface TaskHandle {
     lifetime: Lifetime;
-    run_id: RunId6;
+    run_id: RunId7;
     submitted_state: SubmittedState;
     task_id: TaskId6;
   }
@@ -7789,7 +7990,7 @@ export namespace RunDetailSchema {
     id: Id12;
     owner_task_id: OwnerTaskId;
     result_version: ResultVersion4;
-    run_id: RunId8;
+    run_id: RunId9;
     state: State4;
     target_task_id: TargetTaskId1;
     version: Version10;
@@ -7797,6 +7998,276 @@ export namespace RunDetailSchema {
 
 }
 export type RunDetail = RunDetailSchema.RunDetail;
+
+export namespace RunFeedbackSchema {
+  export type ConnectionId = string;
+  export type ActualUnits = string | null;
+  export type Epoch = number;
+  export type ScopeId = string;
+  export type Dependencies = ScopeDependency[];
+  export type Error = string | null;
+  export type Id = string;
+  export type Kind = 'model' | 'tool';
+  export type Operation = string;
+  export type RunId = string;
+  export type AttemptId = string;
+  export type CollectionError = string | null;
+  export type ContentHash = string;
+  export type EnvironmentId = string;
+  export type EnvironmentRevision = number;
+  export type ExitCode = number | null;
+  export type ExternalCosts = 'unknown';
+  export type ActivityId = string;
+  export type ContentHash1 = string;
+  export type Dependencies1 = ScopeDependency[];
+  export type Id1 = string;
+  export type MediaType = 'text/plain' | 'text/markdown' | 'application/octet-stream';
+  export type TaskId = string;
+  export type Version = number;
+  export type RelativePath = string;
+  export type Outputs = ScriptArtifact[];
+  export type ScriptRelativePath = string;
+  export type SkillId = string;
+  export type TerminationReason = 'exited' | 'cancelled' | 'timed_out';
+  export type Truncated = boolean;
+  export type State = 'prepared' | 'dispatched' | 'succeeded' | 'failed' | 'uncertain';
+  export type TaskId1 = string;
+  export type CacheWrite1HTokens = number | null;
+  export type CacheWriteTokens = number | null;
+  export type CachedInputTokens = number | null;
+  export type InputTokens = number | null;
+  export type OutputTokens = number | null;
+  export type Source = string | null;
+  export type Status = 'unknown' | 'known';
+  export type Version1 = number;
+  export type Reason = string | null;
+  export type RootTaskId = string;
+  export type RunId1 = string;
+  export type SessionId = string;
+  export type State1 =
+    | 'queued'
+    | 'running'
+    | 'waiting_user'
+    | 'waiting_approval'
+    | 'waiting_children'
+    | 'interrupted'
+    | 'blocked_incompatible'
+    | 'completed'
+    | 'failed'
+    | 'cancelled';
+  export type Version2 = number;
+  export type WorkspaceId = string;
+
+  export interface RunFeedback {
+    connection_id: ConnectionId;
+    model_activity: ActivityView | null;
+    reason: Reason;
+    root_task_id: RootTaskId;
+    run_id: RunId1;
+    session_id: SessionId;
+    state: State1;
+    version: Version2;
+    workspace_id: WorkspaceId;
+  }
+  export interface ActivityView {
+    actual_units: ActualUnits;
+    dependencies: Dependencies;
+    error: Error;
+    id: Id;
+    kind: Kind;
+    operation: Operation;
+    run_id: RunId;
+    script_execution: ScriptExecutionSummary | null;
+    state: State;
+    task_id: TaskId1;
+    usage: Usage | null;
+    version: Version1;
+  }
+  export interface ScopeDependency {
+    epoch: Epoch;
+    scope_id: ScopeId;
+  }
+  /**
+   * 过程投影只含事实和公开引用，不复制脚本日志、env 或执行路径。
+   */
+  export interface ScriptExecutionSummary {
+    attempt_id: AttemptId;
+    collection_error: CollectionError;
+    content_hash: ContentHash;
+    environment_id: EnvironmentId;
+    environment_revision: EnvironmentRevision;
+    exit_code: ExitCode;
+    external_costs: ExternalCosts;
+    outputs: Outputs;
+    script_relative_path: ScriptRelativePath;
+    skill_id: SkillId;
+    termination_reason: TerminationReason;
+    truncated: Truncated;
+  }
+  export interface ScriptArtifact {
+    artifact: ArtifactRef;
+    relative_path: RelativePath;
+  }
+  export interface ArtifactRef {
+    activity_id: ActivityId;
+    content_hash: ContentHash1;
+    dependencies: Dependencies1;
+    id: Id1;
+    media_type: MediaType;
+    task_id: TaskId;
+    version: Version;
+  }
+  export interface Usage {
+    cache_write_1h_tokens: CacheWrite1HTokens;
+    cache_write_tokens: CacheWriteTokens;
+    cached_input_tokens: CachedInputTokens;
+    input_tokens: InputTokens;
+    output_tokens: OutputTokens;
+    source: Source;
+    status: Status;
+  }
+
+}
+export type RunFeedback = RunFeedbackSchema.RunFeedback;
+
+export namespace RunFeedbackPageSchema {
+  export type ConnectionId = string;
+  export type ActualUnits = string | null;
+  export type Epoch = number;
+  export type ScopeId = string;
+  export type Dependencies = ScopeDependency[];
+  export type Error = string | null;
+  export type Id = string;
+  export type Kind = 'model' | 'tool';
+  export type Operation = string;
+  export type RunId = string;
+  export type AttemptId = string;
+  export type CollectionError = string | null;
+  export type ContentHash = string;
+  export type EnvironmentId = string;
+  export type EnvironmentRevision = number;
+  export type ExitCode = number | null;
+  export type ExternalCosts = 'unknown';
+  export type ActivityId = string;
+  export type ContentHash1 = string;
+  export type Dependencies1 = ScopeDependency[];
+  export type Id1 = string;
+  export type MediaType = 'text/plain' | 'text/markdown' | 'application/octet-stream';
+  export type TaskId = string;
+  export type Version = number;
+  export type RelativePath = string;
+  export type Outputs = ScriptArtifact[];
+  export type ScriptRelativePath = string;
+  export type SkillId = string;
+  export type TerminationReason = 'exited' | 'cancelled' | 'timed_out';
+  export type Truncated = boolean;
+  export type State = 'prepared' | 'dispatched' | 'succeeded' | 'failed' | 'uncertain';
+  export type TaskId1 = string;
+  export type CacheWrite1HTokens = number | null;
+  export type CacheWriteTokens = number | null;
+  export type CachedInputTokens = number | null;
+  export type InputTokens = number | null;
+  export type OutputTokens = number | null;
+  export type Source = string | null;
+  export type Status = 'unknown' | 'known';
+  export type Version1 = number;
+  export type Reason = string | null;
+  export type RootTaskId = string;
+  export type RunId1 = string;
+  export type SessionId = string;
+  export type State1 =
+    | 'queued'
+    | 'running'
+    | 'waiting_user'
+    | 'waiting_approval'
+    | 'waiting_children'
+    | 'interrupted'
+    | 'blocked_incompatible'
+    | 'completed'
+    | 'failed'
+    | 'cancelled';
+  export type Version2 = number;
+  export type WorkspaceId = string;
+  export type Items = RunFeedback[];
+  export type NextCursor = string | null;
+  export type Watermark = string;
+
+  export interface RunFeedbackPage {
+    items: Items;
+    next_cursor: NextCursor;
+    watermark: Watermark;
+  }
+  export interface RunFeedback {
+    connection_id: ConnectionId;
+    model_activity: ActivityView | null;
+    reason: Reason;
+    root_task_id: RootTaskId;
+    run_id: RunId1;
+    session_id: SessionId;
+    state: State1;
+    version: Version2;
+    workspace_id: WorkspaceId;
+  }
+  export interface ActivityView {
+    actual_units: ActualUnits;
+    dependencies: Dependencies;
+    error: Error;
+    id: Id;
+    kind: Kind;
+    operation: Operation;
+    run_id: RunId;
+    script_execution: ScriptExecutionSummary | null;
+    state: State;
+    task_id: TaskId1;
+    usage: Usage | null;
+    version: Version1;
+  }
+  export interface ScopeDependency {
+    epoch: Epoch;
+    scope_id: ScopeId;
+  }
+  /**
+   * 过程投影只含事实和公开引用，不复制脚本日志、env 或执行路径。
+   */
+  export interface ScriptExecutionSummary {
+    attempt_id: AttemptId;
+    collection_error: CollectionError;
+    content_hash: ContentHash;
+    environment_id: EnvironmentId;
+    environment_revision: EnvironmentRevision;
+    exit_code: ExitCode;
+    external_costs: ExternalCosts;
+    outputs: Outputs;
+    script_relative_path: ScriptRelativePath;
+    skill_id: SkillId;
+    termination_reason: TerminationReason;
+    truncated: Truncated;
+  }
+  export interface ScriptArtifact {
+    artifact: ArtifactRef;
+    relative_path: RelativePath;
+  }
+  export interface ArtifactRef {
+    activity_id: ActivityId;
+    content_hash: ContentHash1;
+    dependencies: Dependencies1;
+    id: Id1;
+    media_type: MediaType;
+    task_id: TaskId;
+    version: Version;
+  }
+  export interface Usage {
+    cache_write_1h_tokens: CacheWrite1HTokens;
+    cache_write_tokens: CacheWriteTokens;
+    cached_input_tokens: CachedInputTokens;
+    input_tokens: InputTokens;
+    output_tokens: OutputTokens;
+    source: Source;
+    status: Status;
+  }
+
+}
+export type RunFeedbackPage = RunFeedbackPageSchema.RunFeedbackPage;
 
 export namespace RunPageSchema {
   export type AllowFollowUp = boolean;
@@ -10149,6 +10620,7 @@ export namespace StreamEventSchema {
   export type Operation = string;
   export type RunId5 = string;
   export type AttemptId = string;
+  export type CollectionError = string | null;
   export type ContentHash = string;
   export type EnvironmentId = string;
   export type EnvironmentRevision = number;
@@ -10234,6 +10706,11 @@ export namespace StreamEventSchema {
   export type Text = string;
   export type Kind9 = 'reasoning';
   export type Text1 = string;
+  export type Arguments =
+    | {
+        [k: string]: JsonValue;
+      }
+    | string;
   export type JsonValue = unknown;
   export type CallId = string;
   export type Kind10 = 'tool_call';
@@ -10245,6 +10722,7 @@ export namespace StreamEventSchema {
   export type Parts = (TextPart | ReasoningPart | ToolCallPart | ToolResultPart)[];
   export type PrivateRef = string | null;
   export type Role = 'user' | 'assistant' | 'tool';
+  export type RunId10 = string;
   export type SourceDependencies = ScopeDependency[];
   export type Messages = MessageView[];
   export type CommandId = string;
@@ -10308,7 +10786,7 @@ export namespace StreamEventSchema {
   export type DeadlineAt = string;
   export type Dependencies2 = ScopeDependency[];
   export type Lifetime = 'run_bound' | 'managed';
-  export type RunId10 = string;
+  export type RunId11 = string;
   export type SubmittedState =
     | 'queued'
     | 'running'
@@ -10326,7 +10804,7 @@ export namespace StreamEventSchema {
   export type SourceEventId = string;
   export type TargetSessionId1 = string;
   export type Reason1 = string | null;
-  export type RunId11 = string | null;
+  export type RunId12 = string | null;
   export type ScopeDependencies = ScopeDependency[];
   export type SessionId5 = string;
   export type AgentProfileId1 = string;
@@ -10350,7 +10828,7 @@ export namespace StreamEventSchema {
   export type Id13 = string;
   export type MessageId = string;
   export type Question1 = string;
-  export type RunId12 = string;
+  export type RunId13 = string;
   export type Status2 = 'pending' | 'answered' | 'cancelled';
   export type TaskId9 = string;
   export type Version10 = number;
@@ -10422,7 +10900,7 @@ export namespace StreamEventSchema {
   export type ParentTaskId = string | null;
   export type Reason4 = string | null;
   export type ResultVersion3 = number | null;
-  export type RunId13 = string;
+  export type RunId14 = string;
   export type State3 =
     | 'queued'
     | 'running'
@@ -10441,12 +10919,12 @@ export namespace StreamEventSchema {
   export type Id16 = string;
   export type OwnerTaskId = string;
   export type ResultVersion4 = number | null;
-  export type RunId14 = string;
+  export type RunId15 = string;
   export type State4 = 'pending' | 'ready' | 'timeout' | 'cancelled';
   export type TargetTaskId1 = string;
   export type Version13 = number;
   export type Waits = WaitRecord[];
-  export type RunId15 = string | null;
+  export type RunId16 = string | null;
   export type Seq5 = number | null;
   export type SessionId8 = string | null;
   export type TaskId11 = string | null;
@@ -10473,7 +10951,7 @@ export namespace StreamEventSchema {
   export type TargetExists = boolean;
   export type TargetPath = string;
   export type Id17 = string;
-  export type RunId16 = string;
+  export type RunId17 = string;
   export type SessionId9 = string | null;
   export type Status4 = 'pending' | 'approved' | 'denied' | 'superseded' | 'expired';
   export type Target = string | null;
@@ -10486,6 +10964,7 @@ export namespace StreamEventSchema {
   export type Destination1 = string | null;
   export type Epoch1 = number;
   export type Id18 = string;
+  export type McpQueries = McpToolSnapshot[];
   export type MemoryScopes1 = ScopeRef[];
   /**
    * @minItems 1
@@ -10504,7 +10983,7 @@ export namespace StreamEventSchema {
   export type SourceVersion = string | null;
   export type Version16 = number;
   export type Resources = ResourceRef[];
-  export type RunId17 = string | null;
+  export type RunId18 = string | null;
   export type Seq6 = number | null;
   export type SessionId10 = string | null;
   export type TaskId13 = string | null;
@@ -10522,7 +11001,7 @@ export namespace StreamEventSchema {
   export type Id20 = string;
   export type Status7 = 'active' | 'revoked' | 'deleted';
   export type Scopes = ScopeState[];
-  export type RunId18 = string | null;
+  export type RunId19 = string | null;
   export type Seq7 = number | null;
   export type SessionId11 = string | null;
   export type TaskId14 = string | null;
@@ -10546,7 +11025,7 @@ export namespace StreamEventSchema {
   export type Version17 = number;
   export type ViewedAt = string | null;
   export type Deliveries = SessionInboxEntry[];
-  export type RunId19 = string | null;
+  export type RunId20 = string | null;
   export type Seq8 = number | null;
   export type SessionId12 = string | null;
   export type TaskId15 = string | null;
@@ -10559,7 +11038,7 @@ export namespace StreamEventSchema {
   export type Kind21 = 'admission.stopped';
   export type Generation = number;
   export type AdmissionFences = AdmissionFence[];
-  export type RunId20 = string | null;
+  export type RunId21 = string | null;
   export type Seq9 = number | null;
   export type SessionId13 = string | null;
   export type TaskId16 = string | null;
@@ -10579,7 +11058,7 @@ export namespace StreamEventSchema {
   export type Revision = number;
   export type Status8 = 'candidate' | 'confirmed' | 'rejected' | 'deleted';
   export type Records = MemoryNotice[];
-  export type RunId21 = string | null;
+  export type RunId22 = string | null;
   export type Seq10 = number | null;
   export type SessionId14 = string | null;
   export type TaskId17 = string | null;
@@ -10594,8 +11073,8 @@ export namespace StreamEventSchema {
   export type PolicyVersion1 = number;
   export type Reason5 = string | null;
   export type EventId14 = string;
-  export type RunId22 = string;
-  export type RunId23 = string | null;
+  export type RunId23 = string;
+  export type RunId24 = string | null;
   export type Seq11 = number | null;
   export type SessionId15 = string | null;
   export type TaskId18 = string | null;
@@ -10609,7 +11088,7 @@ export namespace StreamEventSchema {
   export type Revision1 = number;
   export type SkillId1 = string;
   export type Status9 = 'active' | 'deleted';
-  export type RunId24 = string | null;
+  export type RunId25 = string | null;
   export type Seq12 = number | null;
   export type SessionId16 = string | null;
   export type TaskId19 = string | null;
@@ -10621,7 +11100,7 @@ export namespace StreamEventSchema {
   export type EventVersion13 = 1;
   export type Kind25 = 'environment.changed';
   export type EnvironmentId1 = string;
-  export type RunId25 = string | null;
+  export type RunId26 = string | null;
   export type Seq13 = number | null;
   export type SessionId17 = string | null;
   export type TaskId20 = string | null;
@@ -10634,7 +11113,7 @@ export namespace StreamEventSchema {
   export type Kind26 = 'mcp.changed';
   export type ConfigRevision1 = number;
   export type ServerId1 = string;
-  export type RunId26 = string | null;
+  export type RunId27 = string | null;
   export type Seq14 = number | null;
   export type SessionId18 = string | null;
   export type TaskId21 = string | null;
@@ -10797,7 +11276,7 @@ export namespace StreamEventSchema {
     event_version: EventVersion5;
     kind: Kind6;
     payload: PublicChange;
-    run_id: RunId15;
+    run_id: RunId16;
     seq: Seq5;
     session_id: SessionId8;
     task_id: TaskId11;
@@ -10840,6 +11319,7 @@ export namespace StreamEventSchema {
    */
   export interface ScriptExecutionSummary {
     attempt_id: AttemptId;
+    collection_error: CollectionError;
     content_hash: ContentHash;
     environment_id: EnvironmentId;
     environment_revision: EnvironmentRevision;
@@ -10935,6 +11415,7 @@ export namespace StreamEventSchema {
     parts: Parts;
     private_ref: PrivateRef;
     role: Role;
+    run_id: RunId10;
     source_dependencies: SourceDependencies;
   }
   export interface TextPart {
@@ -10950,9 +11431,6 @@ export namespace StreamEventSchema {
     call_id: CallId;
     kind: Kind10;
     name: Name1;
-  }
-  export interface Arguments {
-    [k: string]: JsonValue;
   }
   export interface ToolResultPart {
     call_id: CallId1;
@@ -10971,7 +11449,7 @@ export namespace StreamEventSchema {
     deadline_at: DeadlineAt;
     input_result: ResultInput | null;
     reason: Reason1;
-    run_id: RunId11;
+    run_id: RunId12;
     scope_dependencies: ScopeDependencies;
     session_id: SessionId5;
     start: StartRun;
@@ -11113,7 +11591,7 @@ export namespace StreamEventSchema {
   }
   export interface TaskHandle {
     lifetime: Lifetime;
-    run_id: RunId10;
+    run_id: RunId11;
     submitted_state: SubmittedState;
     task_id: TaskId8;
   }
@@ -11154,7 +11632,7 @@ export namespace StreamEventSchema {
     id: Id13;
     message_id: MessageId;
     question: Question1;
-    run_id: RunId12;
+    run_id: RunId13;
     status: Status2;
     task_id: TaskId9;
     version: Version10;
@@ -11224,7 +11702,7 @@ export namespace StreamEventSchema {
     parent_task_id: ParentTaskId;
     reason: Reason4;
     result_version: ResultVersion3;
-    run_id: RunId13;
+    run_id: RunId14;
     state: State3;
     version: Version12;
   }
@@ -11255,7 +11733,7 @@ export namespace StreamEventSchema {
     id: Id16;
     owner_task_id: OwnerTaskId;
     result_version: ResultVersion4;
-    run_id: RunId14;
+    run_id: RunId15;
     state: State4;
     target_task_id: TargetTaskId1;
     version: Version13;
@@ -11268,7 +11746,7 @@ export namespace StreamEventSchema {
     event_version: EventVersion6;
     kind: Kind17;
     payload: PublicPolicyChange;
-    run_id: RunId17;
+    run_id: RunId18;
     seq: Seq6;
     session_id: SessionId10;
     task_id: TaskId13;
@@ -11289,7 +11767,7 @@ export namespace StreamEventSchema {
     id: Id17;
     mcp: McpToolSnapshot | null;
     parameters: Parameters;
-    run_id: RunId16;
+    run_id: RunId17;
     session_id: SessionId9;
     status: Status4;
     target: Target;
@@ -11315,6 +11793,7 @@ export namespace StreamEventSchema {
     destination: Destination1;
     epoch: Epoch1;
     id: Id18;
+    mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes1;
     purposes: Purposes;
@@ -11346,7 +11825,7 @@ export namespace StreamEventSchema {
     event_version: EventVersion7;
     kind: Kind19;
     payload: PublicLifecycleChange;
-    run_id: RunId18;
+    run_id: RunId19;
     seq: Seq7;
     session_id: SessionId11;
     task_id: TaskId14;
@@ -11375,7 +11854,7 @@ export namespace StreamEventSchema {
     event_version: EventVersion8;
     kind: Kind20;
     payload: DeliveryChange;
-    run_id: RunId19;
+    run_id: RunId20;
     seq: Seq8;
     session_id: SessionId12;
     task_id: TaskId15;
@@ -11407,7 +11886,7 @@ export namespace StreamEventSchema {
     event_version: EventVersion9;
     kind: Kind21;
     payload: AdmissionChange;
-    run_id: RunId20;
+    run_id: RunId21;
     seq: Seq9;
     session_id: SessionId13;
     task_id: TaskId16;
@@ -11428,7 +11907,7 @@ export namespace StreamEventSchema {
     event_version: EventVersion10;
     kind: Kind22;
     payload: MemoryChange;
-    run_id: RunId21;
+    run_id: RunId22;
     seq: Seq10;
     session_id: SessionId14;
     task_id: TaskId17;
@@ -11463,7 +11942,7 @@ export namespace StreamEventSchema {
     event_version: EventVersion11;
     kind: Kind23;
     payload: MemoryMaintenanceNotice;
-    run_id: RunId23;
+    run_id: RunId24;
     seq: Seq11;
     session_id: SessionId15;
     task_id: TaskId18;
@@ -11479,7 +11958,7 @@ export namespace StreamEventSchema {
   }
   export interface MemorySourceBoundary {
     event_id: EventId14;
-    run_id: RunId22;
+    run_id: RunId23;
   }
   export interface SkillEvent {
     activity_id: ActivityId15;
@@ -11489,7 +11968,7 @@ export namespace StreamEventSchema {
     event_version: EventVersion12;
     kind: Kind24;
     payload: SkillNotice;
-    run_id: RunId24;
+    run_id: RunId25;
     seq: Seq12;
     session_id: SessionId16;
     task_id: TaskId19;
@@ -11509,7 +11988,7 @@ export namespace StreamEventSchema {
     event_version: EventVersion13;
     kind: Kind25;
     payload: EnvironmentChanged;
-    run_id: RunId25;
+    run_id: RunId26;
     seq: Seq13;
     session_id: SessionId17;
     task_id: TaskId20;
@@ -11529,7 +12008,7 @@ export namespace StreamEventSchema {
     event_version: EventVersion14;
     kind: Kind26;
     payload: McpNotice;
-    run_id: RunId26;
+    run_id: RunId27;
     seq: Seq14;
     session_id: SessionId18;
     task_id: TaskId21;
@@ -14011,6 +14490,7 @@ export namespace TracePageSchema {
   export type Operation = string;
   export type RunId = string;
   export type AttemptId = string;
+  export type CollectionError = string | null;
   export type ContentHash = string;
   export type EnvironmentId = string;
   export type EnvironmentRevision = number;
@@ -14085,6 +14565,7 @@ export namespace TracePageSchema {
    */
   export interface ScriptExecutionSummary {
     attempt_id: AttemptId;
+    collection_error: CollectionError;
     content_hash: ContentHash;
     environment_id: EnvironmentId;
     environment_revision: EnvironmentRevision;
@@ -14442,6 +14923,7 @@ export namespace WorkspaceSnapshotSchema {
   export type Destination1 = string | null;
   export type Epoch1 = number;
   export type Id3 = string;
+  export type McpQueries = McpToolSnapshot[];
   export type MemoryScopes1 = ScopeRef[];
   /**
    * @minItems 1
@@ -14758,6 +15240,7 @@ export namespace WorkspaceSnapshotSchema {
     destination: Destination1;
     epoch: Epoch1;
     id: Id3;
+    mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes1;
     purposes: Purposes;

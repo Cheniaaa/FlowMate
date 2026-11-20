@@ -5,9 +5,11 @@ import hashlib
 import json
 import os
 import re
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import ValidationError
 
@@ -111,6 +113,43 @@ def _difference(environment, observation):
     return None, None
 
 
+def _system_python_paths():
+    """读取 Windows Python 安装登记，仅发现候选，不把登记视为执行信任。"""
+    if sys.platform != "win32":
+        return []
+    import winreg
+
+    paths = set()
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                root = winreg.OpenKey(hive, r"Software\Python", 0, winreg.KEY_READ | view)
+            except FileNotFoundError:
+                continue
+            with root:
+                for index in range(winreg.QueryInfoKey(root)[0]):
+                    company = winreg.EnumKey(root, index)
+                    with winreg.OpenKey(root, company) as provider:
+                        for tag_index in range(winreg.QueryInfoKey(provider)[0]):
+                            tag = winreg.EnumKey(provider, tag_index)
+                            try:
+                                install = winreg.OpenKey(provider, tag + r"\InstallPath")
+                            except FileNotFoundError:
+                                continue
+                            with install:
+                                try:
+                                    executable, _ = winreg.QueryValueEx(install, "ExecutablePath")
+                                except FileNotFoundError:
+                                    try:
+                                        executable = str(Path(winreg.QueryValue(install, None)) / "python.exe")
+                                    except FileNotFoundError:
+                                        continue
+                                path = Path(executable)
+                                if path.is_absolute() and path.is_file():
+                                    paths.add(str(path))
+    return sorted(paths)
+
+
 class EnvironmentService:
     def __init__(self, store: Store, runner: ProcessRunner):
         self.store = store
@@ -146,9 +185,7 @@ class EnvironmentService:
     def save_view(self, command: SaveExecutionEnvironment, meta: CommandMeta) -> ExecutionEnvironmentView:
         return self._save(command, meta, public=True)
 
-    def _save(self, command, meta, *, public):
-        command = SaveExecutionEnvironment.model_validate(command.model_dump())
-        meta = CommandMeta.model_validate(meta.model_dump())
+    def _save(self, command: SaveExecutionEnvironment, meta: CommandMeta, *, public):
         fingerprint = hashlib.sha256(json.dumps({
             "operation": "environment.save.public" if public else "environment.save",
             "parameters": command.model_dump(mode="json"),
@@ -249,6 +286,31 @@ class EnvironmentService:
         with self.store.transaction(write=False) as tx:
             rows = tx.execute("SELECT document FROM execution_environments ORDER BY id").fetchall()
         return [self._view(ExecutionEnvironment.model_validate_json(row["document"])) for row in rows]
+
+    async def discover(self):
+        """探测可信 Runtime；系统安装登记只产生待确认候选，不执行项目脚本。"""
+        trusted = None if getattr(sys, "frozen", False) else str(Path(sys.executable).absolute())
+        candidates = list(dict.fromkeys([*([trusted] if trusted else []), *_system_python_paths()]))
+        for executable in candidates:
+            id = str(uuid5(NAMESPACE_URL, "flowmate:python:" + os.path.normcase(executable)))
+            with self.store.transaction(write=False) as tx:
+                exists = tx.execute("SELECT 1 FROM execution_environments WHERE id=?", (id,)).fetchone()
+                registered = tx.execute("SELECT 1 FROM execution_environments WHERE "
+                    "json_extract(document,'$.executable_path')=?", (executable,)).fetchone()
+            if exists is None and registered is None:
+                self.save(SaveExecutionEnvironment(id=id, kind="python", executable_path=executable), CommandMeta())
+                if executable == trusted:
+                    await self.probe(id)
+        for environment in self.list_views():
+            if environment.status == "probed":
+                try:
+                    self.resolve(environment.id, environment.revision)
+                except DomainError as error:
+                    if error.code not in {"environment_identity_changed", "environment_dependency_changed",
+                            "environment_executable_missing"}:
+                        raise
+        # 已变更的环境必须由用户重新确认；发现不覆盖修订或清除变更状态。
+        return self.list_views()
 
     def resolve(self, id: str, revision: int) -> ExecutionEnvironment:
         """T11 派发前复核固定修订；不存在历史修订时阻塞，绝不切换环境。"""

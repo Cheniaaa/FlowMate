@@ -10,6 +10,7 @@ import type {
   SaveSkillExportCommand, SkillScopeRequest,
   DiscardSkillCandidateCommand,
   SaveSkillExecutionPermissionCommand,
+  ResourceCoverageRequest,
 } from '../generated/contracts';
 import { laterCursor, readSse } from './events';
 import { validate, type RootName } from './validation';
@@ -86,6 +87,11 @@ export class RuntimeClient {
 
   protected page<N extends RootName>(path: string, root: N, page: PageQuery = {}) { return this.request(query(path, page), root); }
 
+  runFeedback(sessionId: string, runIds: string[]) {
+    const parameters = new URLSearchParams(runIds.map(id => ['run_id', id]));
+    return this.request(`/sessions/${pathId(sessionId)}/run-feedback?${parameters}`, 'RunFeedbackPage');
+  }
+
   health() { return this.request('/health', 'Health'); }
   skills(parameters: PageQuery & { scope_kind: 'user_global' | 'workspace'; workspace_id?: string; query?: string }) {
     return this.page('/capabilities/skills', 'SkillPage', parameters);
@@ -136,6 +142,7 @@ export class RuntimeClient {
   profiles(page?: PageQuery) { return this.page('/profiles', 'AgentProfilePage', page); }
   tools() { return this.request('/tools', 'ToolSpecList'); }
   executionEnvironments(page?: PageQuery) { return this.page('/settings/execution-environments', 'ExecutionEnvironmentPage', page); }
+  discoverExecutionEnvironments() { return this.request('/settings/execution-environments/discover', 'ExecutionEnvironmentPage', { method: 'POST' }); }
   executionEnvironment(id: string) { return this.request(`/settings/execution-environments/${pathId(id)}`, 'ExecutionEnvironmentView', { cache: 'no-store' }); }
   saveExecutionEnvironment(command: SaveExecutionEnvironmentCommand) { return this.command('/settings/execution-environments', 'SaveExecutionEnvironmentCommand', 'ExecutionEnvironmentView', command, 'PUT'); }
   probeExecutionEnvironment(id: string) { return this.request(`/settings/execution-environments/${pathId(id)}/probe`, 'ExecutionEnvironmentView', { method: 'POST' }); }
@@ -213,6 +220,10 @@ export class RuntimeClient {
   answer(question_id: string, command: AnswerCommand) { return this.command(`/questions/${pathId(question_id)}/answer`, 'AnswerCommand', 'RunSnapshot', command); }
   decide(approval_id: string, command: ApprovalCommand) { return this.command(`/approvals/${pathId(approval_id)}/decision`, 'ApprovalCommand', 'Approval', command); }
   grant(command: GrantRequest) { return this.command('/grants', 'GrantRequest', 'DataUseGrant', command); }
+  resourceCoverage(session_id: string, request: ResourceCoverageRequest) {
+    return this.command(`/sessions/${pathId(session_id)}/resource-coverage`,
+      'ResourceCoverageRequest', 'ResourceCoverage', request);
+  }
   revoke(grant_id: string, meta: CommandMeta) { return this.command(`/grants/${pathId(grant_id)}/revoke`, 'CommandMeta', 'ScopeState', meta); }
   restoreExport(id: string, meta: CommandMeta) { return this.command(`/export-recovery/${pathId(id)}/restore`, 'CommandMeta', 'PublicationView', meta); }
   releaseExport(id: string, meta: CommandMeta) { return this.command(`/export-recovery/${pathId(id)}/release`, 'CommandMeta', 'PublicationView', meta); }

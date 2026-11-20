@@ -65,7 +65,7 @@ it('没有活跃Run时仍可从持久历史定位完成任务，并显示实际j
   });
   const user = userEvent.setup();
   render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 })} />);
-  await user.click(await screen.findByText('本项目待办与任务', { selector: 'summary' }));
+  await user.click(await screen.findByRole('button', { name: '任务' }));
   await user.click(await screen.findByRole('button', { name: /会话任务.*已完成/ }));
   const node = await screen.findByRole('button', { name: new RegExp(`任务 ${secondId}，`) });
   expect(document.querySelectorAll('.graph-edge--join')).toHaveLength(1);
@@ -100,17 +100,18 @@ it('更多审批补齐首页之外的Run和Session，能定位到真实审批', 
     const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([agent]), '/models': page([model]), '/model-connections': page([connection]),
       [`/workspaces/${id}/snapshot`]: { workspace, sessions: page([session]), active_runs: page([]), pending_questions: page([]),
         pending_approvals: { ...page([]), next_cursor: 'approvals-next' }, resources: page([]), grants: page([]), watermark: event.event_id },
-      [`/workspaces/${id}/approvals`]: page([approval]), [`/sessions/${id}/runs`]: page([]), [`/sessions/${id}/messages`]: page([]),
+       '/inbox': page([{ id: approval.id, kind: 'approval', workspace_id: id, session_id: secondId, run_id: secondId, approval }]),
+       [`/workspaces/${id}/approvals`]: page([approval]), [`/sessions/${id}/runs`]: page([]), [`/sessions/${id}/messages`]: page([]),
       [`/runs/${secondId}`]: detail, [`/sessions/${secondId}`]: other, [`/sessions/${secondId}/runs`]: page([waiting]), [`/sessions/${secondId}/messages`]: page([]) };
     return new Response(JSON.stringify(values[path]));
   });
   const user = userEvent.setup();
   render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 })} />);
   await user.click(await screen.findByRole('button', { name: '更多审批' }));
-  const navigate = await screen.findByRole('button', { name: `定位运行 ${secondId}` });
-  await waitFor(() => expect((navigate as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByRole('button', { name: /待办/ }));
+  const navigate = await screen.findByRole('button', { name: /审批/ });
   await user.click(navigate);
-  expect(await screen.findByRole('heading', { name: other.title })).toBeTruthy();
+  expect(await screen.findByText('仅处理原后台任务；当前会话、草稿和本次配置不变。')).toBeTruthy();
   expect(screen.getByRole('button', { name: '允许本次操作' })).toBeTruthy();
 });
 
@@ -136,11 +137,14 @@ it('Trace补页返回时已切换Run，不把旧事件并入新运行', async ()
   });
   const user = userEvent.setup();
   render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 })} />);
+  await user.click(await screen.findByRole('button', { name: '任务' }));
   await user.click(await screen.findByRole('button', { name: /第一项历史/ }));
-  await user.click(screen.getByRole('button', { name: 'Trace' }));
+  await user.click(screen.getByRole('button', { name: '查看 Trace' }));
   await user.click(await screen.findByRole('button', { name: '加载更多事件' }));
+  await user.click(screen.getByRole('button', { name: '关闭详情' }));
+  await user.click(screen.getByRole('button', { name: '任务' }));
   await user.click(screen.getByRole('button', { name: /第二项历史/ }));
-  await user.click(screen.getByRole('button', { name: 'Trace' }));
+  await user.click(screen.getByRole('button', { name: '查看 Trace' }));
   await screen.findByText('task.joined');
   await act(async () => { finish(new Response(JSON.stringify(page([traceItem('102', 'task.cancelled')])))); });
   expect(screen.queryByText('task.cancelled')).toBeNull();
@@ -178,7 +182,7 @@ it.each(['history', 'trace'])('%s keyset 续页在无关写入后保留已加载
   const user = userEvent.setup();
   render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 })} />);
   await screen.findByRole('heading', { name: session.title });
-  if (kind === 'trace') await user.click(screen.getByRole('button', { name: 'Trace' }));
+  if (kind === 'trace') { await user.click(screen.getByRole('button', { name: '任务' })); await user.click(screen.getByRole('button', { name: '查看 Trace' })); }
   const button = await screen.findByRole('button', { name: kind === 'trace' ? '加载更多事件' : '更多历史' });
   changed = true;
   await user.click(button);

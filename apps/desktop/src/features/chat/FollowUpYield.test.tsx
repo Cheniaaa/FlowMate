@@ -23,6 +23,8 @@ function server(initial: RunSnapshot | null = { ...run, kind: 'follow_up', versi
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname.replace('/v3', ''), method = init.method ?? 'GET';
     const body = init.body ? JSON.parse(String(init.body)) : null;
+    if (path.endsWith('/resource-coverage')) return Response.json({ allowed: true,
+      destination: connection.endpoint, missing_read: [], missing_model_send: [] });
     requests.push({ path, body, method });
     if (method === 'POST') {
       if (path.endsWith('/commands')) {
@@ -52,7 +54,9 @@ function server(initial: RunSnapshot | null = { ...run, kind: 'follow_up', versi
         model_requests: 0, steps: 0, task_count: 1, total_tokens: 0, reserved_tokens: 0 },
       activities: page([]), messages: page(messages), artifacts: page([]), questions: page([]), approvals: page([]),
       waits: page([]), consumptions: page([]), joins: page([]), watermark: (BigInt(event.event_id) + 50n).toString() });
-    if (path === '/navigation') return Response.json({ default_workspace_id: id, workspaces: page([]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id });
+    if (path === '/navigation') return Response.json({ default_workspace_id: id, workspaces: page([{ workspace, sessions: page([session, other]), pending_count: 0 }]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id });
+    if (path === `/sessions/${id}`) return Response.json(session);
+    if (path === `/sessions/${secondId}`) return Response.json(other);
     if (path.endsWith('/directory')) return Response.json({ workspace_id: id, workspace_version: 1, state: 'unlinked', resource: null, reason: null });
     const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([{ ...agent, default_model_profile_id: model.id }]),
       '/models': page([model, { ...model, id, model_id: 'new-model' }]), '/model-connections': page([connection]),
@@ -146,11 +150,11 @@ it('队列接收迟到只确认原草稿revision，切会话返回保持独立�
   await user.type(screen.getByLabelText('消息'), '旧草稿');
   await user.click(screen.getByRole('button', { name: '排队发送' }));
   fireEvent.change(screen.getByLabelText('消息'), { target: { value: '后来草稿' } });
-  await user.selectOptions(screen.getByLabelText('会话'), secondId);
+  await user.click(screen.getByRole('button', { name: other.title }));
   await user.type(screen.getByLabelText('消息'), '另一会话');
   await act(async () => { api.release(); });
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('另一会话');
-  await user.selectOptions(screen.getByLabelText('会话'), id);
+  await user.click(screen.getByRole('button', { name: session.title }));
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('后来草稿');
   await api.change({ ...run, kind: 'follow_up', version: 6, yield_requested: true }, 'queued', 1);
   await screen.findByText('正在让出，等待安全边界');
@@ -167,7 +171,7 @@ it.each([false, true])('显式结果总结绑定Inbox引用，以本次配置发
   await screen.findByRole('heading', { name: session.title });
   await user.type(screen.getByLabelText('消息'), '请列出关键结论');
   await user.selectOptions(screen.getByLabelText('模型'), id);
-  await user.click(screen.getByText('后台交付结果'));
+  await user.click(screen.getByRole('button', { name: /^结果/ }));
   await user.click(await screen.findByRole('button', { name: '在会话中总结' }));
   expect(api.requests.filter(request => request.method === 'POST')).toHaveLength(0);
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('请列出关键结论');
@@ -180,7 +184,7 @@ it.each([false, true])('显式结果总结绑定Inbox引用，以本次配置发
 
 it('普通user运行仍steer，不出现总结输入模式，也不将许可或新配置写入旧Run', async () => {
   const api = server(run), user = userEvent.setup(); render(<Conversation client={client} />);
-  await screen.findByRole('button', { name: '补充指令' });
+  await screen.findByRole('button', { name: '停止当前运行' });
   expect(screen.queryByLabelText('修改这个总结')).toBeNull();
   expect((screen.getByLabelText('模型') as HTMLSelectElement).disabled).toBe(true);
   await user.type(screen.getByLabelText('消息'), '普通补充');
@@ -210,11 +214,11 @@ it.each([
   const original = '{"origin":"task_result","result":{"summary":"用户自己输入的JSON"}}';
   const messages: ModelMessage[] = [
     { id: '00000000-0000-4000-8000-000000000042', role: 'user', origin: 'conversation', parts: [{ kind: 'text', text: original }],
-      activity_id: null, private_ref: null, source_dependencies: [], event_id: event.event_id, event_index: 0 },
+      run_id: run.id, activity_id: null, private_ref: null, source_dependencies: [], event_id: event.event_id, event_index: 0 },
     { id: '00000000-0000-4000-8000-000000000043', role: 'user', origin: 'task_result', parts: [{ kind: 'text', text: JSON.stringify(context) }],
-      activity_id: null, private_ref: '00000000-0000-4000-8000-000000000045', source_dependencies: context.dependencies, event_id: event.event_id, event_index: 1 },
+      run_id: run.id, activity_id: null, private_ref: '00000000-0000-4000-8000-000000000045', source_dependencies: context.dependencies, event_id: event.event_id, event_index: 1 },
     { id: '00000000-0000-4000-8000-000000000044', role: 'assistant', origin: 'conversation', parts: [{ kind: 'text', text: '最终助理总结，保留正常呈现' }],
-      activity_id: null, private_ref: null, source_dependencies: [], event_id: event.event_id, event_index: 2 },
+      run_id: run.id, activity_id: null, private_ref: null, source_dependencies: [], event_id: event.event_id, event_index: 2 },
   ];
   const frozen = JSON.stringify(messages);
   const api = server({ ...run, kind, state: 'completed' }, messages), previous = globalThis.fetch;
@@ -245,7 +249,7 @@ it.each([
   expect(screen.queryByRole('region', { name: '结果收件箱' })).toBeNull();
   await user.click(within(history).getByRole('button', { name: '打开结果收件箱' }));
   await screen.findByRole('region', { name: '结果收件箱' });
-  expect(document.activeElement).toBe(screen.getByText('后台交付结果', { selector: 'summary' }));
+  expect(screen.getByRole('dialog', { name: '后台交付结果' }).contains(document.activeElement)).toBe(true);
   expect(detailRequests).toEqual([]);
   expect(api.requests.filter(request => request.method === 'POST')).toEqual([]);
   await user.click(await screen.findByRole('button', { name: '查看结果' }));

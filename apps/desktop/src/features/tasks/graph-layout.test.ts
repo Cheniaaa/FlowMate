@@ -88,7 +88,7 @@ describe('真实 Task/Activity 图布局', () => {
     expect(model.edges.map(edge => [edge.kind, edge.from, edge.to])).toEqual([
       ['parent', rootId, childId], ['parent', rootId, siblingId], ['parent', childId, activityId],
     ]);
-    expect(model.nodes.find(node => node.id === activityId)?.label).toContain('files.read');
+    expect(model.nodes.find(node => node.id === activityId)?.label).toBe('工具调用');
     expect(model.nodes.find(node => node.id === activityId)?.x).toBeGreaterThan(model.nodes.find(node => node.id === childId)!.x);
   });
 

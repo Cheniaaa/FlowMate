@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Response
 
 from flowmate.api.contracts import Command, Page
-from flowmate.api.queries import _page, watermark
+from flowmate.api.queries import _page, page_cursor, page_position, watermark
 from flowmate.api.routes import body
 from flowmate.contracts.base import DomainError, Id
 from flowmate.contracts.execution import TaskHandle
@@ -25,7 +25,6 @@ from flowmate.memory.maintenance_contracts import (
     MemoryMaintenanceRequest,
     MemorySourceBoundary,
 )
-from flowmate.memory.provider import scope_id
 from flowmate.policy.contracts import DataUseGrant
 
 
@@ -58,8 +57,8 @@ def router(runtime):
             "json_extract(document,'$.payload.scope.workspace_id') IS ?")
         params = [selected.kind, selected.workspace_id]
         if record_id is not None:
-            runs = {item.extraction_run_id for item in runtime.memory.provider.using(tx).export_scope(selected).candidates
-                if item.record_id == record_id and item.extraction_run_id is not None}
+            runs = {item.extraction_run_id for item in runtime.memory.provider.using(tx).candidates_for(
+                selected, record_id=record_id) if item.extraction_run_id is not None}
             sql += (" AND json_extract(document,'$.payload.task.run_id') IN (" +
                 ",".join("?" for _ in runs) + ")") if runs else " AND 0"
             params.extend(sorted(runs))
@@ -82,13 +81,24 @@ def router(runtime):
                       status: Literal["candidate", "confirmed", "rejected", "deleted"] | None = None,
                       limit: int = 100, cursor: str | None = None):
         selected = scope(scope_kind, workspace_id)
+        if not 1 <= limit <= 500:
+            raise DomainError("invalid_query", "分页数量须在1至500之间")
         with runtime.store.transaction(write=False) as tx:
             runtime.memory._scope(tx, selected)
-            clause = " AND json_extract(document,'$.status')=?" if status else ""
-            params = [scope_id(tx, selected), *([status] if status else [])]
-            return _page(tx, MemoryRecord, f"memory:{selected.model_dump_json()}:{status}",
-                "SELECT id,document FROM memory_records WHERE scope_id=?" + clause, params,
-                limit=limit, cursor=cursor)
+            provider = runtime.memory.provider.using(tx)
+            key = f"memory:{selected.model_dump_json()}:{status}"
+            after = None
+            if cursor:
+                upper, after = page_position(cursor, key)
+                upper, after = upper[0], after[0]
+            else:
+                last = provider.list_records(selected, status=status, limit=1, descending=True)
+                if not last:
+                    return Page[MemoryRecord](items=[], watermark=watermark(tx))
+                upper = last[0].id
+            rows = provider.list_records(selected, status=status, after=after, upper=upper, limit=limit + 1)
+            next_cursor = page_cursor(key, [upper], [rows[limit - 1].id]) if len(rows) > limit else None
+            return Page[MemoryRecord](items=rows[:limit], next_cursor=next_cursor, watermark=watermark(tx))
 
     @route.post("/memory/records", response_model=MemoryRecord, status_code=201)
     async def create(command=body(Command[CreateMemory])):

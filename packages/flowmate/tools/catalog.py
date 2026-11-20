@@ -6,7 +6,10 @@ from dataclasses import dataclass, replace
 from threading import Lock
 from typing import Literal
 
+from jsonschema.validators import validator_for
 from pydantic import BaseModel, Field, JsonValue, ValidationError
+from referencing import Registry
+from referencing.exceptions import Unresolvable
 
 from flowmate.contracts.base import Contract, DomainError, Name
 from flowmate.contracts.execution import (
@@ -45,6 +48,14 @@ class ToolOutcome(Contract):
     task_kind: Literal["agent", "tool"] = "agent"
 
 
+class ToolArgumentsError(DomainError):
+    """只回传声明 Schema 的路径和规则，不回显参数或底层异常正文。"""
+
+    def __init__(self, issues):
+        super().__init__("tool_arguments_invalid", "工具参数不符合声明Schema")
+        self.issues = issues
+
+
 @dataclass(frozen=True)
 class BoundTool:
     spec: ToolSpec
@@ -66,8 +77,21 @@ class BoundTool:
                     raise ValueError
                 return self.input_validator(value)
             return self.input_model.model_validate_json(encoded, strict=True, extra="forbid").model_dump(mode="json")
-        except (ValidationError, ValueError, TypeError):
-            raise DomainError("tool_arguments_invalid", "工具参数不符合声明Schema") from None
+        except (ValidationError, ValueError, TypeError, DomainError) as failure:
+            if isinstance(failure, DomainError) and failure.code != "tool_arguments_invalid":
+                raise
+            issues = []
+            validator = validator_for(self.spec.input_schema)(self.spec.input_schema, registry=Registry())
+            try:
+                for error in validator.iter_errors(value):
+                    issue = {"schema_path": list(error.absolute_schema_path), "rule": error.validator}
+                    if error.validator in {"type", "required", "additionalProperties"}:
+                        issue["expected"] = error.validator_value
+                    issues.append(issue)
+            except Unresolvable:
+                # 输入已被真实校验器拒绝；补充诊断引用无效不能覆盖原始结构化错误。
+                issues.append({"schema_path": [], "rule": "schema_reference_invalid"})
+            raise ToolArgumentsError(issues or [{"schema_path": [], "rule": "schema"}]) from None
 
     def validate_result(self, value) -> JsonValue:
         try:

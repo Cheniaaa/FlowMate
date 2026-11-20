@@ -14,7 +14,7 @@ function declaration(rules, selector) {
 it('静态布局声明保留批准的侧栏/详情/设置尺寸，active 不强制把父关系改成虚线', () => {
   const root = rules();
   expect(declaration(root, '.workbench').getPropertyValue('--sidebar-width')).toBe('220px');
-  expect(declaration(root, '.workbench--detail').getPropertyValue('grid-template-columns')).toContain('376px');
+  expect(declaration(root, '.workbench--detail').getPropertyValue('grid-template-columns')).toBe('var(--sidebar-width) minmax(0, 1fr)');
     expect(declaration(root, '.settings-body').getPropertyValue('grid-template-columns')).toContain('174px');
   expect(declaration(root, '.graph-edge--active').getPropertyValue('stroke-dasharray')).toBe('');
 });

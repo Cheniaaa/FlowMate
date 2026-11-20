@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 
 from flowmate.contracts.base import DomainError
+from flowmate.integrations.configuration import connection_identity
 from flowmate.integrations.mcp import McpManager
 
 
@@ -14,6 +15,7 @@ class McpManagedConnections:
         self.limits = limits
         self._connections = {}
         self._configs = {}
+        self._identities = {}
         self._locks = {}
         self._blocked = set()
         self._disposed = False
@@ -27,6 +29,7 @@ class McpManagedConnections:
         async with self._lock(server_id):
             manager = self._connections.pop(server_id, None)
             self._configs.pop(server_id, None)
+            self._identities.pop(server_id, None)
             if manager is not None:
                 await manager.dispose()
 
@@ -38,15 +41,19 @@ class McpManagedConnections:
             self.credentials.check(config)
             if not self._accepting:
                 raise DomainError("mcp_draining", "MCP 已停止新派发")
+            identity = connection_identity(config)
             manager = self._connections.get(config.id)
             if manager is not None and (
                 manager.status(config.id) != "connected" or self._configs[config.id] != config
+                or self._identities[config.id] != identity
             ):
                 await manager.dispose()
                 self._connections.pop(config.id)
                 self._configs.pop(config.id)
+                self._identities.pop(config.id, None)
                 manager = None
             if manager is None:
+                self._identities[config.id] = identity
                 manager = McpManager([config], limits=self.limits,
                     environment=self.credentials.environment, http_client=self.credentials.http_client)
                 self._connections[config.id] = manager
@@ -83,6 +90,8 @@ class McpManagedConnections:
             self.credentials.check(config)
             if config != self._configs[server_id]:
                 raise DomainError("blocked_incompatible", "MCP 连接不属于当前配置")
+            if connection_identity(config) != self._identities[server_id]:
+                raise DomainError("mcp_connection_trust_changed", "本机程序或参数文件已改变，请重新核对连接")
             if config.transport == "stdio":
                 # 已运行进程的环境不能热替换；调用前复核引用仍可解析。
                 await self.credentials.environment(config)

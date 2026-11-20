@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyDeletion, emptyProjection, mergeApprovals, mergeGrants, mergeMessages, mergeQuestions, mergeResources, mergeRunDetail, mergeRunSnapshot, mergeSessions, mergeWorkspaces, orderedMessageIds, readSse, reduceStream, resetWorkspace } from './events';
+import { applyDeletion, emptyProjection, mergeApprovals, mergeGrants, mergeMessages, mergeQuestions, mergeResources, mergeRunDetail, mergeRunFeedback, mergeRunSnapshot, mergeSessions, mergeWorkspaces, orderedMessageIds, readSse, reduceStream, resetWorkspace } from './events';
 import type { ModelMessage, StreamEvent, RunDetail, RunSnapshot, WorkspaceSnapshot } from '../generated/contracts';
 import { connection, contextUsage, event as publicEvent, grant, limits, page, resource, run as fullRun, runDetailSummary } from '../test/fixtures';
 
@@ -15,12 +15,28 @@ function durable(cursor: string, payload: object, kind = 'task.stepped'): Stream
 const delta = (index: number, text: string): StreamEvent => ({ kind: 'delta', activity_id: activityId, index, text });
 function started() { return reduceStream(emptyProjection(), durable('9007199254740993', { runs: [run(3)], activities: [activity()] })); }
 
+it('消息反馈查询不推进事件游标；较新事件淘汰旧反馈，迟到查询及删除后查询不能复活事实', () => {
+  const feedback = { run_id: id, version: 3, workspace_id: fullRun.workspace_id, session_id: fullRun.interaction_session_id!,
+    root_task_id: fullRun.root_task_id, connection_id: connection.id, state: 'interrupted' as const, reason: 'uncertain_activity', model_activity: null };
+  const first = { ...page([feedback]), watermark: '9007199254740994' };
+  let state = mergeRunFeedback(started(), first);
+  expect(state.cursor).toBe('9007199254740993');
+  expect(state.runFeedback[id].reason).toBe('uncertain_activity');
+  state = reduceStream(state, durable('9007199254740995', { activities: [{ ...activity(2), kind: 'model', error: 'model_timeout', task_id: fullRun.root_task_id }] }));
+  expect(state.runFeedback[id]).toBeUndefined();
+  expect(mergeRunFeedback(state, first).runFeedback[id]).toBeUndefined();
+  state = mergeRunFeedback(state, { ...first, watermark: '9007199254740995' });
+  expect(state.runFeedback[id]).toBeTruthy();
+  state = applyDeletion(state, { scope: { kind: 'session', workspace_id: fullRun.workspace_id, session_id: fullRun.interaction_session_id }, status: 'deleted', epoch: 2 });
+  expect(mergeRunFeedback(state, { ...first, watermark: '9007199254740996' }).runFeedback[id]).toBeUndefined();
+});
+
 it('reasoning 与正文预览独立索引，持久消息提交及撤销共用出队围栏', () => {
   let state = reduceStream(started(), delta(0, '正文'));
   state = reduceStream(state, { kind: 'reasoning_delta', activity_id: activityId, index: 0, text: '推理' });
   expect(state.previews[activityId]).toEqual({ 0: '正文' });
   expect(state.reasoningPreviews[activityId]).toEqual({ 0: '推理' });
-  state = reduceStream(state, durable('9007199254740994', { messages: [{ id, role: 'assistant', activity_id: activityId, parts: [{ kind: 'reasoning', text: '推理' }], source_dependencies: [], event_id: '9007199254740994', event_index: 0, origin: 'conversation', private_ref: null }] }));
+  state = reduceStream(state, durable('9007199254740994', { messages: [{ id, run_id: id, role: 'assistant', activity_id: activityId, parts: [{ kind: 'reasoning', text: '推理' }], source_dependencies: [], event_id: '9007199254740994', event_index: 0, origin: 'conversation', private_ref: null }] }));
   expect(state.reasoningPreviews[activityId]).toBeUndefined();
   expect(reduceStream(state, { kind: 'reasoning_delta', activity_id: activityId, index: 1, text: '迟到' })).toBe(state);
 });
@@ -183,7 +199,7 @@ describe('删除scope不可复活围栏', () => {
     const activity = { id: uuid(suffix + 4), version: 1, run_id: run.id, task_id: run.root_task_id,
       kind: 'model', operation: 'model', state: 'dispatched', error: null, usage: null, actual_units: null, dependencies: [] };
     const message = { id: uuid(suffix + 5), role: 'user', parts: [{ kind: 'text', text: `scope-content-${suffix}` }],
-      activity_id: null, source_dependencies: [], private_ref: null, origin: 'conversation', event_id: '11', event_index: 0 };
+      activity_id: null, run_id: id, source_dependencies: [], private_ref: null, origin: 'conversation', event_id: '11', event_index: 0 };
     return { ...runDetailSummary, run, tasks: page([{ id: run.root_task_id, version: 1, run_id: run.id, kind: 'agent',
       executor_id: 'builtin.agent', state: 'running', created_seq: 1, parent_task_id: null, origin_task_id: null,
       deadline_at: null, result_version: null, reason: null }]), activities: page([activity]), messages: page([message]),
@@ -350,7 +366,7 @@ describe('删除scope不可复活围栏', () => {
       scope: { kind: 'session' as const, workspace_id: id, session_id: item.run.interaction_session_id! }, label: '资料', kind: 'file' as const, source_version: null }));
     state = mergeResources(state, resources);
     state = mergeGrants(state, resources.map(resource => ({ id: resource.id, version: 1, epoch: 1, status: 'active' as const,
-      scope: resource.scope, resource_ids: [resource.id] as [string], memory_scopes: [], mcp_versions: {}, purposes: ['read'], destination: null })));
+      scope: resource.scope, resource_ids: [resource.id] as [string], memory_scopes: [], mcp_versions: {}, mcp_queries: [], purposes: ['read'], destination: null })));
     for (const kind of ['sessions', 'resources', 'grants'] as const) {
       expect(state[kind][first.run.interaction_session_id!]).toBeUndefined();
       expect(state[kind][other.run.interaction_session_id!]).toBeDefined();
@@ -402,7 +418,7 @@ describe('会话消息的服务端顺序', () => {
   } } });
   const message = (suffix: number, role: ModelMessage['role'], event_id: string, event_index: number): ModelMessage => ({
     id: `00000000-0000-4000-8000-${String(suffix).padStart(12, '0')}`, role, parts: [{ kind: 'text', text: `${role}-${suffix}` }],
-    activity_id: null, source_dependencies: [], private_ref: null, origin: 'conversation', event_id, event_index,
+    activity_id: null, run_id: id, source_dependencies: [], private_ref: null, origin: 'conversation', event_id, event_index,
   });
   const olderUser = message(3, 'user', '9007199254740990', 0);
   const olderAssistant = message(4, 'assistant', '9007199254740991', 0);

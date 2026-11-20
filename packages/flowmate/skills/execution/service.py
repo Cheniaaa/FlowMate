@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from flowmate.contracts.base import DomainError
 from flowmate.contracts.execution import ActivitySnapshot, Checkpoint, RunSnapshot, ScopeDependency
 from flowmate.contracts.scopes import ScopeRef
-from flowmate.processes.contracts import ProcessSpec
+from flowmate.processes.contracts import DEFAULT_PROCESS_TIMEOUT_SECONDS, ProcessSpec
 from flowmate.runtime.transitions import check_scopes, load
 from flowmate.skills.execution.contracts import (
     RunSkillScript,
@@ -75,6 +75,9 @@ class SkillExecutionService:
 
     def resolve_dependencies(self, tx, ctx, args: RunSkillScript):
         version, _, _ = self._check(tx, ctx, args)
+        return self._dependencies(tx, ctx, args, version)
+
+    def _dependencies(self, tx, ctx, args, version):
         checkpoint = load(tx, Checkpoint, ctx.task_id)
         from flowmate.agents.checkpoint import content_dependencies
         history = content_dependencies(checkpoint, [
@@ -103,7 +106,7 @@ class SkillExecutionService:
             activity = load(tx, ActivitySnapshot, ctx.activity_id)
             if activity.state != "dispatched" or activity.intent.operation != "skills.run_script":
                 raise DomainError("script_not_dispatched", "脚本必须经过实际工具派发")
-            dependencies = self.resolve_dependencies(tx, ctx, args)["local_process_send"]
+            dependencies = self._dependencies(tx, ctx, args, version)["local_process_send"]
             dependencies = _merge_dependencies(dependencies, activity.intent.dependencies)
             check_scopes(tx, dependencies)
             decision = self.policy.check_tx(tx, ctx, dependencies, "local_process_send",
@@ -157,7 +160,8 @@ class SkillExecutionService:
             elif environment.kind == "bash":
                 argv[0] = executable_script.as_posix()
             cwd = package_root if environment.cwd_mode == "package_copy" else attempt
-            deadline = min(run.deadline_at, datetime.now(UTC) + timedelta(seconds=300))
+            deadline = min(run.deadline_at,
+                datetime.now(UTC) + timedelta(seconds=DEFAULT_PROCESS_TIMEOUT_SECONDS))
             result = await self.environments.runner.run(ProcessSpec(
                 invocation_id=activity.attempt_id, environment=environment, argv=argv, cwd=str(cwd),
                 deadline=deadline,
@@ -168,37 +172,49 @@ class SkillExecutionService:
                 self.policy.check_run_sources(tx, ctx, dependencies)
                 check_scopes(tx, dependencies)
             staged, entries = [], []
-            total, count = 0, 0
-            for current, directories, names in os.walk(outputs, followlinks=False):
-                _ordinary(Path(current))
-                for name in directories:
-                    _ordinary(Path(current) / name)
-                for name in sorted(names):
-                    path = Path(current) / name
-                    info = _ordinary(path)
-                    if not stat.S_ISREG(info.st_mode):
-                        raise DomainError("script_output_invalid", "只能采集普通输出文件")
-                    total += info.st_size
-                    count += 1
-                    if total > MAX_OUTPUT_BYTES or count > MAX_OUTPUT_FILES or info.st_size > self.artifacts.config.max_file_bytes:
-                        raise DomainError("script_output_limit", "脚本输出超过采集上限")
-                    with path.open("rb") as stream:
-                        data = stream.read(self.artifacts.config.max_file_bytes + 1)
-                    if len(data) != info.st_size:
-                        raise DomainError("script_output_changed", "采集期间输出发生变化")
-                    try:
-                        text = data.decode("utf-8")
-                    except UnicodeDecodeError:
-                        artifact = self.artifacts.stage_binary(ctx, data, dependencies)
-                    else:
-                        media = "text/markdown" if path.suffix.lower() == ".md" else "text/plain"
-                        if b"\0" in data or path.suffix.lower() not in {".txt", ".md"}:
+            collection_error = None
+            def collection_failed(error):
+                raise error
+
+            try:
+                total, count = 0, 0
+                for current, directories, names in os.walk(outputs, followlinks=False,
+                        onerror=collection_failed):
+                    _ordinary(Path(current))
+                    for name in directories:
+                        _ordinary(Path(current) / name)
+                    for name in sorted(names):
+                        path = Path(current) / name
+                        info = _ordinary(path)
+                        if not stat.S_ISREG(info.st_mode):
+                            raise DomainError("script_output_invalid", "只能采集普通输出文件")
+                        total += info.st_size
+                        count += 1
+                        if total > MAX_OUTPUT_BYTES or count > MAX_OUTPUT_FILES or info.st_size > self.artifacts.config.max_file_bytes:
+                            raise DomainError("script_output_limit", "脚本输出超过采集上限")
+                        with path.open("rb") as stream:
+                            data = stream.read(self.artifacts.config.max_file_bytes + 1)
+                        if len(data) != info.st_size:
+                            raise DomainError("script_output_changed", "采集期间输出发生变化")
+                        try:
+                            text = data.decode("utf-8")
+                        except UnicodeDecodeError:
                             artifact = self.artifacts.stage_binary(ctx, data, dependencies)
                         else:
-                            artifact = self.artifacts.stage_text(ctx, text, media, dependencies)
-                    staged.append(artifact)
-                    entries.append(ScriptArtifact(relative_path=path.relative_to(outputs).as_posix(),
-                        artifact=artifact.ref))
+                            media = "text/markdown" if path.suffix.lower() == ".md" else "text/plain"
+                            if b"\0" in data or path.suffix.lower() not in {".txt", ".md"}:
+                                artifact = self.artifacts.stage_binary(ctx, data, dependencies)
+                            else:
+                                artifact = self.artifacts.stage_text(ctx, text, media, dependencies)
+                        staged.append(artifact)
+                        entries.append(ScriptArtifact(relative_path=path.relative_to(outputs).as_posix(),
+                            artifact=artifact.ref))
+            except DomainError as error:
+                collection_error = error.code
+            except OSError:
+                collection_error = "script_output_collection_failed"
+            if collection_error:
+                staged, entries = [], []
             value = ScriptExecutionResult(
                 skill_id=args.skill_id, content_hash=args.content_hash,
                 script_relative_path=args.script_relative_path, script_hash=script.content_hash,
@@ -206,11 +222,11 @@ class SkillExecutionService:
                 executable_identity=environment.executable_identity, attempt_id=activity.attempt_id,
                 exit_code=result.exit_code, termination_reason=result.termination_reason,
                 stdout=_log(result.stdout), stderr=_log(result.stderr), truncated=result.truncated,
-                process_identity=result.process_identity, outputs=entries,
+                process_identity=result.process_identity, outputs=entries, collection_error=collection_error,
             )
             error = ("script_" + result.termination_reason if result.termination_reason != "exited"
                 else "script_nonzero_exit" if result.exit_code != 0 else None)
-            return ToolOutcome(result=value.model_dump(mode="json"), error=error,
+            return ToolOutcome(result=value.model_dump(mode="json"), error=error or collection_error,
                 dependencies=dependencies, staged_artifacts=staged, source_observations=observations)
         finally:
             # 空 attempt 目录是执行过的持久标记；输入/执行副本和原始输出不长期留存。

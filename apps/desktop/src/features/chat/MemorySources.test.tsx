@@ -29,7 +29,9 @@ function server(queued = false, grants?: DataUseGrant[]) {
     }
     if (path === '/memory/records') return Response.json(page(parsed.searchParams.get('scope_kind') === 'user_global' ? [{ ...memory, status: 'confirmed' }] : []));
     if (path.endsWith('/evidence')) return Response.json(page(memory.evidence.map(evidence => ({ evidence, available: true, reason: null }))));
-    if (path === '/navigation') return Response.json({ default_workspace_id: id, workspaces: page([]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id });
+    if (path === '/navigation') return Response.json({ default_workspace_id: id, workspaces: page([{ workspace, sessions: page([session, { ...session, id: secondId, title: '另一会话' }]), pending_count: 0 }]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id });
+    if (path === `/sessions/${secondId}`) return Response.json({ ...session, id: secondId, title: '另一会话' });
+    if (path === `/sessions/${id}`) return Response.json(session);
     if (path.endsWith('/directory')) return Response.json({ workspace_id: id, workspace_version: 1, state: 'unlinked', resource: null, reason: null });
     if (path.endsWith('/commands')) return Response.json(page([]));
     if (path.endsWith('/follow-ups')) return Response.json(page(queued ? [followUpIntent] : []));
@@ -105,13 +107,21 @@ it.each([false, true])('本次记忆范围沿真实%s发送入口，按模型/�
   await screen.findByText('关于我：已选择并授权');
   await user.click(screen.getByText('本次排除单条记忆', { selector: 'summary' }));
   await user.click(screen.getByLabelText(`本次排除：${memory.text}`));
-  await user.selectOptions(screen.getByLabelText('会话'), secondId);
+  await user.click(screen.getByRole('button', { name: '另一会话' }));
+  await screen.findByRole('heading', { name: '另一会话' });
   expect((screen.getByLabelText('本次读取个人记忆') as HTMLInputElement).checked).toBe(false);
-  await user.selectOptions(screen.getByLabelText('会话'), id);
+  await user.click(screen.getByRole('button', { name: '记忆范围会话' }));
+  await screen.findByRole('heading', { name: '记忆范围会话' });
   expect((screen.getByLabelText('本次读取个人记忆') as HTMLInputElement).checked).toBe(true);
   await user.selectOptions(screen.getByLabelText('模型'), id);
+  await waitFor(() => expect((screen.getByLabelText('本次读取个人记忆') as HTMLInputElement).checked).toBe(false));
+  await user.click(screen.getByLabelText('本次读取个人记忆'));
+  await user.click(screen.getByLabelText('本次读取项目记忆'));
   await screen.findByText('关于我：目标模型未授权，本次排除');
   await user.selectOptions(screen.getByLabelText('模型'), model.id);
+  await waitFor(() => expect((screen.getByLabelText('本次读取个人记忆') as HTMLInputElement).checked).toBe(false));
+  await user.click(screen.getByLabelText('本次读取个人记忆'));
+  await user.click(screen.getByLabelText('本次读取项目记忆'));
   await screen.findByText('关于我：已选择并授权');
   api.setRead(false); await api.emit(1);
   await screen.findByText('关于我：读取已关闭，本次排除');

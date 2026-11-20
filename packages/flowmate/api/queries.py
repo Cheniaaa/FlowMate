@@ -19,6 +19,7 @@ from flowmate.api.contracts import (
     PendingAction,
     PendingActionCommand,
     RunDetail,
+    RunFeedback,
     TaskCenterItem,
     TraceItem,
     WorkspaceNavigation,
@@ -35,9 +36,7 @@ from flowmate.contracts.execution import (
     BudgetAllocation,
     BudgetGroupSnapshot,
     BudgetSnapshot,
-    Checkpoint,
     JoinFact,
-    ModelMessage,
     Question,
     ResultConsumption,
     RunSnapshot,
@@ -58,7 +57,6 @@ from flowmate.policy.contracts import (
     DataUseGrant,
     ResourceRecord,
     ResourceRef,
-    ToolInvocation,
 )
 from flowmate.runtime.recovery import CONDITION_WAITING_TASKS_SQL
 from flowmate.runtime.transitions import load
@@ -82,28 +80,38 @@ def session(tx, id):
     return Session.model_validate_json(row["document"])
 
 
+def page_position(cursor, key, keys=("id",)):
+    """SQL 与 Provider 分页共用现有 v3 游标校验。"""
+    collection = key.split(":", 1)[0]
+    try:
+        position = PageCursor.model_validate_json(base64.b64decode(cursor, altchars=b"-_", validate=True))
+        expected_type = int if keys[0] == "event_id" else str
+        if (position.collection != collection or position.filter_key != key
+                or len(position.upper) != len(keys) or len(position.after) != len(keys)
+                or any(type(value) is not expected_type for value in [*position.upper, *position.after])
+                or tuple(position.after) > tuple(position.upper)):
+            raise ValueError
+        return position.upper, position.after
+    except (ValueError, TypeError, ValidationError):
+        raise DomainError("invalid_cursor", "分页游标无效") from None
+
+
+def page_cursor(key, upper, after):
+    position = PageCursor(collection=key.split(":", 1)[0], filter_key=key, upper=upper, after=after)
+    return base64.urlsafe_b64encode(position.model_dump_json().encode()).decode()
+
+
 def _page(tx, model, key, sql, parameters, *, limit=100, cursor=None, decode=None,
           keys=("id",)):
     if not 1 <= limit <= 500:
         raise DomainError("invalid_query", "分页数量须在1至500之间")
     mark = watermark(tx)
-    collection = key.split(":", 1)[0]
     columns = ",".join(keys)
     placeholders = ",".join("?" for _ in keys)
     source = f"({sql}) page"
     after = None
     if cursor:
-        try:
-            position = PageCursor.model_validate_json(base64.b64decode(cursor, altchars=b"-_", validate=True))
-            expected_type = int if keys[0] == "event_id" else str
-            if (position.collection != collection or position.filter_key != key
-                    or len(position.upper) != len(keys) or len(position.after) != len(keys)
-                    or any(type(value) is not expected_type for value in [*position.upper, *position.after])
-                    or tuple(position.after) > tuple(position.upper)):
-                raise ValueError
-            upper, after = position.upper, position.after
-        except (ValueError, TypeError, ValidationError):
-            raise DomainError("invalid_cursor", "分页游标无效") from None
+        upper, after = page_position(cursor, key, keys)
     else:
         last = tx.execute(f"SELECT {columns} FROM {source} ORDER BY " +
                           ",".join(f"{column} DESC" for column in keys) + " LIMIT 1", parameters).fetchone()
@@ -121,9 +129,8 @@ def _page(tx, model, key, sql, parameters, *, limit=100, cursor=None, decode=Non
     items = [(decode(row) if decode else model.model_validate_json(row["document"])) for row in rows[:limit]]
     next_cursor = None
     if len(rows) > limit:
-        position = PageCursor(collection=collection, filter_key=key, upper=upper,
-            after=[rows[limit - 1][f"cursor_key_{index}"] for index in range(len(keys))])
-        next_cursor = base64.urlsafe_b64encode(position.model_dump_json().encode()).decode()
+        next_cursor = page_cursor(key, upper,
+            [rows[limit - 1][f"cursor_key_{index}"] for index in range(len(keys))])
     return Page[model](items=items, next_cursor=next_cursor, watermark=mark)
 
 
@@ -154,7 +161,7 @@ def connections(tx, **paging):
 def run_items(tx, run_id, kind, **paging):
     load(tx, RunSnapshot, run_id)
     if kind == "messages":
-        return _page(tx, MessageView, f"messages:{run_id}", "SELECT document,event_id,event_index FROM messages "
+        return _page(tx, MessageView, f"messages:{run_id}", "SELECT document,run_id,event_id,event_index FROM messages "
                      "WHERE run_id=? AND execution_session_id=(SELECT interaction_session_id FROM runs WHERE id=?) "
                      "ORDER BY event_id,event_index", [run_id,run_id], decode=message_view, keys=("event_id", "event_index"), **paging)
     model = {"tasks": TaskSnapshot, "activities": ActivityView, "artifacts": ArtifactRef,
@@ -167,13 +174,14 @@ def run_items(tx, run_id, kind, **paging):
 
 
 def message_view(row):
-    return MessageView(**json.loads(row["document"]), event_id=row["event_id"], event_index=row["event_index"])
+    return MessageView(**json.loads(row["document"]), run_id=row["run_id"],
+                       event_id=row["event_id"], event_index=row["event_index"])
 
 
 def messages(tx, id, **paging):
     if session(tx, id).kind != "interaction":
         raise DomainError("not_found","交互会话不存在")
-    return _page(tx, MessageView, f"session_messages:{id}", "SELECT m.document,m.event_id,m.event_index FROM messages m "
+    return _page(tx, MessageView, f"session_messages:{id}", "SELECT m.document,m.run_id,m.event_id,m.event_index FROM messages m "
                  "WHERE m.execution_session_id=? ORDER BY m.event_id,m.event_index", [id],
                    decode=message_view, keys=("event_id", "event_index"), **paging)
 
@@ -181,7 +189,30 @@ def messages(tx, id, **paging):
 def session_runs(tx, id, **paging):
     session(tx, id)
     return _page(tx, RunSnapshot, f"session_runs:{id}",
-                  "SELECT id,document FROM runs WHERE interaction_session_id=? ORDER BY id", [id], **paging)
+                   "SELECT id,document FROM runs WHERE interaction_session_id=? ORDER BY id", [id], **paging)
+
+
+def run_feedback(tx, id, run_ids):
+    """只补可见消息的运行事实；根模型调用顺序来自持久插入位置，不按UUID推测。"""
+    if session(tx, id).kind != "interaction":
+        raise DomainError("not_found", "交互会话不存在")
+    placeholders = ",".join("?" for _ in run_ids)
+    rows = tx.execute(
+        "SELECT r.id,r.document,a.document AS activity FROM runs r LEFT JOIN activities a ON a.rowid=("
+        "SELECT rowid FROM activities WHERE run_id=r.id AND task_id=r.root_task_id "
+        "AND json_extract(document,'$.intent.kind')='model' ORDER BY rowid DESC LIMIT 1) "
+        f"WHERE r.id IN ({placeholders}) AND r.interaction_session_id=? AND r.execution_session_id=?",
+        [*run_ids, id, id]).fetchall()
+    if {row["id"] for row in rows} != set(run_ids):
+        raise DomainError("not_found", "运行不属于该交互会话")
+    items = {}
+    for row in rows:
+        run = RunSnapshot.model_validate_json(row["document"])
+        items[run.id] = RunFeedback(run_id=run.id, version=run.version, workspace_id=run.workspace_id,
+            session_id=id, root_task_id=run.root_task_id, connection_id=run.config.model_profile.connection_id,
+            state=run.state, reason=run.reason,
+            model_activity=activity_view(ActivitySnapshot.model_validate_json(row["activity"])) if row["activity"] else None)
+    return Page[RunFeedback](items=[items[run_id] for run_id in dict.fromkeys(run_ids)], watermark=watermark(tx))
 
 
 def command_status(tx, session_id, command_id):
@@ -334,7 +365,7 @@ def _inbox_source():
             "FROM delivery_outbox d JOIN runs r ON r.id=json_extract(d.document,'$.result.run_id') WHERE d.state='failed'")
 
 
-def inbox(tx, **paging):
+def inbox(tx, *, policy, catalog=None, **paging):
     sql=_inbox_source()
     def decode(row):
         ids = {name: row[name] for name in ("id", "workspace_id", "session_id", "run_id")}
@@ -355,39 +386,14 @@ def inbox(tx, **paging):
                 actions.append(PendingActionCommand(kind="retry_delivery",target_id=entry.id,expected_version=entry.version))
             version,reason=entry.version,entry.last_error
         else:
-            from flowmate.runtime.transitions import check_admission, check_scopes, utc_now
-            unsafe=tx.execute("SELECT 1 FROM activities WHERE run_id=? AND (state='uncertain' OR "
-                "(json_extract(document,'$.receipt') IS NOT NULL AND json_extract(document,'$.content_committed')=0)) LIMIT 1",
-                (run.id,)).fetchone()
+            from flowmate.runtime.recovery import check_resume, resume_candidates
             valid=True
             try:
-                check_scopes(tx,run.scope_dependencies)
-                check_admission(tx,run)
-                for message in tx.execute("SELECT document FROM messages WHERE run_id=?",(run.id,)):
-                    check_scopes(tx,ModelMessage.model_validate_json(message[0]).source_dependencies)
-                for checkpoint_row in tx.execute("SELECT c.document FROM checkpoints c JOIN tasks t ON t.id=c.task_id "
-                        "WHERE t.run_id=? AND t.state NOT IN ('completed','failed','cancelled')",(run.id,)):
-                    checkpoint=Checkpoint.model_validate_json(checkpoint_row[0])
-                    check_scopes(tx,checkpoint.output_dependencies)
-                    if checkpoint.tool_call is not None:
-                        check_scopes(tx,ToolInvocation.model_validate(checkpoint.tool_call).dependencies)
-            except DomainError as error:
-                if error.code not in {"scope_revoked","admission_stopped"}:
-                    raise
+                check_resume(tx, run, resume_candidates(tx, run), policy=policy,
+                    catalog=catalog, now=policy.clock())
+            except DomainError:
                 valid=False
-            archived=tx.execute("SELECT archived FROM sessions WHERE id=?",(run.interaction_session_id,)).fetchone()
-            busy=(run.execution_session_id == run.interaction_session_id and tx.execute(
-                "SELECT 1 FROM session_leases WHERE session_id=? AND run_id IS NOT NULL AND run_id<>?",
-                (run.interaction_session_id,run.id)).fetchone() is not None)
-            if run.kind == "follow_up" and run.reason == "yield_to_user":
-                valid = valid and tx.execute("SELECT 1 FROM follow_up_intents WHERE "
-                    "json_extract(document,'$.run_id')=? AND json_extract(document,'$.status')='paused'",
-                    (run.id,)).fetchone() is not None and not tx.execute(
-                    "SELECT 1 FROM pending_user_commands WHERE session_id=? AND state='queued'",
-                    (run.interaction_session_id,)).fetchone()
-            if (row["kind"] == "recovery" and not unsafe and valid and run.deadline_at>utc_now()
-                    and (condition is None or condition.deadline_at is None or condition.deadline_at>utc_now())
-                    and not busy and not (archived is not None and archived[0] and run.execution_session_id==run.interaction_session_id)):
+            if valid:
                 actions.append(PendingActionCommand(kind="resume",target_id=run.id,expected_version=run.version))
             if tx.execute("SELECT 1 FROM activities WHERE run_id=? AND state='uncertain' AND "
                     "json_extract(document,'$.intent.operation')='artifacts.export'",(run.id,)).fetchone():

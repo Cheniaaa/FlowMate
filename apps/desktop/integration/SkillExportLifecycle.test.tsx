@@ -43,9 +43,7 @@ it('真实删除被拦截后自动打开保存回执，显式恢复/处置再删
   const receipt = records[0];
   expect(receipt.state).toBe('needs_restore');
   render(<WorkbenchWindow client={client} />);
-  const sessions = await screen.findByLabelText('会话');
-  await waitFor(() => expect([...((sessions as HTMLSelectElement).options)].some(option => option.value === fixture.session.id)).toBe(true));
-  await user.selectOptions(sessions, fixture.session.id);
+  await user.click(await screen.findByRole('button', { name: 'D 集成会话' }, { timeout: 7000 }));
   await screen.findByRole('heading', { name: 'D 集成会话' }, { timeout: 7000 });
   await user.type(screen.getByLabelText('消息'), '删除失败时保留这条草稿');
   await user.click(screen.getByRole('button', { name: '删除工作区' }));

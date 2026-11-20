@@ -19,19 +19,32 @@ const snapshot = (resources: ResourceRef[], grants: DataUseGrant[]): WorkspaceSn
   sessions: page([session, otherSession]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]),
   resources: page(resources), grants: page(grants), watermark: event.event_id });
 
-function server(initial: WorkspaceSnapshot, selection = [resource, otherResource]) {
+function server(initial: WorkspaceSnapshot, selection = [resource, otherResource], coveredSessions = [id, secondId]) {
   const commands: { path: string; body: any }[] = [];
   const requests: URL[] = [];
+  const covered = new Set(coveredSessions);
   vi.mocked(invoke).mockImplementation(async name => name === 'select_resources' ? { resources: selection } : undefined);
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const parsed = new URL(url), path = parsed.pathname.replace('/v3', '');
     requests.push(parsed);
+    if (path.endsWith('/resource-coverage')) {
+      const allowed = covered.has(path.split('/')[2]);
+      const ids = JSON.parse(init.body as string).resource_ids;
+      return Response.json({ allowed, destination: connection.endpoint,
+        missing_read: allowed ? [] : ids, missing_model_send: allowed ? [] : ids });
+    }
     if (init.method === 'POST') {
       const body = JSON.parse(init.body as string); commands.push({ path, body });
-      if (path === '/grants') return Response.json({ ...body.data, id: grant.id, version: 1, epoch: 1, status: 'active' });
+      if (path === '/grants') {
+        covered.add(body.data.scope.session_id);
+        return Response.json({ ...grant, ...body.data, id: grant.id, version: 1, epoch: 1, status: 'active' });
+      }
       return Response.json(run);
     }
     if (path.endsWith('/events')) return new Response(new ReadableStream());
+    if (path === '/navigation') return Response.json({ default_workspace_id: id, workspaces: page([{ workspace, sessions: initial.sessions, pending_count: 0 }]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id });
+    if (path === `/sessions/${secondId}`) return Response.json(otherSession);
+    if (path === `/sessions/${id}`) return Response.json(session);
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return Response.json(page([]));
     const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([{ ...agent, default_model_profile_id: model.id }]),
       '/models': page([model]), '/model-connections': page([connection]), [`/workspaces/${id}/snapshot`]: initial,
@@ -73,21 +86,39 @@ it('窗口重建后复用同一完整共享 grant，只有显式选择的资源�
   expect(fixture.commands[1].body.data).not.toHaveProperty('resource_ids');
 });
 
+it('发送两份当前附件一次表达读取与外发意图，收件地址可见且授权确认后仅提交一次', async () => {
+  const fixture = server(snapshot([resource, otherResource], []), [resource, otherResource], []);
+  const user = userEvent.setup();
+  render(<Conversation client={client} />);
+  await screen.findByRole('heading', { name: session.title });
+  await user.click(screen.getByRole('button', { name: '选择文本文件' }));
+  expect(screen.getByText(/点击发送即同意本次读取/).textContent).toContain(connection.endpoint);
+  await user.type(screen.getByLabelText('消息'), '读取当前附件');
+  await user.click(screen.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(fixture.commands).toHaveLength(2));
+  expect(fixture.commands[0]).toMatchObject({ path: '/grants', body: { data: {
+    resource_ids: [resource.id, otherResource.id], purposes: ['read', 'model_send'], destination: connection.endpoint,
+  } } });
+  expect(fixture.commands[1]).toMatchObject({ path: `/sessions/${id}/runs`, body: { data: {
+    text: '读取当前附件', sources: { resource_ids: [resource.id, otherResource.id] },
+  } } });
+});
+
 it('会话专属 grant 不授权其他会话，切换后只复用本会话或 workspace 共享授权', async () => {
-  server(snapshot([resource], [{ ...grant, scope: { kind: 'session', workspace_id: id, session_id: secondId } }]), [resource]);
+  server(snapshot([resource], [{ ...grant, scope: { kind: 'session', workspace_id: id, session_id: secondId } }]), [resource], [secondId]);
   const user = userEvent.setup();
   render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
   expect(screen.queryByRole('button', { name: '当前范围已授权' })).toBeNull();
-  expect((screen.getByRole('button', { name: '授权读取并发送' }) as HTMLButtonElement).disabled).toBe(false);
-  await user.selectOptions(screen.getByLabelText('会话'), secondId);
+  await waitFor(() => expect((screen.getByRole('button', { name: '授权读取并发送' }) as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByRole('button', { name: otherSession.title }));
   expect(screen.queryByText(resource.label)).toBeNull();
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
   await screen.findByRole('button', { name: '当前范围已授权' });
 });
 
-it('资源/授权未查齐保留游标与同步状态，可继续分页且不将未加载授权当成未授权', async () => {
+it('资源/授权分页保留游标，有效覆盖由后端完整查询决定', async () => {
   const initial = snapshot([resource], []);
   initial.resources.next_cursor = 'resources-next';
   initial.grants.next_cursor = 'grants-next';
@@ -108,12 +139,12 @@ it('资源/授权未查齐保留游标与同步状态，可继续分页且不将
   render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
-  expect((screen.getByRole('button', { name: '授权状态同步中' }) as HTMLButtonElement).disabled).toBe(true);
+  await screen.findByRole('button', { name: '当前范围已授权' });
   await user.click(screen.getByRole('button', { name: '更多资料' }));
   expect(screen.queryByRole('button', { name: '更多资料' })).toBeNull();
   expect(screen.queryByText(otherResource.label)).toBeNull();
   await user.click(screen.getByRole('button', { name: '更多授权' }));
-  expect(screen.getByRole('button', { name: '授权状态同步中' })).toBeTruthy();
+  await screen.findByRole('button', { name: '当前范围已授权' });
   await user.click(screen.getByRole('button', { name: '更多授权' }));
   await screen.findByRole('button', { name: '当前范围已授权' });
   expect(screen.queryByRole('button', { name: '更多授权' })).toBeNull();
@@ -126,7 +157,7 @@ it('资源/授权未查齐保留游标与同步状态，可继续分页且不将
 
 it('旧会话的授权续页迟到不清掉新视图游标或误授权，仍可重新加载', async () => {
   const initial = snapshot([resource], []); initial.grants.next_cursor = 'old-page';
-  const fixture = server(initial, [resource]);
+  const fixture = server(initial, [resource], []);
   const previousFetch = globalThis.fetch;
   let finish!: (response: Response) => void;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => new URL(url).pathname.endsWith('/grants')
@@ -135,7 +166,7 @@ it('旧会话的授权续页迟到不清掉新视图游标或误授权，仍可�
   render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
   await user.click(screen.getByRole('button', { name: '更多授权' }));
-  await user.selectOptions(screen.getByLabelText('会话'), secondId);
+  await user.click(screen.getByRole('button', { name: otherSession.title }));
   await act(async () => { finish(Response.json(page([{ ...grant, scope: { kind: 'session', workspace_id: id, session_id: id } }]))); });
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
   expect(screen.getByRole('button', { name: '更多授权' })).toBeTruthy();

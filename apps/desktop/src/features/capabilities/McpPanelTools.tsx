@@ -63,7 +63,7 @@ export default function McpPanelTools({ client, view, onSaved, onActiveChange, o
           {tool.name}{tool.unavailable_reason && ` · 不可用：${tool.unavailable_reason}`}
         </label>)}
       </fieldset>
-      <p>保存空选择会停用此服务器对新任务提供的工具；调用仍按实际参数审批。</p>
+      <p>保存空选择会停用全部工具，包括已有任务的后续调用。公共查询可另行明示信任；其余调用按实际参数审批。</p>
       <button disabled={disabled || busy || !view.config.enabled}>
         {command ? '按原命令核对工具选择' : '保存允许的工具'}</button>
       {draft && <button type="button" disabled={busy || !!command} onClick={() => {

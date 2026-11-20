@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import AwareDatetime, Field, JsonValue
 
 from flowmate.contracts import scopes
-from flowmate.contracts.base import Contract, Count, Id, Name, Version, identifier
+from flowmate.contracts.base import CallId, Contract, Count, Id, Name, Version, identifier
 from flowmate.contracts.execution import (
     AccountingActivity,
     AccountingBudget,
@@ -57,6 +57,7 @@ class GrantCommand(Contract):
     resource_ids: list[Id] = Field(default_factory=list)
     memory_scopes: list[scopes.ScopeRef] = Field(default_factory=list)
     mcp_versions: dict[Id, Version] = Field(default_factory=dict)
+    mcp_queries: list[McpToolSnapshot] = Field(default_factory=list)
     purposes: list[Purpose] = Field(min_length=1)
     destination: str | None = None
 
@@ -75,8 +76,20 @@ class PolicyDecision(Contract):
     dependencies: list[ScopeDependency] = Field(default_factory=list)
 
 
+class ResourceCoverageRequest(Contract):
+    resource_ids: list[Id] = Field(max_length=200)
+    model_profile_id: Id
+
+
+class ResourceCoverage(Contract):
+    allowed: bool
+    destination: str
+    missing_read: list[Id]
+    missing_model_send: list[Id]
+
+
 class ToolInvocation(Contract):
-    call_id: Name
+    call_id: CallId
     name: Name
     version: Name
     arguments: dict[str, JsonValue] = Field(default_factory=dict)
@@ -107,7 +120,7 @@ class Approval(Contract):
     run_id: Id
     task_id: Id
     activity_id: Id
-    call_id: Name
+    call_id: CallId
     tool_name: Name
     tool_version: Name
     args_hash: str

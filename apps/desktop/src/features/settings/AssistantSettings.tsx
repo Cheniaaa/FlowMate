@@ -84,6 +84,7 @@ export default function AssistantSettings({ client, manageMembers = false, works
       setNewProfile(undefined); setSelectedId(saved.id);
       setModelId(undefined);
       setStatus('助理配置已保存；仅对新运行生效');
+      window.dispatchEvent(new Event('flowmate:settings-changed'));
       onSaved?.(form);
     } catch (error) {
       setError(error instanceof ApiError ? `${error.code}: ${error.message}` : '助理配置保存失败，请检查 Runtime 状态');
@@ -134,7 +135,7 @@ export default function AssistantSettings({ client, manageMembers = false, works
     {selected && <form className="settings-form" key={`${selected.id}:${selected.version}:${editRevision}`} onSubmit={save} onReset={() => { setModelId(undefined); setEditRevision(value => value + 1); }}>
       <fieldset className="settings-grid" disabled={busy || !models}>
         <legend>共享身份与工作指导</legend>
-        {manageMembers && <p className="muted">Profile <code>{selected.id}</code> · v{selected.version}{newProfile ? ' · 尚未保存' : ''}</p>}
+        {manageMembers && <details className="muted"><summary>身份详情</summary>Profile <code>{selected.id}</code> · v{selected.version}{newProfile ? ' · 尚未保存' : ''}</details>}
         <label>显示名称 <input name="display_name" required maxLength={256} defaultValue={selected.display_name} /></label>
         <label>内置图标 <select name="icon_id" required defaultValue={selected.icon_id}>
           {!icons.some(icon => icon.id === selected.icon_id) && <option value={selected.icon_id}>{selected.icon_id}</option>}

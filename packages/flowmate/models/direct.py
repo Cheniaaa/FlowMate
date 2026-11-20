@@ -46,8 +46,10 @@ def _classify(error):
     if isinstance(error, (ModelConnectionError, httpx2.TransportError)):
         return "model_connection_failed"
     status = error.status_code if isinstance(error, ModelHTTPError) else None
-    if status in {401, 403}:
+    if status == 401:
         return "model_authentication_failed"
+    if status == 403:
+        return "model_permission_denied"
     if status == 429:
         return "model_rate_limited"
     if status is not None:
@@ -237,6 +239,7 @@ class ModelGateway:
     async def stream(self, ctx, request, cancel, *, before_send):
         from pydantic_ai import UsageExtractionFailedWarning
         from pydantic_ai.direct import model_request_stream
+        from pydantic_ai.exceptions import ModelHTTPError
         from pydantic_ai.messages import (
             PartDeltaEvent,
             PartStartEvent,
@@ -357,22 +360,23 @@ class ModelGateway:
             if sdk_response.finish_reason not in {"stop", "tool_call"} or sdk_response.state != "complete":
                 raise DomainError("invalid_response", "模型响应不完整")
             self._check(ctx, request, provenance, cancel)
-            parts, calls = [], set()
-            available = {tool.name: tool for tool in request.tools}
+            evidence.check_call_ids([part.tool_call_id for part in sdk_response.parts if isinstance(part, SDKCall)])
+            parts = []
             normalized_sdk_parts = []
             for part in sdk_response.parts:
                 if isinstance(part, SDKText):
                     parts.append(TextPart(text=part.content))
                 elif isinstance(part, SDKCall):
-                    internal_name = internal_names.get(part.tool_name)
-                    if internal_name not in available or not part.tool_call_id or part.tool_call_id in calls:
-                        raise DomainError("invalid_response", "模型返回未声明或重复的工具调用")
+                    if part.tool_name not in internal_names and part.tool_name in names:
+                        raise DomainError("invalid_response", "模型工具wire名称不能冒用内部工具身份")
+                    internal_name = internal_names.get(part.tool_name, part.tool_name)
                     try:
                         args = strict_json(part.args) if isinstance(part.args, str) else part.args
-                        args = self.catalog.get(internal_name, available[internal_name].version).validate_input(args)
-                    except (DomainError, ValueError, TypeError):
-                        raise DomainError("invalid_response", "模型工具参数无效") from None
-                    calls.add(part.tool_call_id)
+                    except (ValueError, TypeError):
+                        args = part.args
+                    # 保留坏JSON/非object给Agent生成可配对错误；不执行，也不覆写SDK私有原文。
+                    if not isinstance(args, dict):
+                        args = part.args if isinstance(part.args, str) else ""
                     parts.append(ToolCallPart(name=internal_name, call_id=part.tool_call_id,
                                                arguments=args))
                     part = replace(part, tool_name=internal_name)
@@ -397,6 +401,10 @@ class ModelGateway:
             response = private = None
         except Exception as error:
             error_code = _classify(error)
+            # 流内错误也可能被SDK映射成401/403；只有真实完整HTTP拒绝能确认失败，费用仍可未知。
+            if (isinstance(error, ModelHTTPError) and evidence.response_complete
+                    and evidence.response_status in {401, 403}):
+                confirmed = True
             if not isinstance(error, DomainError):
                 write_diagnostic(make_diagnostic(error_code, error, request_id=ctx.activity_id))
             response = private = None

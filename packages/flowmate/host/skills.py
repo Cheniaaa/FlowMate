@@ -92,5 +92,9 @@ class SkillHost:
                     "SELECT id FROM resources WHERE session_id IS NULL"
                     + (" AND workspace_id=?" if scope.kind == "workspace" else ""),
                     (scope.workspace_id,) if scope.kind == "workspace" else ())}
-            return [self.inspect(item.command_id, scope) for item in self.publications.commands()
-                    if item.target_ref in selected and (skill_id is None or item.skill_id == skill_id)]
+            result = []
+            for item in self.publications.commands():
+                if item.target_ref in selected and (skill_id is None or item.skill_id == skill_id):
+                    self._selection(item.target_ref, scope, {"export"})
+                    result.append(self.publications.inspect(item.command_id))
+            return result

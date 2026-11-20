@@ -10,4 +10,4 @@ export const memory: MemoryRecord = { id: '00000000-0000-4000-8000-000000000061'
 export const memoryPolicy: MemoryPolicy = { scope: personalScope, version: 1, read_profile: true, auto_organize: false,
   model_profile_id: null, maintenance_limits: limits };
 export const memoryGrant: DataUseGrant = { id: '00000000-0000-4000-8000-000000000062', scope: personalScope, version: 1,
-  epoch: 1, status: 'active', resource_ids: [], memory_scopes: [personalScope], mcp_versions: {}, purposes: ['model_send'], destination: connection.endpoint };
+  epoch: 1, status: 'active', resource_ids: [], memory_scopes: [personalScope], mcp_versions: {}, mcp_queries: [], purposes: ['model_send'], destination: connection.endpoint };

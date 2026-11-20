@@ -22,10 +22,10 @@ it('只按真实成员Task/Activity和交接画顺序；模型取固定binding�
   expect(screen.getByText(/https:\/\/member.invalid/)).toBeTruthy();
   expect(screen.getByText('context_authorization_required')).toBeTruthy();
   expect(screen.queryByText(/耗时/)).toBeNull();
-  const activity = screen.getByRole('button', { name: /实际工具/ });
+  const activity = screen.getByRole('button', { name: /工具调用/ });
   expect(activity.closest('article')).toBe(screen.getByRole('article'));
   await userEvent.click(activity); expect(select).toHaveBeenCalledWith(id, 'activity');
-  await userEvent.click(screen.getByRole('button', { name: /独立后台交接/ }));
+  await userEvent.click(screen.getByRole('button', { name: '查看后台交接' }));
   expect(open).toHaveBeenCalledWith(secondId);
   expect(within(screen.getByRole('article')).getByText(/不是取消从属关系/)).toBeTruthy();
 });

@@ -32,6 +32,11 @@ def router(runtime):
         response.headers["Cache-Control"] = "no-store"
         return runtime.environments.save_view(command.data, command.meta)
 
+    @route.post("/discover", response_model=Page[ExecutionEnvironmentView])
+    async def discover(response: Response):
+        await runtime.environments.discover()
+        return await listing(response)
+
     @route.get("/commands/{id}", response_model=ExecutionEnvironmentCommandStatus)
     async def status(id: Id, response: Response):
         response.headers["Cache-Control"] = "no-store"

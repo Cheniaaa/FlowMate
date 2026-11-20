@@ -3,7 +3,9 @@
 import asyncio
 import hashlib
 import json
+import shutil
 import unicodedata
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -28,6 +30,29 @@ from flowmate.policy.service import _scope
 
 class _StoredServer(McpConfiguredServer):
     selection: McpToolSelection | None = None
+    connection_identity: str | None = None
+
+
+def connection_identity(config):
+    value = config.model_dump(mode="json", include=set(McpConfiguredServer.model_fields)
+        - {"display_name", "enabled", "revision"})
+    if config.transport == "stdio":
+        command = Path(config.command)
+        if not command.is_absolute() and (command.name != config.command
+                or any(name.upper() == "PATH" for name in config.env_refs)):
+            # 相对目标或私有 PATH 无法由公共配置唯一确定实际文件，不能自动信任。
+            return None
+        executable = shutil.which(config.command)
+        if executable is None:
+            return None
+        # 固定实际可执行文件及参数中明确引用的本机文件；不执行项目检测脚本。
+        paths = [Path(executable)]
+        for argument in config.args:
+            path = Path(config.cwd or Path.cwd()) / argument
+            if path.is_file():
+                paths.append(path)
+        value["files"] = [(str(path.absolute()), hashlib.sha256(path.read_bytes()).hexdigest()) for path in paths]
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 class McpConfiguration:
@@ -36,6 +61,7 @@ class McpConfiguration:
         self.manager = manager
         self.changed = changed
         self._operations = asyncio.Lock()
+        self._failures = {}
 
     @staticmethod
     def _scope(tx, scope):
@@ -123,9 +149,7 @@ class McpConfiguration:
         except (ValueError, TypeError, ValidationError, UnicodeError, RecursionError):
             return McpImportPreview(errors=["mcp_import_invalid"])
 
-    async def save(self, config, meta, *, confirmed):
-        config = McpConfiguredServer.model_validate(config.model_dump())
-        meta = CommandMeta.model_validate(meta.model_dump())
+    async def save(self, config: McpConfiguredServer, meta: CommandMeta, *, confirmed):
         if confirmed is not True:
             raise DomainError("mcp_confirmation_required", "请确认此配置后保存")
         fingerprint = self._fingerprint("mcp.save", config.model_dump(mode="json"), meta)
@@ -154,7 +178,7 @@ class McpConfiguration:
                             and unicodedata.normalize("NFKC", other.display_name).casefold()
                             == unicodedata.normalize("NFKC", config.display_name).casefold()):
                         raise DomainError("mcp_name_duplicate", "该范围已有同名 MCP 配置")
-            # 保存会先撤下旧连接；仅显式 discover 才建立新连接。
+            identity = connection_identity(config) if config.enabled else None
             if self.manager is not None:
                 await self.manager.invalidate(config.id)
             with self.store.transaction() as tx:
@@ -165,12 +189,14 @@ class McpConfiguration:
                 tx.execute("INSERT INTO mcp_servers VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET "
                     "config_revision=excluded.config_revision,document=excluded.document",
                     (config.id, config.revision, _StoredServer(**config.model_dump(),
-                        selection=old.selection if old else None).model_dump_json()))
+                        selection=old.selection if old else None,
+                        connection_identity=identity).model_dump_json()))
                 tx.execute("INSERT INTO commands VALUES (?,?,?,?,?)", (
                     meta.command_id, fingerprint, config.model_dump_json(), config.scope.workspace_id, None,
                 ))
                 if self.changed is not None:
                     self.changed(tx, config)
+                self._failures.pop(config.id, None)
             return config
 
     def list(self, scope, *, query="", limit=100, cursor=None):
@@ -200,15 +226,57 @@ class McpConfiguration:
             return self._view(tx, self._get(tx, server_id))
 
     def _view(self, tx, config):
+        from flowmate.policy.contracts import DataUseGrant
+        grants = [DataUseGrant.model_validate_json(row[0]) for row in tx.execute(
+            "SELECT document FROM grants WHERE status='active' AND workspace_id IS ? "
+            "AND EXISTS(SELECT 1 FROM json_each(grants.document,'$.mcp_queries') q "
+            "WHERE json_extract(q.value,'$.server_id')=?)",
+            (config.scope.workspace_id, config.id))]
         row = tx.execute("SELECT document FROM mcp_catalogs WHERE server_id=? "
             "AND json_extract(document,'$.config_revision')=? ORDER BY rowid DESC LIMIT 1",
             (config.id, config.revision)).fetchone()
         state = (self.manager.status(config.id) if self.manager else "saved") if config.enabled else "stopped"
+        failure = self._failures.get(config.id) if config.enabled else None
+        if failure:
+            state = "failed"
         return McpServerView(config=config, state=state,
             catalog=public_catalog(McpCatalog.model_validate_json(row[0])) if row and state == "connected" else None,
-            selection=self._stored(tx, config.id).selection)
+            selection=self._stored(tx, config.id).selection,
+            query_grants=grants,
+            error_code=failure)
 
-    async def discover(self, server_id, meta, *, publisher=None):
+    def reconnect_snapshot(self):
+        with self.store.transaction(write=False) as tx:
+            return [_StoredServer.model_validate_json(row[0])
+                for row in tx.execute("SELECT document FROM mcp_servers ORDER BY id")]
+
+    async def reconnect(self, *, publisher, configs=None):
+        """只连接启动时已受信且证据未变的配置；显式连接优先且不会被重复发现。"""
+        configs = self.reconnect_snapshot() if configs is None else configs
+        for stored in configs:
+            if not stored.enabled or stored.connection_identity is None:
+                continue
+            try:
+                if connection_identity(stored) != stored.connection_identity:
+                    self._failed_connection(stored, "mcp_connection_trust_changed")
+                    continue
+                await self.discover(stored.id, CommandMeta(expected_version=stored.revision),
+                    publisher=publisher, automatic=True)
+            except DomainError as error:
+                self._failed_connection(stored, error.code)
+            except OSError:
+                self._failed_connection(stored, "mcp_connection_trust_changed")
+
+    def _failed_connection(self, config, code):
+        with self.store.transaction() as tx:
+            row = tx.execute("SELECT config_revision FROM mcp_servers WHERE id=?", (config.id,)).fetchone()
+            if row is None or row[0] != config.revision:
+                return
+            self._failures[config.id] = code
+            if self.changed is not None:
+                self.changed(tx, config)
+
+    async def discover(self, server_id, meta, *, publisher=None, automatic=False):
         fingerprint = self._fingerprint("mcp.discover", {"server_id": server_id}, meta)
         async with self._operations:
             with self.store.transaction(write=False) as tx:
@@ -220,13 +288,17 @@ class McpConfiguration:
                     raise DomainError("version_conflict", "连接前须核对当前配置修订")
                 if not config.enabled:
                     raise DomainError("mcp_disabled", "MCP 配置已停用")
+                if automatic and self.manager is not None and self.manager.status(server_id) == "connected":
+                    return self._view(tx, config)
             if self.manager is None:
                 raise DomainError("mcp_unavailable", "MCP transport 尚未装配")
             try:
                 await self.manager.reconfigure(config)
                 catalog = await self.manager.discover(server_id)
                 result = McpServerView(config=config, state="connected", catalog=public_catalog(catalog))
+                self._failures.pop(server_id, None)
             except DomainError as error:
+                self._failures[server_id] = error.code
                 result = McpServerView(config=config, state="failed", error_code=error.code)
             with self.store.transaction() as tx:
                 current = self._get(tx, server_id)
@@ -236,7 +308,12 @@ class McpConfiguration:
                     # 重复发现同一 hash 也推进当前目录的位置，拒绝 A→B→A 后的旧 B 选择。
                     tx.execute("INSERT OR REPLACE INTO mcp_catalogs VALUES (?,?,?)",
                         (server_id, catalog.content_hash, catalog.model_dump_json()))
-                result = result.model_copy(update={"selection": self._stored(tx, server_id).selection})
+                stored = self._stored(tx, server_id)
+                if result.catalog is not None:
+                    stored = stored.model_copy(update={"connection_identity": connection_identity(config)})
+                    tx.execute("UPDATE mcp_servers SET document=? WHERE id=?", (stored.model_dump_json(), server_id))
+                result = result.model_copy(update={"selection": stored.selection,
+                    "query_grants": self._view(tx, config).query_grants})
                 tx.execute("INSERT INTO commands VALUES (?,?,?,?,?)", (
                     meta.command_id, fingerprint, result.model_dump_json(), config.scope.workspace_id, None,
                 ))

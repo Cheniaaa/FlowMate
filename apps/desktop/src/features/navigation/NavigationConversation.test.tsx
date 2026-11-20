@@ -22,7 +22,7 @@ it('启动默认项目来自 navigation 身份，不把工作区首页第一项�
   });
   render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
   await screen.findByRole('heading', { name: '默认会话' });
-  expect((screen.getByLabelText('工作区') as HTMLSelectElement).value).toBe(secondId);
+  expect(screen.getByRole('button', { name: daily.name }).getAttribute('aria-current')).toBe('true');
 });
 
 it('真实重投命令及delivery.changed后导航待办自动4→3，不手刷、不切当前会话或清草稿/模型', async () => {
@@ -64,7 +64,7 @@ it('真实重投命令及delivery.changed后导航待办自动4→3，不手刷�
   await screen.findByRole('button', { name: /待办 4/ });
   const input = screen.getByLabelText('消息');
   await user.type(input, '重投期间保留草稿');
-  await user.click(screen.getByText('后台交付结果'));
+  await user.click(screen.getByRole('button', { name: /^结果/ }));
   await user.click(await screen.findByRole('button', { name: '重新投递' }));
   await screen.findByRole('heading', { name: '等待投递' });
   entry = { ...entry, version: 6, delivery_state: 'delivered', attempts: 1 };
@@ -74,11 +74,12 @@ it('真实重投命令及delivery.changed后导航待办自动4→3，不手刷�
   await act(async () => { stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ kind: 'durable', event_id: position,
     event: { ...event, kind: 'delivery.changed', event_id: position, payload: { deliveries: [entry] } } })}\n\n`)); });
   await screen.findByRole('heading', { name: '已送达' });
+  await user.click(screen.getByRole('button', { name: '关闭详情' }));
   await screen.findByRole('button', { name: /待办 3/ });
-  await waitFor(() => expect(screen.getByRole('button', { name: /重投项目3/ })).toBeTruthy());
-  expect((screen.getByLabelText('会话') as HTMLSelectElement).value).toBe(id);
+  await waitFor(() => expect(screen.getByRole('button', { name: workspace.name }).textContent).toContain('3'));
+  expect(screen.getByRole('heading', { name: session.title })).toBeTruthy();
   expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe(model.id);
   expect((input as HTMLTextAreaElement).value).toBe('重投期间保留草稿');
-  expect(document.activeElement).toBe(input);
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: /^结果/ }));
   expect(writes).toEqual([`/results/${entry.id}/retry`]);
 });

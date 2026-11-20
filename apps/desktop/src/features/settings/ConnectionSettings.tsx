@@ -6,9 +6,9 @@ import type { ModelConnection, ModelConnectionPage, ProviderPresetList } from '.
 import type { EditorLifecycle } from './Settings';
 import ModelSettings from './ModelSettings';
 
-export default function ConnectionSettings({ client, onBusyChange, onSaved, onDiscard, onViewReady, guard = action => action() }: { client: RuntimeClient } & EditorLifecycle) {
+export default function ConnectionSettings({ client, initialConnectionId, onBusyChange, onSaved, onDiscard, onViewReady, guard = action => action() }: { client: RuntimeClient; initialConnectionId?: string } & EditorLifecycle) {
   const [connections, setConnections] = useState<ModelConnectionPage>();
-  const [selectedId, setSelectedId] = useState('');
+  const [selectedId, setSelectedId] = useState(initialConnectionId ?? '');
   const selected = connections?.items.find(connection => connection.id === selectedId);
   const [key, setKey] = useState('');
   const [configured, setConfigured] = useState<boolean>();
@@ -18,7 +18,7 @@ export default function ConnectionSettings({ client, onBusyChange, onSaved, onDi
   const [editRevision, setEditRevision] = useState(0);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(Boolean(initialConnectionId));
   const [modelsOpen, setModelsOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [presets, setPresets] = useState<ProviderPresetList>([]);
@@ -28,11 +28,20 @@ export default function ConnectionSettings({ client, onBusyChange, onSaved, onDi
 
   useEffect(() => {
     let ignore = false;
-    client.connections().then(page => { if (!ignore) setConnections(page); })
+    client.connections().then(async page => {
+      if (initialConnectionId && !page.items.some(item => item.id === initialConnectionId)) {
+        const target = await client.modelConnection(initialConnectionId);
+        page = { ...page, items: [...page.items, target] };
+      }
+      if (!ignore) {
+        setConnections(page);
+        if (initialConnectionId) { setSelectedId(initialConnectionId); setEditing(true); }
+      }
+    })
       .catch(() => { if (!ignore) setError('无法读取连接配置'); });
     client.providerPresets().then(value => { if (!ignore) setPresets(value); }).catch(() => { if (!ignore) setError('无法读取提供商预设；请刷新后重试'); });
     return () => { ignore = true; };
-  }, [client]);
+  }, [client, initialConnectionId]);
 
   useEffect(() => { setPresetId(selected?.provider_preset_id ?? ''); }, [selectedId, selected?.version, editRevision]);
 
@@ -151,18 +160,19 @@ export default function ConnectionSettings({ client, onBusyChange, onSaved, onDi
           setPresetId(event.target.value); const preset = presets.find(item => item.id === event.target.value);
           if (preset) { const fields = formRef.current!.elements; (fields.namedItem('endpoint') as HTMLInputElement).value = preset.default_endpoint; (fields.namedItem('protocol') as HTMLSelectElement).value = preset.protocol; const name = fields.namedItem('display_name') as HTMLInputElement; if (!name.value) name.value = preset.display_name; }
         }}><option value="">自定义连接</option>{presets.map(item => <option key={item.id} value={item.id}>{item.display_name}</option>)}</select></label>
-        {preset && <p>官方预设来源：{preset.source_url} · {preset.source_version} · {preset.verified_at} · 认证方式：API Key。目录核验不等于已验证你的连接。</p>}
+        {preset && <details><summary>预设来源详情</summary><p>官方预设来源：{preset.source_url} · {preset.source_version} · {preset.verified_at} · 认证方式：API Key。目录核验不等于已验证你的连接。</p></details>}
         <label>连接名称 <input name="display_name" required maxLength={256} defaultValue={selected?.display_name ?? ''} /></label>
-        <label>协议 <select name="protocol" required defaultValue={selected?.protocol ?? ''} onChange={() => setPresetId('')}>
+        <details className="advanced-settings"><summary>高级协议设置</summary><label>协议 <select name="protocol" required defaultValue={selected?.protocol ?? ''} onChange={() => setPresetId('')}>
           <option value="" disabled>请选择协议</option><option value="openai_compatible">OpenAI compatible（Chat Completions）</option><option value="anthropic">Anthropic</option>
-        </select></label>
+        </select></label></details>
         <label>Endpoint <input name="endpoint" type="url" required defaultValue={selected?.endpoint ?? ''} onChange={() => setPresetId('')} /></label>
-        <p>Endpoint 是明确的 SDK base URL；修改地址或协议使用新的 secret_ref，不复制旧密钥。</p>
+        <p>请确认接收消息和附件的服务地址。更改地址后需为新地址重新保存 API Key。</p>
       </fieldset>
       <fieldset className="settings-grid" disabled={busy || !connections}>
         <legend>系统凭据</legend>
         <p>凭据状态：{configured === undefined ? '查询中' : configured ? '已配置' : '未配置'}。已有密钥不会读回。</p>
-        <label>API Key（仅保存到系统凭据） <input type="password" autoComplete="off" value={key} onChange={event => setKey(event.target.value)} /></label>
+        <label>API Key（仅保存到系统凭据） <input type="password" autoComplete="off" aria-invalid={credentialRetry || undefined} aria-describedby={credentialRetry ? 'credential-field-error' : undefined} value={key} onChange={event => setKey(event.target.value)} /></label>
+        {credentialRetry && <p id="credential-field-error" role="alert">凭据尚未保存。请重新输入此地址的 API Key 后重试保存凭据。</p>}
         <button className="button" type="submit" disabled={busy || credentialRetry}>保存连接</button>
         {credentialRetry && <button className="button" type="button" disabled={busy || !key} onClick={retryCredential}>重试保存凭据</button>}
         <button className="button" type="button" disabled={busy} onClick={() => { onDiscard?.(formRef.current!); setKey(''); setCredentialRetry(false); setEditRevision(value => value + 1); setError(''); setStatus(''); }}>取消编辑</button>

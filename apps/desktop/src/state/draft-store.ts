@@ -1,4 +1,5 @@
 import type { MemoryRecord, StartRunCommand } from '../generated/contracts';
+import { validate } from '../api/validation';
 
 export interface DraftKey { workspaceId: string; sessionId: string }
 export interface Draft {
@@ -11,6 +12,14 @@ export function createDraftStore() {
   const drafts = new Map<string, Draft>();
   const listeners = new Set<() => void>();
   const identity = (key: DraftKey) => JSON.stringify([key.workspaceId, key.sessionId]);
+  const destinations = new Map<string, string>();
+  const preferenceKey = (key: DraftKey, destination: string) => `flowmate:sources:${JSON.stringify([key.workspaceId, destination])}`;
+  function preference(key: DraftKey, destination: string) {
+    const saved = localStorage.getItem(preferenceKey(key, destination));
+    if (!saved) return { memoryScopes: [], skillVersions: {} };
+    const sources = validate('SourceSelection', JSON.parse(saved));
+    return { memoryScopes: sources.memory_scopes, skillVersions: sources.skill_versions };
+  }
   function read(key: DraftKey): Draft {
     const id = identity(key);
     if (!drafts.has(id)) drafts.set(id, { text: '', resourceIds: [], memoryScopes: [], skillVersions: {}, excludedSourceIds: [], modelId: '', allowManaged: false, allowFollowUp: false,
@@ -30,10 +39,28 @@ export function createDraftStore() {
   }
   return {
     read, update,
+    applyPreference(key: DraftKey, destination: string) {
+      if (destinations.get(identity(key)) === destination) return;
+      const previous = destinations.get(identity(key));
+      destinations.set(identity(key), destination);
+      const saved = preference(key, destination);
+      if (previous || saved.memoryScopes.length || Object.keys(saved.skillVersions).length) update(key, saved);
+    },
+    rememberPreference(key: DraftKey, destination: string) {
+      const current = read(key);
+      localStorage.setItem(preferenceKey(key, destination), JSON.stringify({
+        resource_ids: [], memory_scopes: current.memoryScopes,
+        skill_versions: current.skillVersions, excluded_source_ids: [],
+      }));
+    },
+    forgetPreference(key: DraftKey, destination: string) {
+      localStorage.removeItem(preferenceKey(key, destination));
+      update(key, { memoryScopes: [], skillVersions: {} });
+    },
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     acknowledge(key: DraftKey, submittedRevision: number, steering = false) {
       if (read(key).revision === submittedRevision) update(key, steering ? { text: '' }
-        : { text: '', resourceIds: [], memoryScopes: [], skillVersions: {}, excludedSourceIds: [], allowManaged: false, allowFollowUp: false, sourceResult: null, summaryRunId: null });
+        : { text: '', resourceIds: [], ...preference(key, destinations.get(identity(key)) ?? ''), excludedSourceIds: [], allowManaged: false, allowFollowUp: false, sourceResult: null, summaryRunId: null });
     },
   };
 }

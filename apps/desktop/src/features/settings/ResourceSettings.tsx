@@ -1,13 +1,14 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { RuntimeClient } from '../../api/client';
-import { mergeGrants, mergeVersioned, scopeDeleted } from '../../api/events';
+import { applyDeletion, mergeGrants, mergeVersioned, scopeDeleted } from '../../api/events';
 import { windowError } from '../../api/windows';
 import type { WorkspacePage } from '../../generated/contracts';
 import type { createRuntimeStore } from '../../state/runtime-store';
 import ResourcePanel from '../chat/ResourcePanel';
 import type { EditorLifecycle } from './Settings';
 export default function ResourceSettings({ client, store, ...lifecycle }: { client: RuntimeClient; store: ReturnType<typeof createRuntimeStore> } & EditorLifecycle) {
-  const commands = useSyncExternalStore(store.subscribe, store.getCommandsSnapshot);
+  const allCommands = useSyncExternalStore(store.subscribe, store.getCommandsSnapshot);
+  const commands = allCommands.filter(command => command.type === 'revoke');
   const projection = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [workspaces, setWorkspaces] = useState<WorkspacePage>();
   const [workspaceId, setWorkspaceId] = useState('');
@@ -23,11 +24,22 @@ export default function ResourceSettings({ client, store, ...lifecycle }: { clie
   useEffect(() => {
     if (!workspaceId) return;
     const abort = new AbortController();
-    store.loadWorkspace(workspaceId, { snapshot: () => setGrantRevision(value => value + 1), event: event => {
-      if (event.kind === 'durable' && ['resource.registered', 'resource.updated', 'grant.created', 'grant.revoked', 'scope.deleted'].includes(event.event.kind)) setGrantRevision(value => value + 1);
-    } }, abort.signal).catch(error => { if (!abort.signal.aborted) setError(windowError(error)); });
+    // 管理查询只订阅目标项目；不能安装到聊天的当前工作区快照。
+    client.workspaceSnapshot(workspaceId, abort.signal).then(snapshot => {
+      if (abort.signal.aborted) return;
+      setGrantRevision(value => value + 1);
+      return client.watchWorkspace(workspaceId, snapshot.watermark, { snapshot: () => setGrantRevision(value => value + 1), event: event => {
+        if (event.kind === 'durable' && ['resource.registered', 'resource.updated', 'grant.created', 'grant.revoked', 'scope.deleted'].includes(event.event.kind)) {
+          if (event.event.kind === 'scope.deleted') {
+            const deletions = event.event.payload.deletions;
+            store.update(state => deletions.reduce(applyDeletion, state));
+          }
+          setGrantRevision(value => value + 1);
+        }
+      } }, abort.signal);
+    }).catch(error => { if (!abort.signal.aborted) setError(windowError(error)); });
     return () => abort.abort();
-  }, [store, workspaceId]);
+  }, [client, store, workspaceId]);
   return <><h2>资料与授权</h2><label>授权所属项目 <select value={workspaceDeleted ? '' : workspaceId} onChange={event => setWorkspaceId(event.target.value)}>{availableWorkspaces.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
     {workspaces?.next_cursor && <button onClick={async () => { try { const next = await client.workspaces({ cursor: workspaces.next_cursor! }); setWorkspaces({ ...next, items: Object.values(mergeVersioned(Object.fromEntries(workspaces.items.map(item => [item.id, item])), next.items)) }); } catch (error) { setError(windowError(error)); } }}>更多项目</button>}
     {error && <p role="alert">{error}</p>}

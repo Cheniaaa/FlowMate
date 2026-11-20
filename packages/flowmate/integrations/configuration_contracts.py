@@ -8,6 +8,7 @@ from flowmate.contracts.base import Contract, Id, Name, Version
 from flowmate.contracts.scopes import ScopeRef
 from flowmate.contracts.settings import Endpoint
 from flowmate.integrations.contracts import McpCatalog, McpServerConfig
+from flowmate.policy.contracts import DataUseGrant
 
 
 class McpConfiguredServer(McpServerConfig):
@@ -63,6 +64,7 @@ class McpServerView(Contract):
     catalog: McpCatalog | None = None
     error_code: str | None = None
     selection: McpToolSelection | None = None
+    query_grants: list[DataUseGrant] = Field(default_factory=list)
 
 
 class McpSave(Contract):

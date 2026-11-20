@@ -17,6 +17,47 @@ async function openConnections() {
 }
 
 describe('连接设置编辑生命周期', () => {
+  it('每次定位有独立序号：手动改选后同目标仍定位，取消过的导航再次经过 dirty guard', async () => {
+    const other = { ...connection, id: '00000000-0000-4000-8000-000000000024', display_name: '连接 B' };
+    vi.stubGlobal('fetch', async (url: string) => Response.json(url.includes('/model-connections')
+      ? page([connection, other]) : []));
+    const view = render(<Settings client={client} connectionId={connection.id} navigationSequence={1} />);
+    await screen.findByDisplayValue(connection.display_name);
+    fireEvent.change(screen.getByLabelText('编辑连接'), { target: { value: other.id } });
+    await screen.findByDisplayValue(other.display_name);
+    view.rerender(<Settings client={client} connectionId={connection.id} navigationSequence={2} />);
+    await waitFor(() => expect((screen.getByLabelText('编辑连接') as HTMLSelectElement).value).toBe(connection.id));
+    fireEvent.change(screen.getByLabelText('API Key（仅保存到系统凭据）'), { target: { value: 'key-for-A' } });
+    view.rerender(<Settings client={client} connectionId={other.id} navigationSequence={3} />);
+    await screen.findByText('有未保存的设置');
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑' }));
+    view.rerender(<Settings client={client} connectionId={other.id} navigationSequence={4} />);
+    await screen.findByText('有未保存的设置');
+    expect((screen.getByLabelText('编辑连接') as HTMLSelectElement).value).toBe(connection.id);
+    expect((screen.getByLabelText('API Key（仅保存到系统凭据）') as HTMLInputElement).value).toBe('key-for-A');
+    fireEvent.click(screen.getByRole('button', { name: '放弃更改' }));
+    await screen.findByDisplayValue(other.display_name);
+    expect((screen.getByLabelText('API Key（仅保存到系统凭据）') as HTMLInputElement).value).toBe('');
+  });
+  it('从失败消息定位后续页的连接，切换目标时保留未提交表单直到用户放弃', async () => {
+    const next = { ...connection, id: '00000000-0000-4000-8000-000000000024', display_name: '另一个接收方' };
+    vi.stubGlobal('fetch', async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/model-connections')) return Response.json(page([connection]));
+      if (path.endsWith(next.id)) return Response.json(next);
+      if (path.endsWith('/provider-presets')) return Response.json([]);
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const view = render(<Settings client={client} connectionId={connection.id} />);
+    const input = await screen.findByDisplayValue(connection.display_name);
+    fireEvent.change(input, { target: { value: '未保存的名称' } });
+    view.rerender(<Settings client={client} connectionId={next.id} />);
+    await screen.findByText('有未保存的设置');
+    expect(screen.getByDisplayValue('未保存的名称')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '放弃更改' }));
+    expect(await screen.findByDisplayValue(next.display_name)).toBeTruthy();
+    expect(screen.queryByDisplayValue('未保存的名称')).toBeNull();
+  });
   it('后续连接页的模型改名保存及重开保留 max_tokens 覆盖', async () => {
     const other = { ...connection, id: '00000000-0000-4000-8000-000000000004', display_name: '后续页连接' };
     let saved: ModelProfile = { ...model, connection_id: other.id, openai_max_tokens_field: 'max_tokens' };

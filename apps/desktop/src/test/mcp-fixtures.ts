@@ -7,6 +7,6 @@ export const mcpConfig: McpConfiguredServer = {
   args: ['server file.py', '中文 参数', ''], cwd: null, env_refs: {}, url: null,
   credential_ref: null, enabled: true,
 };
-export const mcpView: McpServerView = { config: mcpConfig, state: 'saved', catalog: null, error_code: null, selection: null };
+export const mcpView: McpServerView = { config: mcpConfig, state: 'saved', catalog: null, error_code: null, selection: null, query_grants: [] };
 export const mcpPage = (items: McpServerView[]) => ({ items, next_cursor: null, watermark: '0' });
 export const mcpConnection = { base_url: 'http://127.0.0.1:19013', token: 'synthetic-runtime-token', protocol_version: 3 };

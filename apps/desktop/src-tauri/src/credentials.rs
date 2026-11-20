@@ -72,9 +72,12 @@ pub struct ProtectedValue {
     pub protected_b64: String,
 }
 
-pub struct CredentialStore { prefix: String, access: Mutex<()> }
+// 同一进程的凭据读写共享完整操作边界，包含保存/清除的预读和写入。
+static CREDENTIAL_ACCESS: Mutex<()> = Mutex::new(());
+
+pub struct CredentialStore { prefix: String }
 impl Default for CredentialStore {
-    fn default() -> Self { Self { prefix: "FlowMate.ModelConnection.v1/".into(), access: Mutex::new(()) } }
+    fn default() -> Self { Self { prefix: "FlowMate.ModelConnection.v1/".into() } }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -167,7 +170,7 @@ impl CredentialStore {
         let target = self.target(&binding.secret_ref)?;
         if value.is_empty() { return Err("credential_empty"); }
         if value.len() > CRED_MAX_CREDENTIAL_BLOB_SIZE as usize { return Err("credential_too_large"); }
-        let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
+        let _guard = CREDENTIAL_ACCESS.lock().map_err(|_| "credential_unavailable")?;
         if self.read(&target)?.is_some_and(|record|
             !serde_json::from_value::<ModelSecretBinding>(record.binding)
                 .is_ok_and(|stored| stored.same_destination(binding))) {
@@ -193,7 +196,7 @@ impl CredentialStore {
     pub fn resolve(&self, binding: &ModelSecretBinding) -> Result<String, &'static str> {
         binding.validate()?;
         let target = self.target(&binding.secret_ref)?;
-        let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
+        let _guard = CREDENTIAL_ACCESS.lock().map_err(|_| "credential_unavailable")?;
         let record = self.read(&target)?.ok_or("credential_missing")?;
         if !serde_json::from_value::<ModelSecretBinding>(record.binding)
             .is_ok_and(|stored| stored.same_destination(binding)) { return Err("credential_binding_mismatch"); }
@@ -209,7 +212,7 @@ impl CredentialStore {
         if value.len() > CRED_MAX_CREDENTIAL_BLOB_SIZE as usize { return Err("credential_too_large"); }
         let target = self.target(&mcp.secret_ref)?;
         let expected = serde_json::to_value(binding).map_err(|_| "invalid_binding")?;
-        let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
+        let _guard = CREDENTIAL_ACCESS.lock().map_err(|_| "credential_unavailable")?;
         if self.read(&target)?.is_some_and(|record| record.binding != expected) {
             return Err("credential_binding_mismatch");
         }
@@ -223,7 +226,7 @@ impl CredentialStore {
                 mcp.validate()?;
                 let target = self.target(&mcp.secret_ref)?;
                 let expected = serde_json::to_value(binding).map_err(|_| "invalid_binding")?;
-                let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
+                let _guard = CREDENTIAL_ACCESS.lock().map_err(|_| "credential_unavailable")?;
                 let record = self.read(&target)?.ok_or("credential_missing")?;
                 if record.binding != expected { return Err("credential_binding_mismatch"); }
                 record.value.ok_or("credential_missing")
@@ -232,14 +235,14 @@ impl CredentialStore {
     }
     pub fn status(&self, secret_ref: &str) -> Result<SecretStatus, &'static str> {
         let target = self.target(secret_ref)?;
-        let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
+        let _guard = CREDENTIAL_ACCESS.lock().map_err(|_| "credential_unavailable")?;
         let record = self.read(&target)?;
         if record.as_ref().is_some_and(|record| record.binding["secret_ref"].as_str() != Some(secret_ref)) { return Err("credential_invalid"); }
         Ok(SecretStatus { secret_ref: secret_ref.into(), configured: record.is_some_and(|record| record.value.is_some()) })
     }
     pub fn clear(&self, secret_ref: &str) -> Result<SecretStatus, &'static str> {
         let target = self.target(secret_ref)?;
-        let _guard = self.access.lock().map_err(|_| "credential_unavailable")?;
+        let _guard = CREDENTIAL_ACCESS.lock().map_err(|_| "credential_unavailable")?;
         if let Some(mut record) = self.read(&target)? {
             if record.binding["secret_ref"].as_str() != Some(secret_ref) { return Err("credential_invalid"); }
             // 删除密钥内容但保留非秘密 binding 墓碑，重启后也不能把旧 ref 带去新 endpoint。
@@ -315,7 +318,7 @@ pub(crate) mod tests {
     pub(crate) const KEY: &str = "public-test-key-not-a-secret";
 
     pub(crate) fn store() -> CredentialStore {
-        CredentialStore { prefix: format!("FlowMate.M1.Tests.{}/{}/", std::process::id(), uuid::Uuid::new_v4()), access: Mutex::new(()) }
+        CredentialStore { prefix: format!("FlowMate.M1.Tests.{}/{}/", std::process::id(), uuid::Uuid::new_v4()) }
     }
     pub(crate) fn binding() -> SecretBinding {
         SecretBinding { connection_id: "00000000-0000-4000-8000-000000000001".into(),
@@ -327,6 +330,7 @@ pub(crate) mod tests {
         fn drop(&mut self) {
             assert!(self.0.prefix.starts_with("FlowMate.M1.Tests."));
             let target = self.0.target(&self.1).unwrap();
+            let _guard = CREDENTIAL_ACCESS.lock().unwrap();
             let removed = unsafe { windows_sys::Win32::Security::Credentials::CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) };
             if removed == 0 && !std::thread::panicking() { assert_eq!(unsafe { GetLastError() }, ERROR_NOT_FOUND); }
         }
@@ -342,7 +346,7 @@ pub(crate) mod tests {
         })).expect("connection binding must accept the shared-connection contract");
         let _cleanup = Cleanup(&store, first.secret_ref.clone());
         store.save(&first, KEY).unwrap();
-        let reopened = CredentialStore { prefix: store.prefix.clone(), access: Mutex::new(()) };
+        let reopened = CredentialStore { prefix: store.prefix.clone() };
         let mut second_payload = serde_json::to_value(&first).unwrap();
         second_payload["connection_version"] = json!(2);
         let second: SecretBinding = serde_json::from_value(second_payload.clone()).unwrap();
@@ -371,7 +375,7 @@ pub(crate) mod tests {
             assert_eq!(store.resolve(&changed).unwrap_err(), "credential_binding_mismatch");
             assert_eq!(store.save(&changed, KEY).unwrap_err(), "credential_binding_mismatch");
             store.clear(&original.secret_ref).unwrap();
-            let reopened = CredentialStore { prefix: store.prefix.clone(), access: Mutex::new(()) };
+            let reopened = CredentialStore { prefix: store.prefix.clone() };
             assert_eq!(reopened.save(&changed, KEY).unwrap_err(), "credential_binding_mismatch");
             assert_eq!(reopened.resolve(&original).unwrap_err(), "credential_missing");
             reopened.save(&original, KEY).unwrap();
@@ -419,7 +423,7 @@ pub(crate) mod tests {
         let store = store(); let binding = binding();
         let _cleanup = Cleanup(&store, binding.secret_ref.clone());
         store.save(&binding, KEY).unwrap(); store.clear(&binding.secret_ref).unwrap();
-        let reopened = CredentialStore { prefix: store.prefix.clone(), access: Mutex::new(()) };
+        let reopened = CredentialStore { prefix: store.prefix.clone() };
         let mut changed = binding.clone(); changed.endpoint = "https://another.invalid/v1".into();
         assert_eq!(reopened.save(&changed, KEY).unwrap_err(), "credential_binding_mismatch");
         assert_eq!(reopened.resolve(&binding).unwrap_err(), "credential_missing");
@@ -474,7 +478,7 @@ pub(crate) mod tests {
         let store = store(); let binding = binding();
         let _cleanup = Cleanup(&store, binding.secret_ref.clone());
         for sequence in 0..64 {
-            let reopened = CredentialStore { prefix: store.prefix.clone(), access: Mutex::new(()) };
+            let reopened = CredentialStore { prefix: store.prefix.clone() };
             let value = format!("public-lifecycle-value-{sequence}");
             reopened.save(&binding, &value).unwrap();
             assert_eq!(store.resolve(&binding).unwrap(), value, "save iteration {sequence}");
@@ -491,6 +495,43 @@ pub(crate) mod tests {
             "config_revision":1, "transport":"http",
             "destination":{"command":null,"args":[],"cwd":null,"url":"http://127.0.0.1:9000/mcp"},
             "purpose":"http_token","env_name":null,"secret_ref":"synthetic-mcp-ref"})
+    }
+
+    #[test]
+    fn concurrent_stores_preserve_same_destination_values_and_tombstones() {
+        let start = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for worker in 0_usize..4 {
+                let start = &start;
+                scope.spawn(move || {
+                    let store = store();
+                    let binding = if worker.is_multiple_of(2) {
+                        crate::credentials::SecretBinding::Model(binding())
+                    } else {
+                        serde_json::from_value(mcp_binding()).unwrap()
+                    };
+                    let reference = match &binding {
+                        crate::credentials::SecretBinding::Model(value) => value.secret_ref.clone(),
+                        crate::credentials::SecretBinding::Mcp(value) => value.secret_ref.clone(),
+                    };
+                    let _cleanup = Cleanup(&store, reference.clone());
+                    start.wait();
+                    for _ in 0..16 {
+                        store.save_bound(&binding, KEY).unwrap();
+                        assert!(store.resolve_bound(&binding).unwrap() == KEY);
+                        store.clear(&reference).unwrap();
+                        let reopened = CredentialStore { prefix: store.prefix.clone() };
+                        let record = {
+                            let _guard = CREDENTIAL_ACCESS.lock().unwrap();
+                            reopened.read(&reopened.target(&reference).unwrap())
+                        }.unwrap().expect("tombstone_missing");
+                        assert!(record.value.is_none(), "tombstone_has_value");
+                        assert!(!reopened.status(&reference).unwrap().configured);
+                        assert!(matches!(reopened.resolve_bound(&binding), Err("credential_missing")));
+                    }
+                });
+            }
+        });
     }
 
     #[test]
@@ -527,7 +568,10 @@ pub(crate) mod tests {
         let model = binding();
         let _cleanup = Cleanup(&store, model.secret_ref.clone());
         store.save(&model, KEY).unwrap();
-        let record = store.read(&store.target(&model.secret_ref).unwrap()).unwrap().unwrap();
+        let record = {
+            let _guard = CREDENTIAL_ACCESS.lock().unwrap();
+            store.read(&store.target(&model.secret_ref).unwrap())
+        }.unwrap().unwrap();
         let stored = serde_json::to_value(record).unwrap();
         assert!(stored["binding"].get("kind").is_none());
         assert!(serde_json::from_value::<crate::credentials::SecretBinding>(stored["binding"].clone()).is_err());

@@ -39,7 +39,7 @@ export const page = <T,>(items: T[]) => ({ items, next_cursor: null, watermark: 
 export const resource: ResourceRef = { id: '00000000-0000-4000-8000-000000000010', version: 1,
   scope: { kind: 'workspace', workspace_id: id, session_id: null }, label: '共享资料.md', kind: 'file', source_version: null };
 export const grant: DataUseGrant = { id: '00000000-0000-4000-8000-000000000011', version: 1, epoch: 1,
-  scope: resource.scope, resource_ids: [resource.id], memory_scopes: [], mcp_versions: {}, purposes: ['read', 'model_send'], destination: connection.endpoint, status: 'active' };
+  scope: resource.scope, resource_ids: [resource.id], memory_scopes: [], mcp_versions: {}, mcp_queries: [], purposes: ['read', 'model_send'], destination: connection.endpoint, status: 'active' };
 export const publication: PublicationView = { id: '00000000-0000-4000-8000-000000000020', version: 1, state: 'needs_restore',
   workspace_id: id, session_id: id, run_id: id, task_id: secondId, activity_id: secondId, attempt_id: secondId,
   target_path: 'synthetic-report.txt', stage_path: 'synthetic-stage.txt', backup_path: 'synthetic-backup.txt',

@@ -8,7 +8,6 @@ from flowmate.contracts.base import DomainError, identifier
 from flowmate.contracts.events import NewEvent
 from flowmate.contracts.execution import (
     TERMINAL,
-    ActivitySnapshot,
     AdmissionFence,
     ArtifactRef,
     BudgetAllocation,
@@ -66,20 +65,17 @@ class RuntimeCatalog:
                                agent_executor_id=self.agent_executor_id)
 
     def require_available(self, saved: CatalogVersions) -> None:
-        current = self.snapshot()
-        if (saved.agent_executor_id != self.agent_executor_id
-                or any(current.tools.get(name) != version for name, version in saved.tools.items())
-                or any(current.mcp_tools.get(name) != binding for name, binding in saved.mcp_tools.items()
-                    if name in saved.tools)
-                or any(self.plugins.get(name) != version for name, version in saved.plugins.items())):
-            raise DomainError("blocked_incompatible", "所需工具或插件版本不可用")
+        from flowmate.runtime.recovery import require_catalog_available
+        require_catalog_available(self.snapshot(), saved)
 
 
 class RunService:
-    def __init__(self, store, catalog, *, clock=None):
+    def __init__(self, store, catalog, *, clock=None, policy=None):
+        from flowmate.policy.service import PolicyService
         self.store = store
         self.catalog = catalog
         self.clock = clock or utc_now
+        self.policy = policy if policy is not None else PolicyService(store, clock=self.clock)
 
     def _command(self, operation, parameters, meta, model, apply):
         encoded = json.dumps({"operation": operation, "parameters": parameters,
@@ -231,9 +227,8 @@ class RunService:
             from flowmate.runtime.budget import BudgetService
             BudgetService().count(tx, run.id, "task_count")
         if pending.input_result:
-            from flowmate.policy.service import PolicyService
             from flowmate.runtime.tasks import consume_selected_result
-            consume_selected_result(tx, context_for(tx, task.id), PolicyService(self.store, clock=self.clock))
+            consume_selected_result(tx, context_for(tx, task.id), self.policy)
         return run
 
     def start_maintenance_tx(self, tx, origin, config, limits, sources, dependencies, state, meta):
@@ -356,8 +351,7 @@ class RunService:
             return result
 
     def resume(self, run_id, meta):
-        from flowmate.policy.contracts import ToolInvocation
-        from flowmate.runtime.recovery import CONDITION_WAITING_TASKS_SQL
+        from flowmate.runtime.recovery import check_resume, resume_candidates
 
         def apply(tx):
             run = load(tx, RunSnapshot, run_id)
@@ -368,60 +362,17 @@ class RunService:
                 row = tx.execute("SELECT document FROM follow_up_intents WHERE json_extract(document,'$.run_id')=?",
                     (run.id,)).fetchone()
                 intent = FollowUpIntent.model_validate_json(row[0])
-                if intent.status != "paused" or tx.execute(
-                        "SELECT 1 FROM pending_user_commands WHERE session_id=? AND state='queued'",
-                        (run.interaction_session_id,)).fetchone():
-                    raise DomainError("resume_blocked", "意图已关闭或仍有用户输入待处理")
-                if tx.execute("SELECT archived FROM sessions WHERE id=?", (run.interaction_session_id,)).fetchone()[0]:
-                    raise DomainError("session_archived", "归档会话不能恢复自动总结")
                 FollowUpService(self.store, self)._resume(tx, intent, run)
                 changed = load(tx, RunSnapshot, run.id)
                 return changed, changed
             whole_run = run.state in {"interrupted", "blocked_incompatible"}
-            if whole_run:
-                selected = [TaskSnapshot.model_validate_json(row[0]) for row in tx.execute(
-                    "SELECT document FROM tasks WHERE run_id=? AND state NOT IN ('completed','failed','cancelled')",
-                    (run.id,))]
-            else:
-                selected = [TaskSnapshot.model_validate_json(row[0]) for row in tx.execute(
-                    f"SELECT document FROM ({CONDITION_WAITING_TASKS_SQL}) WHERE run_id=?", (run.id,))]
-                if not selected:
-                    raise DomainError("resume_blocked", "当前没有可恢复的条件等待任务")
-            check_scopes(tx, run.scope_dependencies)
-            check_admission(tx,run)
-            if run.execution_session_id == run.interaction_session_id and tx.execute(
-                    "SELECT archived FROM sessions WHERE id=?", (run.interaction_session_id,)).fetchone()[0]:
-                raise DomainError("session_archived","归档会话不能恢复自动交互")
-            if not whole_run and run.execution_session_id == run.interaction_session_id and tx.execute(
-                    "SELECT 1 FROM session_leases WHERE session_id=? AND run_id IS NOT NULL AND run_id<>?",
-                    (run.interaction_session_id, run.id)).fetchone():
-                raise DomainError("session_busy", "会话已有其他推进中的运行")
-            if self.clock() >= run.deadline_at:
-                raise DomainError("deadline_exceeded", "原授权执行时限已过")
-            if tx.execute("SELECT 1 FROM activities WHERE run_id = ? AND state = 'uncertain'",
-                          (run.id,)).fetchone():
-                raise DomainError("uncertain_activity", "存在未核实的外部操作，不能重放")
-            for row in tx.execute("SELECT document FROM activities WHERE run_id=?", (run.id,)):
-                activity = ActivitySnapshot.model_validate_json(row[0])
-                if activity.receipt is not None and not activity.content_committed:
-                    raise DomainError("missing_activity_result", "外部结果仅完成补账，缺少可继续的业务结果")
-            for row in tx.execute("SELECT document FROM messages WHERE run_id=?", (run.id,)):
-                check_scopes(tx, ModelMessage.model_validate_json(row[0]).source_dependencies)
+            selected = resume_candidates(tx, run)
+            check_resume(tx, run, selected, catalog=self.catalog.snapshot(),
+                policy=self.policy, now=self.clock())
             tasks, items = [], []
             root_state = "running" if whole_run else run.state
             for task in selected:
-                self.catalog.require_available(task.binding.config.catalog)
-                for row in tx.execute("SELECT document FROM activities WHERE task_id=? AND "
-                        "json_extract(document,'$.receipt.error')='blocked_incompatible'", (task.id,)):
-                    rejected = ActivitySnapshot.model_validate_json(row[0])
-                    if rejected.intent.operation in task.binding.config.catalog.mcp_tools:
-                        raise DomainError("blocked_incompatible", "MCP 已拒绝此 Run 的固定目录，请新建 Run")
-                if task.deadline_at is not None and self.clock() >= task.deadline_at:
-                    raise DomainError("task_deadline_exceeded", "成员原执行时限已过")
                 checkpoint = load(tx, Checkpoint, task.id)
-                check_scopes(tx, checkpoint.output_dependencies)
-                if checkpoint.tool_call is not None:
-                    check_scopes(tx, ToolInvocation.model_validate(checkpoint.tool_call).dependencies)
                 state = task.state if task.state.startswith("waiting_") else "running"
                 waits = [WaitRecord.model_validate_json(item[0]) for item in tx.execute(
                     "SELECT document FROM waits WHERE owner_task_id=?", (task.id,))]

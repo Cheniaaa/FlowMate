@@ -5,7 +5,8 @@ export default function ScriptActivity({ activity, onArtifact }: { activity: Act
   const summary = activity.script_execution;
   return <div aria-label="脚本执行结果">
     <p>{activity.state === 'dispatched' ? '脚本运行中' : activity.state === 'uncertain' ? '脚本结果待核对，不自动重试'
-      : activity.state === 'prepared' ? '脚本待审批与派发' : activity.state === 'failed' ? '脚本执行失败' : '脚本执行完成'}</p>
+      : activity.state === 'prepared' ? '脚本待审批与派发' : summary?.collection_error ? '进程已执行，产物采集失败'
+      : activity.state === 'failed' ? '脚本执行失败' : '脚本执行完成'}</p>
     {activity.error && <p>{activity.error}</p>}
     {summary && <>
       <p><code>{summary.script_relative_path}</code> · 版本 {summary.content_hash.slice(0, 12)}</p>

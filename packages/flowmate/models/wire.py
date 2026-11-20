@@ -5,8 +5,9 @@ import json
 import re
 
 import httpx2
+from pydantic import TypeAdapter, ValidationError
 
-from flowmate.contracts.base import DomainError
+from flowmate.contracts.base import CallId, DomainError
 from flowmate.contracts.execution import DispatchRequest, Usage
 from flowmate.models.pricing import estimate_request
 
@@ -37,6 +38,10 @@ class WireEvidence:
         self.price_context = {}
         self.terminal = False
         self.request_id = None
+        self.call_ids = {}
+        self.call_id_conflict = False
+        self.response_status = None
+        self.response_complete = False
 
     @staticmethod
     def _count(value):
@@ -81,6 +86,17 @@ class WireEvidence:
         try:
             event = strict_json(value.decode("utf-8"))
             if self.protocol == "openai_compatible":
+                for choice in event.get("choices") or []:
+                    for call in (choice.get("delta") or {}).get("tool_calls") or []:
+                        key = (choice["index"], call["index"])
+                        previous = self.call_ids.setdefault(key, None)
+                        call_id = call.get("id")
+                        # SDK把非空ID作为完整身份更新，参数片段上的省略/null/空串不改变身份。
+                        if call_id is not None and call_id != "":
+                            if not isinstance(call_id, str) or previous is not None and call_id != previous:
+                                self.call_id_conflict = True
+                            elif previous is None:
+                                self.call_ids[key] = call_id
                 usage = event.get("usage") or {}
                 if "prompt_tokens" in usage:
                     self.raw_input = self._count(usage["prompt_tokens"])
@@ -94,6 +110,8 @@ class WireEvidence:
                 tier = event.get("service_tier")
             else:
                 kind = event.get("type")
+                if kind == "content_block_start" and (event.get("content_block") or {}).get("type") == "tool_use":
+                    self.call_ids[event["index"]] = event["content_block"].get("id")
                 usage = ((event.get("message") or {}).get("usage") if kind == "message_start"
                          else event.get("usage")) or {}
                 if "input_tokens" in usage:
@@ -119,8 +137,18 @@ class WireEvidence:
                 if not isinstance(tier, str):
                     raise ValueError("invalid tier")
                 self.price_context = {"processing" if tier == "batch" else "service_tier": tier}
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError, KeyError):
             raise DomainError("invalid_response", "模型流数据无效") from None
+
+    def check_call_ids(self, sdk_ids):
+        # SDK可能给缺失/空ID生成默认值；只能接受wire中真实出现且未改写的身份。
+        ids = list(self.call_ids.values())
+        try:
+            TypeAdapter(list[CallId]).validate_python(ids)
+        except ValidationError:
+            raise DomainError("invalid_response", "模型工具调用缺少有效身份") from None
+        if self.call_id_conflict or len(ids) != len(set(ids)) or ids != sdk_ids:
+            raise DomainError("invalid_response", "模型工具调用身份无法唯一配对")
 
     def usage(self):
         total = self.raw_input
@@ -148,6 +176,7 @@ class ObservedStream(httpx2.AsyncByteStream):
         async for chunk in self.source:
             self.evidence.feed(chunk)
             yield chunk
+        self.evidence.response_complete = True
 
     async def aclose(self):
         await self.source.aclose()
@@ -200,6 +229,7 @@ class GuardTransport(httpx2.AsyncBaseTransport):
             raise DomainError("dispatch_permit_invalid", "模型发送许可与完整wire不一致")
         self.sent = True
         response = await self.transport.handle_async_request(request)
+        self.evidence.response_status = response.status_code
         request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
         if request_id and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", request_id):
             self.evidence.request_id = request_id

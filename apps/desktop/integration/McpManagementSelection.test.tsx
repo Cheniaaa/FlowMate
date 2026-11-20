@@ -66,7 +66,7 @@ it('真实发现后显式保存选择，另一窗通知更新；本窗修改保�
     await mainUi.findByText('当前固定选择：echo');
     await observerUi.findByText('当前固定选择：echo');
     fireEvent.click(observerUi.getByRole('checkbox', { name: '允许工具 number' }));
-    fireEvent.click(mainUi.getByRole('checkbox', { name: '允许工具 echo' }));
+    fireEvent.click(await mainUi.findByRole('checkbox', { name: '允许工具 echo' }));
     fireEvent.click(mainUi.getByRole('button', { name: '保存允许的工具' }));
     await mainUi.findByText('当前固定选择：无');
     expect(observerUi.getByRole('checkbox', { name: '允许工具 number' })).toHaveProperty('checked', true);

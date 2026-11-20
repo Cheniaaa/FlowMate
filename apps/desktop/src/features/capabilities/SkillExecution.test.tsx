@@ -62,6 +62,17 @@ it('无绑定显示待环境，只有已检测的用户环境可显式绑定', a
   await screen.findByText('待绑定环境');
   expect(screen.queryByRole('button', { name: '允许此版本在绑定环境执行' })).toBeNull();
   expect(await screen.findByRole('option', { name: /python/ })).toBeTruthy();
+  expect(screen.getByLabelText('用户运行环境')).toHaveProperty('value', envId);
+});
+
+it('多个可信解释器保留明确选择，不自动许可脚本', async () => {
+  vi.stubGlobal('fetch', async (url: string) => new URL(url).pathname.endsWith('/script-settings')
+    ? Response.json({ ...settings, binding: null })
+    : Response.json(page([environment, { ...environment, id, executable_path: 'C:/other/python.exe' }])));
+  render(<SkillExecution client={client()} version={skillView.version} scope={skillScope} onChanged={() => {}} />);
+  await screen.findByRole('option', { name: /C:\/other/ });
+  expect(screen.getByLabelText('用户运行环境')).toHaveProperty('value', '');
+  expect(screen.queryByRole('button', { name: '允许此版本在绑定环境执行' })).toBeNull();
 });
 
 it('丢许可回执后重试保留同一命令和版本', async () => {

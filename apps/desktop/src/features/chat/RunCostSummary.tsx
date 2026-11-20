@@ -11,7 +11,7 @@ export default function RunCostSummary({ summary, disclosureName }: { summary: S
   const basis = summary.pricing_basis;
   return <section className="run-cost-summary" aria-label="本次费用">
     <div className="cost-facts">
-      <span>已计算费用 {amount(summary.calculated_units)}</span>
+      <span>费用 {amount(summary.calculated_units)} · 按用量计算</span>
       {summary.unknown_request_count > 0 && <span className="cost-unknown">待确认费用 {summary.unknown_request_count} 次</span>}
       {summary.pending_request_count > 0 && <span>在途 {summary.pending_request_count} 次</span>}
     </div>

@@ -1,0 +1,26 @@
+@reference "../../styles/ui.css";
+
+.context-panel { @apply grid min-w-0 gap-3 text-sm; }
+.context-group { @apply grid min-w-0 gap-2 border-t border-border pt-2; }
+.context-group > h3, .context-group > summary { @apply text-sm font-semibold; }
+.context-group > summary { @apply cursor-pointer rounded-control py-1 ui-control-focus; }
+.context-group > summary > span { @apply ml-2 whitespace-nowrap text-xs font-normal text-muted-foreground; }
+.context-group > [data-slot="button"], .context-panel > [data-slot="button"] { @apply justify-self-start; }
+.context-entries, .context-files { @apply m-0 grid min-w-0 list-none gap-1.5 p-0; }
+.context-entry { @apply my-1 grid min-w-0 gap-1.5 rounded-control border border-border bg-background p-2; }
+.context-line { @apply flex flex-wrap items-baseline justify-between gap-x-2; }
+.context-muted, .context-capacity small, .context-files small { @apply m-0 break-words text-xs text-muted-foreground; }
+.context-files li { @apply flex min-w-0 items-start gap-2; }
+.context-files svg { @apply mt-0.5 shrink-0 text-muted-foreground; }
+.context-files li > div { @apply min-w-0 break-words; }
+.context-files small { @apply block; }
+.context-facts { @apply m-0 grid grid-cols-[minmax(4rem,auto)_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs; }
+.context-facts > dt { @apply text-muted-foreground; }
+.context-facts > dd { @apply m-0 break-words text-right tabular-nums; }
+.context-capacity { @apply text-xs; }
+.context-capacity strong { @apply inline-flex items-center gap-1.5 tabular-nums; }
+.context-capacity-ring {
+  @apply inline-grid size-3 place-items-center rounded-full;
+  background: conic-gradient(var(--primary) var(--context-fill), var(--border) 0);
+}
+.context-capacity-ring::after { content: ''; @apply size-2 rounded-full bg-background; }

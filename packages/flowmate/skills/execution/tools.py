@@ -18,4 +18,5 @@ def register_script_tool(catalog, execution):
         background_supported=True, cancellation="best_effort", retry_class="never",
         required_purposes=["read", "local_process_send"], requires_approval=True,
     ), run, input_model=RunSkillScript, result_model=ScriptExecutionResult,
-        resolve_dependencies=resolve)
+        resolve_dependencies=resolve, prepare_arguments=execution.prepare_arguments,
+        model_spec=execution.model_spec, call_permission=execution.call_permission)

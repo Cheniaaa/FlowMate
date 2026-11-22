@@ -28,10 +28,11 @@ from flowmate.host.secrets import HostSecrets
 from flowmate.host.skills import SkillHost
 from flowmate.host.stdio import open_stdio
 from flowmate.memory.maintenance import MemoryMaintenance, register_maintenance_tools
-from flowmate.memory.provider import SQLiteMemoryProvider
+from flowmate.memory.provider import MemoryProvider
 from flowmate.memory.service import MemoryService
 from flowmate.memory.tools import register_memory_tools
 from flowmate.models.direct import ModelGateway
+from flowmate.models.discovery import ModelDiscovery
 from flowmate.models.private_state import SDK_VERSION, PrivateStateCodec
 from flowmate.persistence.store import Store
 from flowmate.plugins.host import PluginHost, PluginManifest, SlotSpec
@@ -139,6 +140,7 @@ class _AgentProvider(_Provider):
 
         scheduler.register_driver("model", agent.drive_model)
         scheduler.register_driver("tool", drive_tool)
+        scheduler.naming_model = agent.model
         scheduler.configure_context(agent.compaction)
         await scheduler.start(catalog=self.catalog)
 
@@ -169,6 +171,7 @@ class Runtime:
     script_execution: SkillExecutionService
     memory: MemoryService
     maintenance: MemoryMaintenance
+    model_discovery: ModelDiscovery
     mcp: "McpConfiguration" = field(init=False)
     mcp_tools: "McpTools" = field(init=False)
     _resources: ExitStack = field(repr=False)
@@ -208,6 +211,7 @@ class Runtime:
 
 def build_runtime(
     data_dir: Path, host: HostChannel, *, overrides: Mapping[str, object] | None = None,
+    memory_provider: MemoryProvider | None = None,
 ) -> Runtime:
     """先获得目录独占权再打开Store；不启动或接管调用方的HostChannel。"""
     selected = dict(overrides) if overrides is not None else {}
@@ -233,7 +237,8 @@ def build_runtime(
             max_read_chars=config.max_read_chars, max_batch_files=config.max_batch_files,
             max_page_size=config.max_page_size)
         artifacts = ArtifactStore(store, policy, files, config=config)
-        memory = MemoryService(store, SQLiteMemoryProvider(store), policy, artifacts=artifacts, clock=clock)
+        memory = MemoryService(store, memory_provider if memory_provider is not None else policy.memory_provider,
+            policy, artifacts=artifacts, clock=clock)
         skills = SkillService(store)
         environments = EnvironmentService(store, ProcessRunner())
         scheduler = Scheduler(store, {}, config, clock=clock)
@@ -268,7 +273,8 @@ def build_runtime(
         plugins.register(PluginManifest(plugin_id="builtin.model", version=f"{__version__}+sdk.{SDK_VERSION}",
             provides=(SlotSpec(name="model_gateway", exclusive=True),)),
             lambda config, dependencies: _Provider(selected["model"] if "model" in selected else
-                ModelGateway(policy, secrets, private_state=codec, clock=clock, catalog=catalog)))
+                ModelGateway(policy, secrets, private_state=codec, clock=clock, catalog=catalog,
+                    artifacts=artifacts)))
         plugins.register(PluginManifest(plugin_id="builtin.context", version=__version__,
             provides=(SlotSpec(name="context_builder", exclusive=True),), requires=("builtin.tools", "builtin.model", "builtin.memory")),
             lambda config, dependencies: _Provider(selected["context"] if "context" in selected else ContextBuilder(store, policy,
@@ -284,8 +290,9 @@ def build_runtime(
                 emit_reasoning_delta=streams.publish_reasoning, maintenance=maintenance),
                 scheduler, service.catalog.snapshot()))
         service = RunService(store, RuntimeCatalog(tools=catalog.snapshot(), plugins=plugins.snapshot(),
-            agent_executor_id="builtin.agent", tool_catalog=catalog), clock=clock, policy=policy)
-        maintenance = MemoryMaintenance(store, memory, policy, service, clock=clock)
+            agent_executor_id="builtin.agent", tool_catalog=catalog), clock=clock, policy=policy,
+             prepare_inputs=script_execution.pin_inputs, scheduler=scheduler)
+        maintenance = MemoryMaintenance(store, memory, policy, service, settings=settings, clock=clock)
         register_maintenance_tools(catalog, maintenance)
         service.catalog.tools = catalog.snapshot()
         scheduler.configure_maintenance(maintenance)
@@ -296,8 +303,9 @@ def build_runtime(
             plugins=plugins, config=config, streams=streams, tasks=scheduler.tasks,
             host_resources=HostResources(policy, files, config), skills=skills, skill_host=skill_host,
             environments=environments, script_execution=script_execution,
-            memory=memory, maintenance=maintenance,
+            memory=memory, maintenance=maintenance, model_discovery=ModelDiscovery(settings, secrets),
             _resources=resources.pop_all())
+        settings.model_discovery = runtime.model_discovery
         from flowmate.integrations.bootstrap import register_mcp
 
         register_mcp(runtime, host, limits=config.mcp_limits)

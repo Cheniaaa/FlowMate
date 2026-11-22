@@ -24,7 +24,7 @@ it('助理仅从真实启用目录选择允许Skill，保存ID上界不伪造版
   });
   const user = userEvent.setup();
   render(<AssistantSettings manageMembers client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
-  await user.click(await screen.findByLabelText('release-note · aaaaaaaaaaaa'));
+  await user.click(await screen.findByRole('checkbox', { name: 'release-note · 个人' }));
   await user.click(screen.getByRole('button', { name: '保存助理' }));
   await waitFor(() => expect(writes).toHaveLength(1));
   expect(writes[0].data.skill_ids).toEqual([skillView.version.skill_id]);
@@ -46,14 +46,14 @@ it('Skill失效刷新允许目录，但未保存的助理名字/勾选保留至�
   const user = userEvent.setup();
   const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
   const view = render(<AssistantsPage client={client} skillsRevision={0} onClose={() => {}} />);
-  await user.click(await screen.findByLabelText('release-note · aaaaaaaaaaaa'));
+  await user.click(await screen.findByRole('checkbox', { name: 'release-note · 项目' }));
   const name = screen.getByLabelText('显示名称');
   fireEvent.change(name, { target: { value: '未提交助理名' } });
   enabled = false;
   view.rerender(<AssistantsPage client={client} skillsRevision={1} onClose={() => {}} />);
   expect((screen.getByLabelText('显示名称') as HTMLInputElement).value).toBe('未提交助理名');
-  expect((screen.getByLabelText('release-note · aaaaaaaaaaaa') as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByRole('checkbox', { name: /^release-note · 项目/ }).getAttribute('aria-checked')).toBe('true');
   await user.click(screen.getByRole('button', { name: '返回对话与草稿' }));
   await user.click(screen.getByRole('button', { name: '放弃更改' }));
-  await waitFor(() => expect(screen.queryByLabelText('release-note · aaaaaaaaaaaa')).toBeNull());
+  await waitFor(() => expect(screen.queryByRole('checkbox', { name: /^release-note · 项目/ })).toBeNull());
 });

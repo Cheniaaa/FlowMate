@@ -17,6 +17,7 @@ from flowmate.contracts.execution import (
 )
 
 Purpose = Literal["read", "model_send", "export", "tool_send", "local_process_send"]
+FilePinInvalidReason = Literal["file_source_changed", "file_identity_changed"]
 
 
 class ExportTargetInfo(Contract):
@@ -50,6 +51,8 @@ class ResourceRecord(ResourceRef):
     file_identity: str
     parent_resource_id: Id | None = None
     export_target: ExportTargetInfo | None = None
+    file_pin_invalidations: dict[str, FilePinInvalidReason] = Field(
+        default_factory=dict, exclude_if=lambda value: not value)
 
 
 class GrantCommand(Contract):

@@ -22,7 +22,7 @@ from flowmate.contracts.execution import (
     TextPart,
     ToolCallPart,
 )
-from flowmate.contracts.settings import ResolvedModelProfile
+from flowmate.contracts.settings import ModelProtocol, ResolvedModelProfile
 from flowmate.host.protocol import ProtectedValue
 from flowmate.host.secrets import HostSecrets
 from flowmate.policy.service import PolicyService
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 SDK_VERSION = "2.65.0"
 ADAPTER_IDS = {"openai_compatible": "pydantic-ai.openai-chat-completions",
+               "openai_responses": "pydantic-ai.openai-responses",
                "anthropic": "pydantic-ai.anthropic-messages"}
 
 
@@ -57,7 +58,7 @@ class _Metadata(Contract):
     adapter_id: str
     adapter_version: Literal["1"] = "1"
     sdk_version: Literal["2.65.0"] = SDK_VERSION
-    protocol: Literal["openai_compatible", "anthropic"]
+    protocol: ModelProtocol
     model_profile_id: Id
     model_profile_version: Version
     connection_id: Id
@@ -134,14 +135,14 @@ def _match_response(sdk, response, message, profile):
     include_reasoning = any(isinstance(part, ReasoningPart) for part in message.parts)
     for part in response.parts:
         if isinstance(part, sdk.ThinkingPart):
-            if not profile.capabilities.thinking:
+            if profile.capabilities.thinking is False:
                 raise DomainError("unsupported_capability", "当前模型配置未启用thinking")
             if include_reasoning and part.content:
                 parts.append(ReasoningPart(text=part.content))
         elif isinstance(part, sdk.TextPart):
             parts.append(TextPart(text=part.content))
         elif isinstance(part, sdk.ToolCallPart):
-            if not profile.capabilities.tools:
+            if profile.capabilities.tools is False:
                 raise DomainError("unsupported_capability", "当前模型配置未启用tools")
             try:
                 parts.append(ToolCallPart(call_id=part.tool_call_id, name=part.tool_name,
@@ -149,7 +150,7 @@ def _match_response(sdk, response, message, profile):
             except (ValueError, TypeError, ValidationError):
                 raise DomainError("private_state_invalid", "SDK工具调用不能匹配公开消息") from None
         else:
-            # M1不把Responses、compaction或内置provider工具当成已支持能力。
+            # compaction和内置provider工具尚未进入本地工具协议。
             raise DomainError("blocked_incompatible", "私有续接包含未支持的响应part")
     def identity(part):
         if isinstance(part, TextPart):
@@ -180,8 +181,9 @@ class PrivateStateCodec:
     @staticmethod
     def requires_private(response) -> bool:
         sdk = _sdk()
-        # Chat/Messages的普通response计量/finish metadata不是回放输入；part私有扩展必须完整保存。
-        return any(isinstance(part, sdk.ThinkingPart) or bool(part.provider_details) for part in response.parts)
+        # Responses的item ID也属于回放输入，和签名、provider扩展一起无损保护。
+        return any(isinstance(part, sdk.ThinkingPart) or part.id is not None or bool(part.provider_details)
+                   for part in response.parts)
 
     @staticmethod
     def _owner(tx, ctx, profile):
@@ -197,8 +199,7 @@ class PrivateStateCodec:
             if (activity.run_id, activity.task_id) != (ctx.run_id, ctx.task_id):
                 raise DomainError("owner_mismatch", "私有续接活动不属于当前任务")
 
-    @staticmethod
-    def _origin(tx, ctx, metadata, profile, message, *, publishing=False):
+    def _origin(self, tx, ctx, metadata, profile, message, *, publishing=False):
         _match_message(metadata, message)
         if (metadata.workspace_id, metadata.session_id) != (ctx.workspace_id, ctx.session_id):
             raise DomainError("scope_mismatch", "私有续接不属于当前工作区和会话")
@@ -222,7 +223,7 @@ class PrivateStateCodec:
         dependencies = [*metadata.source_dependencies, *run.scope_dependencies,
                          *(activity.intent.dependencies if publishing else [])]
         check_scopes(tx, dependencies)
-        PolicyService.check_run_sources(tx, ctx, metadata.source_dependencies,
+        self.policy.check_run_sources(tx, ctx, metadata.source_dependencies,
                                        source_run_id=metadata.run_id,source_task_id=metadata.task_id)
         return dependencies
 

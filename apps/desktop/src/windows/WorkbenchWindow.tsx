@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { RuntimeClient } from '../api/client';
@@ -6,15 +6,11 @@ import { windowError, type SettingsNavigation, type SettingsSection, type Workbe
 import { Conversation, type WorkbenchNavigation } from '../features/chat/Conversation';
 import Settings, { type SettingsTransition } from '../features/settings/Settings';
 import { createRuntimeStore } from '../state/runtime-store';
-import AssistantsPage from '../features/assistants/AssistantsPage';
-import MemoryPage from '../features/memory/MemoryPage';
 import type { MemoryScope } from '../api/memory';
-import type { RunSnapshot } from '../generated/contracts';
 import WindowNotifications from './WindowNotifications';
 
 export default function WorkbenchWindow({ client }: { client: RuntimeClient }) {
   const settingsStore = useMemo(() => createRuntimeStore(client), [client]);
-  const skillsRevision = useSyncExternalStore(settingsStore.subscribe, () => settingsStore.getSnapshot().skillsRevision);
   const [navigation, setNavigation] = useState<WorkbenchNavigation>();
   const [error, setError] = useState('');
   const [settings, setSettings] = useState<SettingsSection>();
@@ -24,21 +20,20 @@ export default function WorkbenchWindow({ client }: { client: RuntimeClient }) {
   const settingsRequestId = useRef(0);
   const [fromQuick, setFromQuick] = useState(false);
   const [navigationFromQuick, setNavigationFromQuick] = useState(false);
-  const [assistantsOpen, setAssistantsOpen] = useState(false);
-  const [memoryOpen, setMemoryOpen] = useState(false), [memoryScope, setMemoryScope] = useState<MemoryScope>();
-  const [memorySource, setMemorySource] = useState<RunSnapshot>();
-  const memoryOrigin = useRef<HTMLElement | null>(null), memoryActive = useRef(false);
-  function showMemory(source?: RunSnapshot) { if (!memoryActive.current) memoryOrigin.current = document.activeElement as HTMLElement; setSettings(undefined); setAssistantsOpen(false); setMemorySource(source); memoryActive.current = true; setMemoryOpen(true); }
-  function openMemory(source?: RunSnapshot) { guardSettings(() => showMemory(source)); }
-  useEffect(() => { if (!memoryOpen && memoryActive.current) { memoryActive.current = false; memoryOrigin.current?.focus(); } }, [memoryOpen]);
-  const [profileRevision, setProfileRevision] = useState('');
-  const assistantOrigin = useRef<HTMLElement | null>(null);
-  const assistantsActive = useRef(false);
-  function showAssistants() { if (!assistantsActive.current) assistantOrigin.current = document.activeElement as HTMLElement; setSettings(undefined); setMemoryOpen(false); assistantsActive.current = true; setAssistantsOpen(true); }
-  function openAssistants() { guardSettings(showAssistants); }
-  useEffect(() => {
-    if (!assistantsOpen && assistantsActive.current) { assistantsActive.current = false; assistantOrigin.current?.focus(); }
-  }, [assistantsOpen]);
+  const [memoryScope, setMemoryScope] = useState<MemoryScope>();
+  const workbench = useRef<HTMLDivElement>(null);
+  function restoreFocus(trigger: HTMLElement | null, returnToNavigation = true) {
+    const active = document.activeElement;
+    if (active?.isConnected && !active.matches('body,html') && !active.closest('.settings-shell,[inert]')) return;
+    const host = workbench.current;
+    const candidates = [trigger, returnToNavigation && host?.querySelector<HTMLElement>('.sidebar-drawer-toggle'),
+      host?.querySelector<HTMLElement>('#message-input')];
+    for (const target of candidates) {
+      if (!target || !target.isConnected || target.matches('body,html,:disabled') || target.closest('[inert]')) continue;
+      target.focus();
+      if (document.activeElement === target) return;
+    }
+  }
   const origin = useRef<HTMLElement | null>(null);
   const settingsOpen = useRef(false);
   function guardSettings(action: (id: number) => void, target?: { section: SettingsSection; connectionId?: string }) {
@@ -47,10 +42,13 @@ export default function WorkbenchWindow({ client }: { client: RuntimeClient }) {
       setSettingsTransition({ id, settings: target ? { section: target.section, connectionId: target.connectionId, navigationSequence: id } : undefined, apply: () => action(id) });
     } else action(id);
   }
-  function openSettings(section: SettingsSection, fromQuick = false, connection?: string) {
+  function openSettings(section: SettingsSection, fromQuick = false, connection?: string, scope?: MemoryScope) {
     guardSettings(id => {
-      setAssistantsOpen(false);
-      if (!settingsOpen.current) origin.current = document.activeElement as HTMLElement;
+      if (!settingsOpen.current) {
+        const active = document.activeElement as HTMLElement;
+        origin.current = active.closest('.run-configuration') ? workbench.current!.querySelector('[aria-label="运行配置"]') : active;
+      }
+      setMemoryScope(scope);
       settingsOpen.current = true; setFromQuick(fromQuick); setConnectionId(connection); setSettings(section);
       setSettingsSequence(id);
       if (connection !== undefined) setNavigationFromQuick(fromQuick);
@@ -59,14 +57,7 @@ export default function WorkbenchWindow({ client }: { client: RuntimeClient }) {
   useEffect(() => { if (!settings && settingsOpen.current) { settingsOpen.current = false; setSettingsTransition(undefined); } }, [settings]);
   function returnSettingsFocus() {
     if (!origin.current) return;
-    const active = document.activeElement as HTMLElement | null;
-    // 已由用户或新页面接管的焦点不回抢；自动跳转没有有效触发控件时回到原输入。
-    if (active && active !== document.body && active !== document.documentElement && active.isConnected
-      && !active.closest('.settings-shell,[inert]')) return;
-    const trigger = origin.current;
-    const target = trigger?.isConnected && !trigger.matches('body,html,:disabled')
-      ? trigger : document.getElementById('message-input');
-    if (target && !target.closest('[inert]')) target.focus();
+    restoreFocus(origin.current, !!origin.current.closest('.sidebar'));
   }
   useEffect(() => {
     let disposed = false; let unlisten: UnlistenFn | undefined; let reading = false; let requested = false;
@@ -97,9 +88,7 @@ export default function WorkbenchWindow({ client }: { client: RuntimeClient }) {
             if (target?.kind === 'connection') openSettings('models', request.from_quick, target.connection_id);
             else guardSettings(() => {
               setNavigationFromQuick(request.from_quick);
-              if (target?.kind === 'memory') showMemory();
-              else if (target?.kind === 'assistants') showAssistants();
-              else if (target) { setSettings(undefined); setAssistantsOpen(false); setMemoryOpen(false); setNavigation(current => ({ target, sequence: (current?.sequence ?? 0) + 1 })); }
+              if (target) { setSettings(undefined); setNavigation(current => ({ target, sequence: (current?.sequence ?? 0) + 1 })); }
             });
           }
         }
@@ -116,14 +105,8 @@ export default function WorkbenchWindow({ client }: { client: RuntimeClient }) {
     return () => { disposed = true; unlisten?.(); };
   }, []);
   async function returnToQuick() { await invoke('return_to_quick'); setNavigationFromQuick(false); }
-  return <div className="workbench-window"><WindowNotifications label="main" />{error && <p role="alert">{error}</p>}<div className="workbench-host" inert={settings !== undefined || assistantsOpen || memoryOpen}><Conversation obscured={settings !== undefined || assistantsOpen || memoryOpen} runtimeStore={settingsStore} client={client} navigation={navigation} onSettings={openSettings} onAssistants={openAssistants} onMemory={openMemory} onProfilesChange={setProfileRevision} onReturnToQuick={navigationFromQuick ? returnToQuick : undefined} /></div>
-    {memoryOpen && <div inert={settings !== undefined}><MemoryPage client={client} store={settingsStore} initialSource={memorySource} onClose={() => setMemoryOpen(false)}
-      onOpenTask={task => { setNavigation(current => ({ target: { kind: 'task', task_id: task.task_id }, sequence: (current?.sequence ?? 0) + 1 })); setMemoryOpen(false); }}
-      onSettings={scope => { setMemoryScope(scope); openSettings('memory'); }}
-      onReturnToQuick={navigationFromQuick ? async () => { await returnToQuick(); } : undefined} /></div>}
-    {assistantsOpen && <AssistantsPage client={client} refreshKey={profileRevision} skillsRevision={skillsRevision} onClose={() => setAssistantsOpen(false)}
-      onReturnToQuick={navigationFromQuick ? async () => { await returnToQuick(); assistantsActive.current = false; setAssistantsOpen(false); } : undefined} />}
-    {settings && <Settings client={client} section={settings} connectionId={connectionId} navigationSequence={settingsSequence} transition={settingsTransition} memoryScope={memoryScope} onReturnToMemory={memoryOpen ? () => setSettings(undefined) : undefined}
+  return <div className="workbench-window"><WindowNotifications label="main" />{error && <p role="alert">{error}</p>}<div ref={workbench} className="workbench-host" inert={settings !== undefined}><Conversation obscured={settings !== undefined} runtimeStore={settingsStore} client={client} navigation={navigation} onSettings={(section, connection, scope) => openSettings(section, false, connection, scope)} onReturnToQuick={navigationFromQuick ? returnToQuick : undefined} /></div>
+    {settings && <Settings client={client} section={settings} connectionId={connectionId} navigationSequence={settingsSequence} transition={settingsTransition} memoryScope={memoryScope} onReturnToMemory={memoryScope ? () => setSettings(undefined) : undefined}
       onTransitionConsumed={id => setSettingsTransition(current => current?.id === id ? undefined : current)}
       runtimeStore={settingsStore} onSectionChange={setSettings} onClose={() => setSettings(undefined)} onReturnFocus={returnSettingsFocus}
       onReturnToQuick={fromQuick ? async () => { await invoke('return_to_quick'); origin.current = null; setSettings(undefined); } : undefined} />}

@@ -34,10 +34,10 @@ it.each([false, true])('真实memory.propose成功回执配对读取当前候选
   render(<MessageList client={client} store={store} messages={[result, source]} assistantName="助理" />);
   await screen.findByText(memory.text);
   expect(reads).toContain(`/v3/memory/records/${memory.id}?receipt_message_id=${result.id}`);
-  expect(screen.getByText('关于我')).toBeTruthy();
+  expect(screen.getByText('适用范围：个人')).toBeTruthy();
   expect(screen.queryByRole('button', { name: '拒绝' })).toBeNull();
   await user.click(screen.getByRole('button', { name: correction ? '确认纠正' : '记住' }));
-  await screen.findByText('已采纳');
+  await screen.findByText('已记住');
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({ data: { action: 'accept', scope: memory.scope }, meta: { expected_version: 1 } });
   expect(writes[0].data).not.toHaveProperty('text');

@@ -1,10 +1,10 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { RuntimeClient } from '../../api/client';
 import { createRuntimeStore } from '../../state/runtime-store';
 import { event, id, limits, page, run, runDetailSummary, secondId } from '../../test/fixtures';
-import type { MemberLane, RunDetail, SessionInboxEntry, StreamEvent } from '../../generated/contracts';
+import type { ActivityView, ArtifactRef, MemberLane, RunDetail, SessionInboxEntry, StreamEvent } from '../../generated/contracts';
 import type { StreamHandlers } from '../../api/client';
 import { binding } from '../../test/fixtures';
 import TaskDetail from './TaskDetail';
@@ -40,6 +40,36 @@ const detail: RunDetail = { ...runDetailSummary, run: { ...run, kind: 'managed',
   tasks: page([]), activities: page([]), artifacts: page([]), messages: page([]), questions: page([]), approvals: page([]), waits: page([]), consumptions: page([]), joins: page([]),
   budget: { id, run_id: id, version: 1, limits, steps: 1, model_requests: 1, task_count: 1, total_tokens: 0, reserved_tokens: 0, spent_units: '0', reserved_units: '0' }, watermark: event.event_id };
 
+it('任务列表选择具名脚本步骤，从固定输出路径预览其 artifact ID', async () => {
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const activityId = '00000000-0000-4000-8000-000000000015';
+  const artifact: ArtifactRef = { id: '00000000-0000-4000-8000-000000000020', version: 1, task_id: secondId, activity_id: activityId,
+    content_hash: 'b'.repeat(64), media_type: 'text/plain', dependencies: [] };
+  const other = { ...artifact, id: '00000000-0000-4000-8000-000000000021' };
+  const activity: ActivityView = { id: activityId, version: 1, run_id: id, task_id: secondId, kind: 'tool', operation: 'skills.run_script',
+    state: 'succeeded', error: null, usage: null, actual_units: null, dependencies: [],
+    script_execution: { skill_id: id, content_hash: 'a'.repeat(64), script_relative_path: 'scripts/weekly.py', environment_id: id,
+      environment_revision: 1, attempt_id: id, exit_code: 0, termination_reason: 'exited', truncated: false,
+      outputs: [{ relative_path: '检查清单.txt', artifact }, { relative_path: '简报.txt', artifact: other }], collection_error: null, external_costs: 'unknown' } };
+  vi.spyOn(client, 'run').mockResolvedValue({ ...detail, activities: page([activity]), artifacts: page([other, artifact]),
+    tasks: page([{ id: secondId, run_id: id, version: 1, binding, kind: 'agent', parent_task_id: null, origin_task_id: null,
+      executor_id: 'builtin.agent', state: 'completed', created_seq: 1, deadline_at: null, result_version: 1, reason: null }]) });
+  vi.spyOn(client, 'sessionResults').mockResolvedValue(page([]));
+  vi.spyOn(client, 'watchWorkspace').mockImplementation(async () => {});
+  const content = vi.spyOn(client, 'artifactContent').mockResolvedValue({ text: '所选检查清单', start: 0, end: 6, total_chars: 6, source_version: 'v1' });
+  render(<TaskDetail client={client} store={createRuntimeStore(client)} runId={id} onCommand={vi.fn()} onQuestion={vi.fn()} onOpen={vi.fn()} />);
+  await userEvent.click(await screen.findByRole('button', { name: '任务列表' }));
+  await userEvent.click(screen.getByRole('button', { name: /过程.*执行 Skill 脚本/ }));
+  const step = screen.getByRole('region', { name: '所选步骤' });
+  expect(within(step).getByText(/负责人.*FlowMate/)).toBeTruthy();
+  expect(within(step).getByText('scripts/weekly.py')).toBeTruthy();
+  expect(step.textContent).not.toContain(artifact.id);
+  await userEvent.click(within(step).getByRole('button', { name: '检查清单.txt' }));
+  expect((await screen.findByTitle('产物预览')).getAttribute('srcdoc')).toContain('所选检查清单');
+  expect(content.mock.calls).toEqual([[artifact.id, 0, 'text']]);
+  expect(within(screen.getByRole('region', { name: '产物详情' })).getByRole('heading', { name: '检查清单.txt' })).toBeTruthy();
+});
+
 it('真实view命令/SSE交叠保留同身份ResultInbox挂载，命令后正文可见且用户页签选择保留', async () => {
   const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
   const store = createRuntimeStore(client);
@@ -65,7 +95,7 @@ it('真实view命令/SSE交叠保留同身份ResultInbox挂载，命令后正文
     throw new Error(`未定义HTTP ${path}`);
   });
   render(<TaskDetail client={client} store={store} runId={id} onCommand={command => store.dispatch(command)} onQuestion={vi.fn()} onOpen={vi.fn()} />);
-  await userEvent.click(await screen.findByRole('button', { name: '查看产物 1' }));
+  await userEvent.click(await screen.findByRole('button', { name: '查看文本产物 1' }));
   const artifactPreview = await screen.findByTitle('产物预览');
   await userEvent.click(await screen.findByRole('button', { name: '任务列表' }));
   const inbox = await screen.findByRole('region', { name: '结果收件箱' });
@@ -150,7 +180,7 @@ it.each(['scope.revoked', 'scope.deleted'] as const)('%s保持详情外壳但清
     throw new Error(`未定义HTTP ${path}`);
   });
   render(<TaskDetail client={client} store={store} runId={id} onCommand={async () => ({ status: 'confirmed', sync: 'ready', commandId: id })} onQuestion={vi.fn()} onOpen={vi.fn()} />);
-  await userEvent.click(await screen.findByRole('button', { name: '查看产物 1' }));
+  await userEvent.click(await screen.findByRole('button', { name: '查看文本产物 1' }));
   await artifactStarted.promise;
   await userEvent.click(await screen.findByRole('button', { name: '查看结果' }));
   await resultStarted.promise;
@@ -169,7 +199,7 @@ it.each(['scope.revoked', 'scope.deleted'] as const)('%s保持详情外壳但清
   await waitFor(() => expect(screen.queryByRole('button', { name: '更多 artifacts' })).toBeNull());
   expect(screen.queryByText(/迟到结果正文/)).toBeNull();
   expect(screen.queryByTitle('产物预览')).toBeNull();
-  expect(screen.queryByRole('button', { name: '查看产物 1' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '查看文本产物 1' })).toBeNull();
   expect(screen.getByRole('heading', { name: '任务详情' })).toBeTruthy();
 });
 
@@ -284,12 +314,12 @@ it('任务详情泳道查询随真实成员事件刷新，固定两成员/工具
   await userEvent.click(await screen.findByRole('button', { name: '成员泳道' }));
   await screen.findByText('研究成员');
   expect(screen.getAllByRole('article')).toHaveLength(2);
-  expect(screen.getByText('context_authorization_required')).toBeTruthy();
+  expect(screen.getByText('需要核对资料及发送授权。')).toBeTruthy();
   lanes = [root, { ...child, task: { ...child.task, version: 2, state: 'completed', result_version: 1, reason: null } }];
   const position = (BigInt(event.event_id) + 1n).toString();
   await act(async () => { await handlers.event({ kind: 'durable', event_id: position, event: { ...event, kind: 'task.stepped', event_id: position,
     payload: { tasks: [lanes[1].task], runs: [], activities: [], artifacts: [], messages: [], questions: [], budgets: [], waits: [], consumptions: [], joins: [], pending_commands: [], follow_up_intents: [] } } }); });
-  await waitFor(() => expect(screen.queryByText('context_authorization_required')).toBeNull());
+  await waitFor(() => expect(screen.queryByText('需要核对资料及发送授权。')).toBeNull());
   await userEvent.click(screen.getByRole('button', { name: '查看研究成员的任务' }));
   await waitFor(() => expect(bodyReply).toBeTypeOf('function'));
   const sourcePosition = (BigInt(position) + 1n).toString();

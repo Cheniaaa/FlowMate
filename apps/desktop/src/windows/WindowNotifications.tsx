@@ -21,5 +21,5 @@ export default function WindowNotifications({ label }: { label: 'main' | 'quick'
     return () => { disposed = true; unlisten?.(); };
   }, [label]);
   return counts && (counts.pending_actions > 0 || counts.unviewed_results > 0)
-    ? <p className="window-notifications" role="status" aria-live="polite">待办 {counts.pending_actions} · 未查看结果 {counts.unviewed_results}</p> : null;
+    ? <p className="sr-only" role="status" aria-live="polite">待办 {counts.pending_actions} · 未查看结果 {counts.unviewed_results}</p> : null;
 }

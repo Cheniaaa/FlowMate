@@ -162,6 +162,13 @@ class Store:
                 connection.execute("INSERT INTO local_identity VALUES (1,?)", (user_scope_id,))
                 connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            # 同一版本的已有账本也补建查询索引，无需修改事实或投影。
+            for suffix, columns in (("workspace", "workspace_id, event_id"), ("run", "run_id, seq")):
+                connection.execute(
+                    f"CREATE INDEX IF NOT EXISTS events_model_dispatch_{suffix} ON events({columns}) "
+                    "WHERE json_extract(document,'$.kind')='activity.dispatched' "
+                    "AND json_extract(document,'$.payload.activities[0].intent.kind')='model'"
+                )
             connection.commit()
             connection.execute("PRAGMA journal_mode = WAL")
         except BaseException:

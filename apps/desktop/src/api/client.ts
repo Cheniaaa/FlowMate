@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   AnswerCommand, ApprovalCommand, CommandMeta, CreateSessionCommand, CreateWorkspaceCommand,
   ExportCommand, GrantRequest, SaveAgentCommand, SaveConnectionCommand, SaveModelCommand, StartRunCommand, SteeringCommand,
-  ArchiveSessionCommand, RunSnapshot, SetWorkspaceDirectoryCommand, StreamEvent, WorkspaceSnapshot,
+  ArchiveSessionCommand, RenameCommand, RunSnapshot, SetWorkspaceDirectoryCommand, StreamEvent, WorkspaceSnapshot,
   CreateMemoryCommand, MemoryDecisionCommand, MemoryGrantRequest, MemoryRecord, SaveMemoryPolicyCommand,
   SubmitMemoryMaintenanceCommand,
   SaveExecutionEnvironmentCommand,
@@ -11,6 +11,8 @@ import type {
   DiscardSkillCandidateCommand,
   SaveSkillExecutionPermissionCommand,
   ResourceCoverageRequest,
+  VisionContinueCommand,
+  SaveTitlePolicyCommand,
 } from '../generated/contracts';
 import { laterCursor, readSse } from './events';
 import { validate, type RootName } from './validation';
@@ -36,7 +38,7 @@ function query(path: string, parameters: PageQuery = {}) {
 }
 
 export class ApiError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) { super(message); }
+  constructor(readonly status: number, readonly code: string, message: string, readonly relatedIds: readonly string[] = []) { super(message); }
 }
 
 class TransportError extends Error {}
@@ -61,7 +63,7 @@ export class RuntimeClient {
 
   private responseError(status: number, body: unknown): never {
     const { error } = validate('ErrorEnvelope', body);
-    throw new ApiError(status, error.code, error.safe_message);
+    throw new ApiError(status, error.code, error.safe_message, error.related_ids ?? []);
   }
 
   protected async request<N extends RootName>(path: string, root: N, init: RequestInit = {}) {
@@ -133,16 +135,23 @@ export class RuntimeClient {
   navigation(page?: PageQuery) { return this.page('/navigation', 'NavigationView', page); }
   recentSessions(page?: PageQuery) { return this.page('/navigation/sessions', 'SessionPage', page); }
   globalTasks(page?: TaskQuery) { return this.page('/tasks', 'TaskCenterPage', page); }
-  inbox(page?: PageQuery) { return this.page('/inbox', 'InboxPage', page); }
+  inbox(page?: PageQuery & { run_id?: string }) { return this.page('/inbox', 'InboxPage', page); }
   providerPresets() { return this.request('/provider-presets', 'ProviderPresetList'); }
   modelCandidates(provider_preset_id: string, search = '') { return this.request(query('/model-catalog', { provider_preset_id, query: search } as PageQuery), 'ModelCandidateList'); }
   modelResolution(id: string) { return this.request(`/models/${pathId(id)}/resolved`, 'ModelResolution'); }
   workspaceDirectory(id: string) { return this.request(`/workspaces/${pathId(id)}/directory`, 'WorkspaceDirectoryView'); }
   workspaces(page?: PageQuery) { return this.page('/workspaces', 'WorkspacePage', page); }
   profiles(page?: PageQuery) { return this.page('/profiles', 'AgentProfilePage', page); }
+  defaultAgent() { return this.request('/profiles/default', 'AgentProfile'); }
   tools() { return this.request('/tools', 'ToolSpecList'); }
   executionEnvironments(page?: PageQuery) { return this.page('/settings/execution-environments', 'ExecutionEnvironmentPage', page); }
-  discoverExecutionEnvironments() { return this.request('/settings/execution-environments/discover', 'ExecutionEnvironmentPage', { method: 'POST' }); }
+  discoverExecutionEnvironments(parameters?: { workspace_id?: string; kinds: string[] }) {
+    const search = new URLSearchParams();
+    if (parameters?.workspace_id) search.set('workspace_id', parameters.workspace_id);
+    for (const kind of parameters?.kinds ?? []) search.append('kind', kind);
+    return this.request('/settings/execution-environments/discover' + (search.size ? `?${search}` : ''),
+      'ExecutionEnvironmentPage', { method: 'POST' });
+  }
   executionEnvironment(id: string) { return this.request(`/settings/execution-environments/${pathId(id)}`, 'ExecutionEnvironmentView', { cache: 'no-store' }); }
   saveExecutionEnvironment(command: SaveExecutionEnvironmentCommand) { return this.command('/settings/execution-environments', 'SaveExecutionEnvironmentCommand', 'ExecutionEnvironmentView', command, 'PUT'); }
   probeExecutionEnvironment(id: string) { return this.request(`/settings/execution-environments/${pathId(id)}/probe`, 'ExecutionEnvironmentView', { method: 'POST' }); }
@@ -150,10 +159,19 @@ export class RuntimeClient {
   models(page?: ModelQuery) { return this.page('/models', 'ModelProfilePage', page); }
   connections(page?: PageQuery) { return this.page('/model-connections', 'ModelConnectionPage', page); }
   modelConnection(id: string) { return this.request(`/model-connections/${pathId(id)}`, 'ModelConnection'); }
+  discoverConnection(id: string) {
+    return this.request(`/model-connections/${pathId(id)}/discover`, 'ModelDiscoveryResult', { method: 'POST', cache: 'no-store' });
+  }
   sessions(workspace_id: string, page?: PageQuery) { return this.page(`/workspaces/${pathId(workspace_id)}/sessions`, 'SessionPage', page); }
   resources(workspace_id: string, page?: ScopeQuery) { return this.page(`/workspaces/${pathId(workspace_id)}/resources`, 'ResourcePage', page); }
   grants(workspace_id: string, page?: ScopeQuery) { return this.page(`/workspaces/${pathId(workspace_id)}/grants`, 'GrantPage', page); }
-  sessionRuns(session_id: string, page?: PageQuery) { return this.page(`/sessions/${pathId(session_id)}/runs`, 'RunPage', page); }
+  sessionRuns(session_id: string, page?: PageQuery) { return this.page(`/sessions/${pathId(session_id)}/runs`, 'SessionRunPage', page); }
+  sessionContext(sessionId: string, cursor?: string) {
+    return this.page(`/sessions/${pathId(sessionId)}/context`, 'SessionContext', { cursor });
+  }
+  sessionContextUsage(sessionId: string) {
+    return this.request(`/sessions/${pathId(sessionId)}/context/usage`, 'SessionContextUsage');
+  }
   pendingUserCommands(session_id: string, page?: PageQuery) { return this.page(`/sessions/${pathId(session_id)}/commands`, 'PendingUserCommandPage', page); }
   followUpIntents(session_id: string, page?: PageQuery) { return this.page(`/sessions/${pathId(session_id)}/follow-ups`, 'FollowUpIntentPage', page); }
   session(session_id: string) { return this.request(`/sessions/${pathId(session_id)}`, 'Session'); }
@@ -173,14 +191,28 @@ export class RuntimeClient {
   runQuestions(run_id: string, page?: PageQuery) { return this.page(`/runs/${pathId(run_id)}/questions`, 'QuestionPage', page); }
   task(task_id: string) { return this.request(`/tasks/${pathId(task_id)}`, 'TaskSnapshot'); }
   taskResult(task_id: string) { return this.request(`/tasks/${pathId(task_id)}/result`, 'TaskResult'); }
-  activities(run_id: string, page?: PageQuery) { return this.page(`/runs/${pathId(run_id)}/activities`, 'ActivityPage', page); }
+  activities(run_id: string, page?: PageQuery & { activity_id?: string }) { return this.page(`/runs/${pathId(run_id)}/activities`, 'ActivityPage', page); }
   artifacts(run_id: string, page?: PageQuery) { return this.page(`/runs/${pathId(run_id)}/artifacts`, 'ArtifactPage', page); }
   waits(run_id: string, page?: PageQuery) { return this.page(`/runs/${pathId(run_id)}/waits`, 'WaitPage', page); }
   consumptions(run_id: string, page?: PageQuery) { return this.page(`/runs/${pathId(run_id)}/consumptions`, 'ConsumptionPage', page); }
   joins(run_id: string, page?: PageQuery) { return this.page(`/runs/${pathId(run_id)}/joins`, 'JoinPage', page); }
   trace(run_id: string, page?: PageQuery) { return this.page(`/runs/${pathId(run_id)}/trace`, 'TracePage', page); }
-  artifactContent(artifact_id: string, offset = 0) { return this.request(`/artifacts/${pathId(artifact_id)}/content?offset=${offset}`, 'TextSlice'); }
-  memoryRecords(parameters: MemoryQuery) { return this.page('/memory/records', 'MemoryRecordPage', parameters); }
+  sessionArtifact(sessionId: string, artifactId: string) {
+    return this.request(`/sessions/${pathId(sessionId)}/artifacts/${pathId(artifactId)}`, 'ArtifactPage');
+  }
+  artifactContent(artifact_id: string, offset = 0, view: 'text' | 'structured' = 'text') {
+    return this.request(`/artifacts/${pathId(artifact_id)}/content?offset=${offset}${view === 'structured' ? '&view=structured' : ''}`, 'TextSlice');
+  }
+  async artifactImage(artifact_id: string, signal?: AbortSignal) {
+    const response = await fetch(`${this.connection.base_url}/v3/artifacts/${pathId(artifact_id)}/image`, {
+      headers: { Authorization: `Bearer ${this.connection.token}` }, signal,
+    });
+    if (!response.ok) return this.responseError(response.status, await response.json());
+    return response.blob();
+  }
+  memoryRecords(parameters: MemoryQuery & { profile_rules?: boolean; project_defaults?: boolean }) {
+    return this.request(query('/memory/records', parameters), 'MemoryRecordPage', { cache: 'no-store' });
+  }
   memoryRecord(id: string, receipt_message_id?: string) {
     return this.request(query(`/memory/records/${pathId(id)}`, { receipt_message_id } as PageQuery), 'MemoryRecord', { cache: 'no-store' });
   }
@@ -204,14 +236,24 @@ export class RuntimeClient {
   submitMemoryMaintenance(command: SubmitMemoryMaintenanceCommand) { return this.command('/memory/maintenance', 'SubmitMemoryMaintenanceCommand', 'TaskHandle', command); }
   createWorkspace(command: CreateWorkspaceCommand) { return this.command('/workspaces', 'CreateWorkspaceCommand', 'Workspace', command); }
   createSession(workspace_id: string, command: CreateSessionCommand) { return this.command(`/workspaces/${pathId(workspace_id)}/sessions`, 'CreateSessionCommand', 'Session', command); }
+  renameSession(id: string, command: RenameCommand) { return this.command(`/sessions/${pathId(id)}/title`, 'RenameCommand', 'Session', command, 'PUT'); }
+  renameWorkspace(id: string, command: RenameCommand) { return this.command(`/workspaces/${pathId(id)}/name`, 'RenameCommand', 'Workspace', command, 'PUT'); }
+  titlePolicy(id: string) { return this.request(`/workspaces/${pathId(id)}/title-policy`, 'TitlePolicy'); }
+  saveTitlePolicy(id: string, command: SaveTitlePolicyCommand) { return this.command(`/workspaces/${pathId(id)}/title-policy`, 'SaveTitlePolicyCommand', 'TitlePolicy', command, 'PUT'); }
+  suggestProjectTitle(id: string, meta: CommandMeta) { return this.command(`/workspaces/${pathId(id)}/title-suggestion`, 'CommandMeta', 'RunSnapshot', meta); }
   saveAgent(id: string, command: SaveAgentCommand) { return this.command(`/profiles/${pathId(id)}`, 'SaveAgentCommand', 'AgentProfile', command, 'PUT'); }
   saveModel(id: string, command: SaveModelCommand) { return this.command(`/models/${pathId(id)}`, 'SaveModelCommand', 'ModelProfile', command, 'PUT'); }
   saveConnection(id: string, command: SaveConnectionCommand) { return this.command(`/model-connections/${pathId(id)}`, 'SaveConnectionCommand', 'ModelConnection', command, 'PUT'); }
-  startRun(session_id: string, command: StartRunCommand) { return this.command(`/sessions/${pathId(session_id)}/runs`, 'StartRunCommand', 'RunSnapshot', command); }
-  enqueueUser(session_id: string, command: StartRunCommand) { return this.command(`/sessions/${pathId(session_id)}/commands`, 'StartRunCommand', 'PendingUserCommand', command); }
+  startRun(session_id: string, command: StartRunCommand, mcp_server_id?: string) { return this.command(query(`/sessions/${pathId(session_id)}/runs`, { mcp_server_id } as PageQuery), 'StartRunCommand', 'RunSnapshot', command); }
+  enqueueUser(session_id: string, command: StartRunCommand, mcp_server_id?: string) { return this.command(query(`/sessions/${pathId(session_id)}/commands`, { mcp_server_id } as PageQuery), 'StartRunCommand', 'PendingUserCommand', command); }
   steer(run_id: string, command: SteeringCommand) { return this.command(`/runs/${pathId(run_id)}/steering`, 'SteeringCommand', 'MessageReceipt', command); }
   cancel(run_id: string, meta: CommandMeta) { return this.command(`/runs/${pathId(run_id)}/cancel`, 'CommandMeta', 'RunSnapshot', meta); }
-  resume(run_id: string, meta: CommandMeta) { return this.command(`/runs/${pathId(run_id)}/resume`, 'CommandMeta', 'RunSnapshot', meta); }
+  resume(run_id: string, meta: CommandMeta, retryReadonly = false) {
+    return this.command(`/runs/${pathId(run_id)}/resume${retryReadonly ? '?retry_readonly=true' : ''}`, 'CommandMeta', 'RunSnapshot', meta);
+  }
+  continueVision(run_id: string, command: VisionContinueCommand) {
+    return this.command(`/runs/${pathId(run_id)}/continue-vision`, 'VisionContinueCommand', 'RunSnapshot', command);
+  }
   viewResult(id: string, meta: CommandMeta) { return this.command(`/results/${pathId(id)}/view`, 'CommandMeta', 'SessionInboxEntry', meta); }
   retryDelivery(id: string, meta: CommandMeta) { return this.command(`/results/${pathId(id)}/retry`, 'CommandMeta', 'SessionInboxEntry', meta); }
   archiveSession(id: string, command: ArchiveSessionCommand) { return this.command(`/sessions/${pathId(id)}/archive`, 'ArchiveSessionCommand', 'Session', command); }

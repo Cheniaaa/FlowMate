@@ -5,9 +5,11 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 pub const LABELS: [&str; 3] = ["main", "quick", "ball"];
 
+pub enum ChatWindow { Workbench, Quick }
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum SettingsSection { Models, Assistant, Resources, Windows, Memory, Environments }
+pub enum SettingsSection { Models, Assistant, Resources, Windows, Memory, Environments, Appearance }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq)]
 pub struct SettingsNavigation { pub section: SettingsSection, pub from_quick: bool }
@@ -100,6 +102,7 @@ impl Windows {
             active_shortcut: None, form_active: false, native_dialogs: 0, navigation: None, settings_navigation: None })
     }
     pub fn settings(&self) -> WindowSettings { self.settings.clone() }
+    pub fn ball_enabled(&self) -> bool { self.settings.preferences.ball_enabled }
     fn save(&self, preferences: &Preferences) -> Result<(), String> {
         let temporary = self.path.with_extension("json.tmp");
         let bytes = serde_json::to_vec(preferences).map_err(|_| "window_settings_save_failed")?;
@@ -169,7 +172,7 @@ impl Windows {
     }
     pub fn restore(&mut self, effects: &impl SettingsEffects) -> Result<(), String> {
         effects.pin_quick(self.settings.preferences.quick_pinned)?;
-        effects.enable_ball(self.settings.preferences.ball_enabled)?;
+        effects.enable_ball(self.ball_enabled())?;
         // 恢复冲突只改变展示错误，不能终止唯一 Runtime 或改写用户配置。
         self.settings.shortcut_error = self.replace_shortcut(effects, self.settings.preferences.shortcut.clone()).err();
         Ok(())
@@ -217,8 +220,15 @@ pub fn publish_settings<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<
     Ok(())
 }
 
-pub fn show<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str) -> Result<(), String> {
+pub fn show<R: tauri::Runtime>(app: &tauri::AppHandle<R>, target: ChatWindow) -> Result<(), String> {
+    let (label, other_label) = match target {
+        ChatWindow::Workbench => ("main", "quick"),
+        ChatWindow::Quick => ("quick", "main"),
+    };
     let window = app.get_webview_window(label).ok_or("product_window_missing")?;
+    let other = app.get_webview_window(other_label).ok_or("product_window_missing")?;
+    // 显式切换与失焦策略独立。只隐藏旧窗口，保留其 WebView、会话和草稿。
+    other.hide().map_err(|_| "hide_failed")?;
     window.unminimize().map_err(|_| "unminimize_failed")?;
     fit_visible_area(&window)?;
     window.show().map_err(|_| "show_failed")?;
@@ -227,7 +237,7 @@ pub fn show<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str) -> Result
 
 pub fn open_settings<R: tauri::Runtime>(app: &tauri::AppHandle<R>, section: SettingsSection, from_quick: bool) -> Result<(), String> {
     app.state::<std::sync::Mutex<Windows>>().lock().map_err(|_| "window_state_unavailable")?.navigate_settings(section, from_quick);
-    show(app, "main")?;
+    show(app, ChatWindow::Workbench)?;
     // 业务 section 只由 main 领取；事件仅唤醒，晚注册 listener 不丢导航。
     app.emit_to(EventTarget::webview_window("main"), "settings-navigation", ()).map_err(|_| "window_event_failed".into())
 }
@@ -236,7 +246,7 @@ pub fn toggle_quick<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), 
     let window = app.get_webview_window("quick").ok_or("quick_window_missing")?;
     if window.is_visible().map_err(|_| "window_visibility_failed")? {
         window.hide().map_err(|_| "hide_failed".into())
-    } else { show(app, "quick") }
+    } else { show(app, ChatWindow::Quick) }
 }
 
 // monitor.work_area 与窗口尺寸均为物理像素，不混用逻辑 DPI；包含负坐标副屏和任务栏。
@@ -275,7 +285,8 @@ mod tests {
         let labels: HashSet<&str> = context.config().app.windows.iter().map(|config| config.label.as_str()).collect();
         assert_eq!(labels, HashSet::from(["main", "quick", "ball"]));
         assert_eq!(LABELS.into_iter().collect::<HashSet<_>>(), labels);
-        assert!(context.config().app.windows.iter().all(|config| !config.create));
+        assert!(context.config().app.windows.iter().all(|config| !config.create && !config.visible),
+            "宿主先创建隐藏窗口，读取偏好后才显示启动入口");
     }
 
     #[test]

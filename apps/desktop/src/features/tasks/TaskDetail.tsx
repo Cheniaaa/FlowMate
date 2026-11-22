@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { Button } from '../../components/ui/button';
 import { commandMeta, type RuntimeClient } from '../../api/client';
 import { windowError } from '../../api/windows';
 import type { ArtifactRef, MemberLaneList, RunDetail } from '../../generated/contracts';
@@ -15,12 +16,19 @@ import ResultInbox from '../notifications/ResultInbox';
 import MemberLanes from './MemberLanes';
 import MemberResult from './MemberResult';
 import ScriptActivity from './ScriptActivity';
+import RunFeedbackNotice from './RunFeedbackNotice';
+import SelectedStep from './SelectedStep';
+import { describeArtifacts } from '../artifacts/artifact-presentation';
+import { runKinds } from './TaskCenter';
+import './task-presentation.css';
 
 interface TaskDetailProps {
   client: RuntimeClient; store: RuntimeStore; runId: string;
-  onCommand: (command: UiCommand, key: DraftKey) => Promise<CommandOutcome>; onQuestion: (runId: string) => void;
+  onCommand: (command: UiCommand, key: DraftKey) => Promise<CommandOutcome>;
+  onQuestion: (runId: string, itemId: string, trigger: HTMLButtonElement) => void;
   onOpen: (runId: string) => void;
   onExport?: (artifact: ArtifactRef) => Promise<void>; exportBlocked?: boolean;
+  onOpenConnection?: (id: string) => void;
 }
 
 export default function TaskDetail(props: TaskDetailProps) {
@@ -32,7 +40,7 @@ export default function TaskDetail(props: TaskDetailProps) {
   return <TaskDetailView key={identity.key} {...props} />;
 }
 
-function TaskDetailView({ client, store, runId, onCommand, onQuestion, onOpen, onExport, exportBlocked }: TaskDetailProps) {
+function TaskDetailView({ client, store, runId, onCommand, onQuestion, onOpen, onExport, exportBlocked, onOpenConnection }: TaskDetailProps) {
   const [detail, setDetail] = useState<RunDetail>();
   const [sourceWatermark, setSourceWatermark] = useState('0');
   const [error, setError] = useState('');
@@ -43,6 +51,7 @@ function TaskDetailView({ client, store, runId, onCommand, onQuestion, onOpen, o
   const [trace, setTrace] = useState<Awaited<ReturnType<RuntimeClient['trace']>>>();
   const [selected, setSelected] = useState<string>();
   const [artifactId, setArtifactId] = useState<string>();
+  const [resultArtifact, setResultArtifact] = useState<{ artifact: ArtifactRef; sourceWatermark: string }>();
   const [busy, setBusy] = useState(false);
   const commands = useSyncExternalStore(store.subscribe, store.getCommandsSnapshot);
   type PageKind = 'tasks' | 'activities' | 'artifacts' | 'waits' | 'consumptions' | 'joins';
@@ -185,45 +194,70 @@ function TaskDetailView({ client, store, runId, onCommand, onQuestion, onOpen, o
     catch (error) { if (detailActive.current) setError(windowError(error)); }
     finally { detailMorePending.current = false; if (detailActive.current) setBusy(false); }
   }
-  if (!detail) return <section aria-label="任务详情">{error ? <p role="alert">{error}</p> : <p>正在读取任务详情…</p>}<button onClick={() => setRevision(value => value + 1)}>重新读取详情</button></section>;
+  if (!detail) return <section aria-label="任务详情">{error ? <p role="alert">{error}</p> : <p>正在读取任务详情…</p>}<Button type="button" onClick={() => setRevision(value => value + 1)}>重新读取详情</Button></section>;
   const run = detail.run;
-  const sourcesCurrent = BigInt(detail.watermark) >= BigInt(sourceWatermark);
-  const scriptArtifacts = [...detail.activities.items, ...(trace && BigInt(trace.watermark) >= BigInt(sourceWatermark)
-    ? trace.items.flatMap(item => item.activities) : [])]
+  const sourcesCurrent = detail.source_valid !== false && BigInt(detail.watermark) >= BigInt(sourceWatermark);
+  const fixedActivities = sourcesCurrent ? [...detail.activities.items, ...(trace && BigInt(trace.watermark) >= BigInt(sourceWatermark)
+    ? trace.items.flatMap(item => item.activities) : [])] : [];
+  const scriptArtifacts = fixedActivities
     .flatMap(activity => activity.script_execution?.outputs.map(entry => entry.artifact) ?? []);
+  const artifactOptions = sourcesCurrent ? describeArtifacts(detail.artifacts.items, fixedActivities) : [];
+  const selectedArtifact = artifactOptions.find(({ artifact }) => artifact.id === artifactId)
+    ?? describeArtifacts(scriptArtifacts, fixedActivities).find(({ artifact }) => artifact.id === artifactId)
+    ?? (sourcesCurrent && resultArtifact && resultArtifact.artifact.id === artifactId && resultArtifact.sourceWatermark === sourceWatermark
+      ? describeArtifacts([resultArtifact.artifact], fixedActivities)[0] : undefined);
+  const goal = detail.task_goal ?? detail.tasks.items.find(task => task.id === run.root_task_id)?.binding.agent_work?.goal;
+  const pendingQuestion = detail.questions.items.find(question => question.status === 'pending');
+  const pendingApproval = detail.approvals.items.find(approval => approval.status === 'pending');
   return <section className="task-detail" aria-label="任务详情">
-    <header><h2>任务详情</h2><Status state={run.state} /><button onClick={() => setRevision(value => value + 1)}>刷新详情</button></header>
+    <header><h2>任务详情</h2><Status state={run.state} /><Button type="button" onClick={() => setRevision(value => value + 1)}>刷新详情</Button></header>
     {error && <p role="alert">{error}</p>}
-    <p>{run.output?.summary ?? (run.kind === 'maintenance' ? '记忆整理；独立维护运行，不占用实时对话。' : run.kind === 'managed' ? '独立后台；停止本次对话不会停止它。' : '会话运行')}</p>
-    <details><summary>运行诊断</summary><code>{run.id}</code>{run.reason && <p>{run.reason}</p>}</details>
-    {!terminal(run.state) && <button disabled={busy || commands.some(command => command.status === 'unconfirmed' && command.targetId === runId)}
-      onClick={() => { setBusy(true); onCommand({ type: 'cancel', args: [run.id, commandMeta(run.version)] }, { workspaceId: run.workspace_id, sessionId: run.interaction_session_id ?? '' }).then(() => setRevision(value => value + 1)).catch(error => setError(windowError(error))).finally(() => setBusy(false)); }}>{run.kind === 'maintenance' ? '停止记忆整理' : run.kind === 'managed' ? '停止该后台' : '停止本次对话'}</button>}
-    {detail.questions.items.some(question => question.status === 'pending') && <button onClick={() => onQuestion(runId)}>回答任务问题并返回草稿</button>}
-    {detail.approvals.items.some(approval => approval.status === 'pending') && <button onClick={() => onQuestion(runId)}>处理任务审批并返回草稿</button>}
-    <details><summary>范围与固定配置</summary><p>模型：{run.config.model_profile.model_id}</p><p>本链后台授权：{run.allow_managed ? '已允许' : '未允许'}</p><pre>{JSON.stringify(run.sources, null, 2)}</pre></details>
+    <RunFeedbackNotice run={run} feedback={store.getSnapshot().runFeedback[run.id]} onOpenConnection={onOpenConnection} />
+    <div className="task-step-heading"><h3>{(sourcesCurrent && (detail.task_title || goal || run.output?.summary)) || runKinds[run.kind]}</h3></div>
+    {sourcesCurrent && detail.task_title && goal && detail.task_title !== goal && <details>
+      <summary>完整任务目标</summary><p className="whitespace-pre-wrap">{goal}</p>
+    </details>}
+    <p className="muted">负责人 {run.config.agent_profile.display_name}</p>
+    {!terminal(run.state) && <Button type="button" disabled={busy || commands.some(command => command.status === 'unconfirmed' && command.targetId === runId)}
+      onClick={() => { setBusy(true); onCommand({ type: 'cancel', args: [run.id, commandMeta(run.version)] }, { workspaceId: run.workspace_id, sessionId: run.interaction_session_id ?? '' }).then(() => setRevision(value => value + 1)).catch(error => setError(windowError(error))).finally(() => setBusy(false)); }}>{run.kind === 'maintenance' ? '停止记忆整理' : run.kind === 'managed' ? '停止该后台' : '停止本次对话'}</Button>}
+    {pendingQuestion && <Button type="button" onClick={event => onQuestion(runId, pendingQuestion.id, event.currentTarget)}>回答任务问题并返回草稿</Button>}
+    {pendingApproval && <Button type="button" onClick={event => onQuestion(runId, pendingApproval.id, event.currentTarget)}>处理任务审批并返回草稿</Button>}
+    <details><summary>范围与固定配置</summary><p>模型：{run.config.model_profile.model_id}</p><p>后台执行：{run.allow_managed ? '已允许' : '未允许'}</p>
+      <p>已选资料 {run.sources.resource_ids.length} 项 · Skill {Object.keys(run.sources.skill_versions).length} 项</p></details>
     <section aria-label="运行预算"><h3>预算与费用</h3><RunCostSummary summary={detail.cost_summary} disclosureName={`task-${runId}`} /><p>步骤 {detail.budget.steps} / {detail.budget.limits.max_steps} · 请求 {detail.budget.model_requests} / {detail.budget.limits.max_model_requests}</p>
-      <details><summary>预算详情</summary><p className="muted">共享预算组 <code>{run.budget_group_id}</code>；此处仅展示本 Run 消费，不与组总额重复相加。</p></details></section>
-    <div className="button-row"><button aria-pressed={tab === 'graph'} onClick={() => setTab('graph')}>任务图</button><button aria-pressed={tab === 'list'} onClick={() => setTab('list')}>任务列表</button><button aria-pressed={tab === 'members'} onClick={() => setTab('members')}>成员泳道</button><button aria-pressed={tab === 'trace'} onClick={() => setTab('trace')}>原始 Trace</button></div>
+      <details><summary>预算详情</summary><p>累计 Token {detail.budget.total_tokens} / {detail.budget.limits.max_total_tokens ?? '未设上限'}</p>
+        <p>已用预算单位 {detail.budget.spent_units} / {detail.budget.limits.max_cost_units ?? '未设上限'}</p></details></section>
+    <div className="button-row">
+      <Button type="button" size="sm" variant={tab === 'graph' ? 'secondary' : 'ghost'} aria-pressed={tab === 'graph'} onClick={() => setTab('graph')}>任务图</Button>
+      <Button type="button" size="sm" variant={tab === 'list' ? 'secondary' : 'ghost'} aria-pressed={tab === 'list'} onClick={() => setTab('list')}>任务列表</Button>
+      <Button type="button" size="sm" variant={tab === 'members' ? 'secondary' : 'ghost'} aria-pressed={tab === 'members'} onClick={() => setTab('members')}>成员泳道</Button>
+      <Button type="button" size="sm" variant={tab === 'trace' ? 'secondary' : 'ghost'} aria-pressed={tab === 'trace'} onClick={() => setTab('trace')}>原始 Trace</Button>
+    </div>
     {tab === 'members' && (lanes?.sourceWatermark === sourceWatermark ? <MemberLanes lanes={lanes.items} onSelect={setSelected} onOpen={onOpen} /> : <p>正在读取真实成员…</p>)}
     {tab === 'members' && sourcesCurrent && lanes?.sourceWatermark === sourceWatermark && lanes.items.filter(lane => lane.task.id === selected && lane.task.binding.agent_work && lane.task.result_version !== null).map(lane =>
       <MemberResult key={`${lane.task.id}:${lane.task.result_version}:${sourceWatermark}`} client={client} lane={lane} onExport={onExport} exportBlocked={exportBlocked} />)}
     {tab === 'graph' && <TaskGraph tasks={detail.tasks.items} activities={detail.activities.items} waits={detail.waits.items} consumptions={detail.consumptions.items} joins={detail.joins.items} collapsedIds={collapsed} selectedId={selected} onSelect={setSelected} onToggle={id => setCollapsed(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next; })} />}
     {tab === 'list' && <TaskList tasks={detail.tasks.items} activities={detail.activities.items} selectedId={selected} onSelect={setSelected} />}
     {sourcesCurrent && tab !== 'trace' && detail.activities.items.filter(activity => activity.operation === 'skills.run_script'
-      && (!selected || activity.id === selected || activity.task_id === selected)).map(activity =>
+      && (!selected || activity.task_id === selected)).map(activity =>
       <ScriptActivity key={activity.id} activity={activity} onArtifact={setArtifactId} />)}
-    {tab === 'trace' && <TracePanel client={client} events={trace && BigInt(trace.watermark) >= BigInt(sourceWatermark) ? trace.items : []} selectedId={selected} onSelect={setSelected} onArtifact={sourcesCurrent ? setArtifactId : undefined} nextCursor={trace?.next_cursor} loading={busy} onLoadMore={() => {
+    {tab === 'trace' && <TracePanel client={client} events={trace && sourcesCurrent && BigInt(trace.watermark) >= BigInt(sourceWatermark) ? trace.items : []}
+      taskSnapshots={sourcesCurrent ? detail.tasks.items : []} selectedId={selected} onSelect={setSelected} onArtifact={sourcesCurrent ? setArtifactId : undefined} nextCursor={trace?.next_cursor} loading={busy} onLoadMore={() => {
       setBusy(true);
       readTrace(true).catch(error => { if (traceActive.current) setError(windowError(error)); })
         .finally(() => { if (traceActive.current) setBusy(false); });
     }} />}
-    {selected && <details><summary>所选步骤诊断</summary><pre>{JSON.stringify([...detail.tasks.items, ...detail.activities.items].find(item => item.id === selected), null, 2)}</pre></details>}
-    {(['tasks', 'activities', 'artifacts', 'waits', 'consumptions', 'joins'] as const).filter(kind => detail[kind].next_cursor).map(kind => <button key={kind} disabled={busy} onClick={() => void more(kind)}>更多 {kind}</button>)}
-    <section><h3>产物</h3>{detail.artifacts.items.map((artifact, index) => <button key={artifact.id} disabled={!sourcesCurrent} onClick={() => setArtifactId(artifact.id)}>查看产物 {index + 1}</button>)}
-      <ArtifactPanel key={sourceWatermark} artifact={sourcesCurrent
-        ? detail.artifacts.items.find(item => item.id === artifactId) ?? scriptArtifacts.find(item => item.id === artifactId) ?? null
-        : null} client={client} onExport={onExport} exportBlocked={exportBlocked} /></section>
+    {sourcesCurrent && selected && tab !== 'trace' && <SelectedStep id={selected} tasks={detail.tasks.items} activities={detail.activities.items}
+      fileNames={detail.file_names} taskTitles={detail.task_titles} onArtifact={setArtifactId} />}
+    {(['tasks', 'activities', 'artifacts', 'waits', 'consumptions', 'joins'] as const).filter(kind => detail[kind].next_cursor).map(kind => <Button type="button" key={kind} disabled={busy} onClick={() => void more(kind)}>更多 {kind}</Button>)}
+    <section aria-label="任务产物"><h3>任务产物</h3>
+      {sourcesCurrent && artifactOptions.length === 0 && <p className="muted">暂无产物</p>}
+      {artifactOptions.map(({ artifact, label }) => <Button type="button" key={artifact.id} aria-pressed={artifact.id === artifactId}
+        onClick={() => setArtifactId(artifact.id)}>查看{label}</Button>)}
+      <ArtifactPanel key={sourceWatermark} artifact={selectedArtifact?.artifact ?? null} label={selectedArtifact?.label}
+        client={client} onExport={onExport} exportBlocked={exportBlocked} /></section>
     {run.interaction_session_id && <ResultInbox client={client} store={store} sessionId={run.interaction_session_id} runId={run.id} sourceWatermark={sourceWatermark}
-      onCommand={command => onCommand(command, { workspaceId: run.workspace_id, sessionId: run.interaction_session_id! })} onOpen={onOpen} />}
+      onCommand={command => onCommand(command, { workspaceId: run.workspace_id, sessionId: run.interaction_session_id! })} onOpen={onOpen}
+      onArtifact={artifact => { setResultArtifact({ artifact, sourceWatermark }); setArtifactId(artifact.id); }} activities={fixedActivities} />}
   </section>;
 }

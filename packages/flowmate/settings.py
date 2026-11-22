@@ -3,19 +3,21 @@
 import hashlib
 import json
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from typing import TypeVar
 
 from pydantic import TypeAdapter
 
 from flowmate.contracts.base import CommandMeta, Contract, DomainError, Id, Name
 from flowmate.contracts.events import AgentSaved, NewEvent
-from flowmate.contracts.execution import ResolvedMember, ScopeDependency
+from flowmate.contracts.execution import ModelSelection, ResolvedMember, ScopeDependency
 from flowmate.contracts.settings import (
     AgentProfile,
     ModelConnection,
     ModelProfile,
     ResolvedModelProfile,
     Session,
+    TitlePolicy,
     Workspace,
 )
 from flowmate.contracts.workspaces import WorkspaceDirectoryResult
@@ -31,12 +33,34 @@ IDENTIFIER = TypeAdapter(Id)
 class SettingsService:
     def __init__(self, store: Store):
         self.store = store
+        self.model_discovery = None
+
+    @asynccontextmanager
+    async def model_resolution_scope(self, model_id: str, *, include_members: bool = False,
+                                     command_id: str | None = None):
+        """宿主装配的发现服务负责凭据核验；纯离线 Settings 没有本站声明。"""
+        if self.model_discovery is None:
+            yield
+            return
+        if command_id is not None:
+            with self.store.transaction(write=False) as tx:
+                received = tx.previous_command(command_id) is not None
+            if received:
+                yield
+                return
+        async with self.model_discovery.resolution_scope(model_id, include_members=include_members):
+            yield
 
     @staticmethod
-    def _default_agent(tx: UnitOfWork) -> AgentProfile:
+    def _registered_default_agent(tx: UnitOfWork) -> AgentProfile | None:
         row = tx.execute("SELECT profile_id FROM assistant_identity WHERE singleton = 1").fetchone()
-        if row is not None:
-            return tx.get_profile("agent", row[0])
+        return tx.get_profile("agent", row[0]) if row is not None else None
+
+    @classmethod
+    def _default_agent(cls, tx: UnitOfWork) -> AgentProfile:
+        registered = cls._registered_default_agent(tx)
+        if registered is not None:
+            return registered
         profile = AgentProfile()
         tx.append_event(NewEvent(kind="agent.saved", payload=AgentSaved(
             profile=profile, set_default=True,
@@ -46,6 +70,13 @@ class SettingsService:
     def default_agent(self) -> AgentProfile:
         with self.store.transaction() as tx:
             return self._default_agent(tx)
+
+    def get_default_agent(self) -> AgentProfile:
+        with self.store.transaction(write=False) as tx:
+            profile = self._registered_default_agent(tx)
+            if profile is None:
+                raise DomainError("not_found", "默认助理尚未登记")
+            return profile
 
     @staticmethod
     def _workspace(tx: UnitOfWork, workspace_id: str) -> Workspace:
@@ -87,7 +118,7 @@ class SettingsService:
                     raise DomainError("command_conflict", "同一命令不能更改参数")
                 return result_type.model_validate_json(previous["response"])
             result = apply(tx)
-            workspace_id = result.id if isinstance(result, Workspace) else (
+            workspace_id = result.workspace_id if isinstance(result, TitlePolicy) else result.id if isinstance(result, Workspace) else (
                 result.workspace_id if isinstance(result, Session) else
                 result.workspace.id if isinstance(result, WorkspaceDirectoryResult) else None
             )
@@ -104,6 +135,41 @@ class SettingsService:
             return self._create_workspace(tx, name, meta)
 
         return self._command("workspace.create", {"name": name}, meta, Workspace, apply)
+
+    def rename_workspace(self, workspace_id: str, name: str, meta: CommandMeta) -> Workspace:
+        name = NAME.validate_python(name, strict=True)
+
+        def apply(tx):
+            workspace = self._workspace(tx, workspace_id)
+            if workspace.version != meta.expected_version:
+                raise DomainError("version_conflict", "项目已改变，请读取当前版本")
+            changed = workspace.model_copy(update={"name": name, "version": workspace.version + 1})
+            tx.append_event(NewEvent(kind="workspace.renamed", workspace_id=workspace_id,
+                                     payload=changed, causation_id=meta.command_id))
+            return changed
+
+        return self._command("workspace.rename", {"workspace_id": workspace_id, "name": name},
+                             meta, Workspace, apply)
+
+    def save_title_policy(self, workspace_id, binding, meta):
+        from flowmate.runtime.naming import read_policy, resolve_binding
+
+        def apply(tx):
+            self._workspace(tx, workspace_id)
+            current = read_policy(tx, workspace_id)
+            if current.version != meta.expected_version:
+                raise DomainError("version_conflict", "标题设置已改变，请读取当前版本")
+            if binding is not None and resolve_binding(tx, binding) is None:
+                raise DomainError("title_destination_changed", "所选模型或连接已改变，请重新确认目的地")
+            if binding == current.binding:
+                return current
+            changed = TitlePolicy(workspace_id=workspace_id, version=(current.version or 0) + 1, binding=binding)
+            tx.append_event(NewEvent(kind="naming.policy_saved", workspace_id=workspace_id, payload=changed,
+                                     causation_id=meta.command_id))
+            return changed
+
+        return self._command("naming.policy.save", {"workspace_id": workspace_id,
+            "binding": binding.model_dump(mode="json") if binding is not None else None}, meta, TitlePolicy, apply)
 
     def _set_workspace_directory(self, tx, workspace_id, resource_id, meta):
         workspace = self._workspace(tx, workspace_id)
@@ -125,23 +191,68 @@ class SettingsService:
         return self._command("workspace.directory", {"workspace_id": workspace_id, "resource_id": resource_id},
                              meta, Workspace, lambda tx: self._set_workspace_directory(tx, workspace_id, resource_id, meta))
 
-    def create_session(self, workspace_id: str, title: str, meta: CommandMeta) -> Session:
+    def create_session(self, workspace_id: str, title: str | None, meta: CommandMeta) -> Session:
         workspace_id = IDENTIFIER.validate_python(workspace_id, strict=True)
-        title = NAME.validate_python(title, strict=True)
+        if title is not None:
+            title = NAME.validate_python(title, strict=True)
 
         def apply(tx: UnitOfWork) -> Session:
             if meta.expected_version is not None:
                 raise DomainError("version_conflict", "创建会话不接受已有版本")
             if not tx.execute("SELECT 1 FROM workspaces WHERE id = ?", (workspace_id,)).fetchone():
                 raise DomainError("not_found", "工作区不存在", related_ids=(workspace_id,))
-            session = Session(workspace_id=workspace_id, title=title,
-                              agent_profile_id=self._default_agent(tx).id)
+            session = Session(workspace_id=workspace_id, title=title if title is not None else "新会话",
+                              agent_profile_id=self._default_agent(tx).id,
+                              automatic_title="pending" if title is None else None)
             tx.append_event(NewEvent(kind="session.created", payload=session,
                                      workspace_id=workspace_id, session_id=session.id,
                                      causation_id=meta.command_id))
             return session
 
         return self._command("session.create", {"workspace_id": workspace_id, "title": title},
+                             meta, Session, apply)
+
+    @staticmethod
+    def derive_session_title(tx: UnitOfWork, session_id: str, text: str, command_id: str) -> Session | None:
+        from flowmate.runtime.naming import goal_title
+
+        row = tx.execute("SELECT document FROM sessions WHERE id=? AND kind='interaction'",
+                         (session_id,)).fetchone()
+        session = Session.model_validate_json(row[0])
+        if session.automatic_title != "pending" or session.archived:
+            return
+        title = goal_title(text)
+        if title:
+            version = session.version + 1
+            named = session.model_copy(update={"title": title, "automatic_title": version, "version": version})
+            tx.append_event(NewEvent(kind="session.updated", workspace_id=session.workspace_id,
+                                     session_id=session.id, payload=named, causation_id=command_id))
+            return named
+        return None
+
+    def rename_session(self, session_id: str, name: str, meta: CommandMeta) -> Session:
+        name = NAME.validate_python(name, strict=True)
+
+        def apply(tx):
+            row = tx.execute("SELECT document FROM sessions WHERE id=? AND kind='interaction'",
+                             (session_id,)).fetchone()
+            if row is None:
+                raise DomainError("not_found", "交互会话不存在")
+            session = Session.model_validate_json(row[0])
+            # 允许覆盖刚生成的标题。任何其他版本变更仍要求用户确认当前状态。
+            automatic = session.automatic_title
+            superseding_automatic = (isinstance(automatic, int) and
+                session.version in {automatic, automatic + 1} and
+                meta.expected_version in range(automatic - 1, session.version))
+            if session.version != meta.expected_version and not superseding_automatic:
+                raise DomainError("version_conflict", "会话版本已变化，请刷新")
+            changed = session.model_copy(update={
+                "title": name, "automatic_title": None, "version": session.version + 1})
+            tx.append_event(NewEvent(kind="session.updated", workspace_id=session.workspace_id,
+                                     session_id=session.id, payload=changed, causation_id=meta.command_id))
+            return changed
+
+        return self._command("session.rename", {"session_id": session_id, "name": name},
                              meta, Session, apply)
 
     def archive_session(self,session_id,archived,meta):
@@ -152,7 +263,8 @@ class SettingsService:
             session=Session.model_validate_json(row[0])
             if session.version != meta.expected_version:
                 raise DomainError("version_conflict","会话版本已变化，请刷新")
-            changed=session.model_copy(update={"version":session.version+1,"archived":archived})
+            changed=session.model_copy(update={"version":session.version+1,"archived":archived,
+                "automatic_title": session.automatic_title if session.automatic_title == "pending" else None})
             tx.append_event(NewEvent(kind="session.updated",workspace_id=session.workspace_id,
                 session_id=session.id,payload=changed,causation_id=meta.command_id))
             if archived:
@@ -210,9 +322,11 @@ class SettingsService:
             return tx.get_profile("model", id, version)
 
     def save_connection(self, profile: ModelConnection, meta: CommandMeta) -> ModelConnection:
+        from flowmate.models.endpoints import resolve_model_endpoint
         from flowmate.models.metadata import official_provider_id
 
         profile = ModelConnection.model_validate(profile.model_dump())
+        profile = profile.model_copy(update={"protocol": resolve_model_endpoint(profile.protocol, profile.endpoint).protocol})
         profile = profile.model_copy(update={"provider_preset_id": official_provider_id(profile)})
 
         def apply(tx):
@@ -236,12 +350,20 @@ class SettingsService:
             return tx.get_connection(id, version)
 
     @staticmethod
-    def resolve_model(tx: UnitOfWork, model_id: str) -> ResolvedModelProfile:
+    def resolve_model(tx: UnitOfWork, model_id: str, *,
+                      selection: ModelSelection | None = None) -> ResolvedModelProfile:
+        from flowmate.models.discovery import current_discovered_model
         from flowmate.models.metadata import ModelMetadataResolver
+        from flowmate.models.observations import ModelObservations
 
         model = tx.get_profile("model", model_id)
         connection = tx.get_connection(model.connection_id)
-        return ModelMetadataResolver().resolve(connection, model)
+        if selection is not None and (model.version, connection.id, connection.version) != (
+                selection.model_version, selection.connection_id, selection.connection_version):
+            raise DomainError("model_destination_changed", "所选模型或接收方已变化，请重新选择并确认")
+        return ModelMetadataResolver().resolve(connection, model,
+            discovered=current_discovered_model(connection, model.model_id),
+            observed=ModelObservations.read(tx, connection, model.model_id))
 
     @staticmethod
     def resolve_members(tx, catalog, skill_versions):

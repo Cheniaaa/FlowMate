@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { McpConfiguredServer, McpImportPreview } from '../../generated/contracts';
+import { Button } from '../../components/ui/button';
+import { FieldLabel } from '../../components/ui/field';
+import { Input } from '../../components/ui/input';
 import { saveMcpSecret } from './mcp-secrets';
 
 export default function McpCredentials({ config, onBusyChange }: {
@@ -42,17 +45,18 @@ export default function McpCredentials({ config, onBusyChange }: {
   }}>
     <h4>此修订的凭据</h4>
     {slots.map(slot => <div key={slot.slot}>
-      <label>{slot.env_name ? `环境变量 ${slot.env_name}` : 'API token'}
-        <input type="password" autoComplete="new-password" value={values[slot.slot] ?? ''} disabled={busy}
-          onChange={event => setValues(current => ({ ...current, [slot.slot]: event.target.value }))} /></label>
+      <FieldLabel>{slot.env_name ? `环境变量 ${slot.env_name}` : 'API token'}
+        <Input type="password" autoComplete="new-password" value={values[slot.slot] ?? ''} disabled={busy}
+          onChange={event => setValues(current => ({ ...current, [slot.slot]: event.target.value }))} />
+      </FieldLabel>
       <span>{configured[slot.slot] === undefined ? '读取状态中' : configured[slot.slot] ? '已配置' : '待填写'}</span>
-      <button type="button" disabled={busy || !configured[slot.slot]} onClick={() => void act(async () => {
+      <Button type="button" variant="outline" size="sm" disabled={busy || !configured[slot.slot]} onClick={() => void act(async () => {
         const result = await invoke<{ configured: boolean }>('clear_credential', { secret_ref: slot.slot });
         setConfigured(current => ({ ...current, [slot.slot]: result.configured }));
-      })}>清除 {slot.env_name ?? 'API token'}</button>
+      })}>清除 {slot.env_name ?? 'API token'}</Button>
     </div>)}
     <p>补存与清除只影响此服务器修订的凭据；下一次发送会重新核对。</p>
-    <button disabled={busy || !Object.values(values).some(Boolean)}>保存此修订的凭据</button>
+    <Button type="submit" variant="default" disabled={busy || !Object.values(values).some(Boolean)}>保存此修订的凭据</Button>
     {error && <p role="alert">{error}</p>}
   </form>;
 }

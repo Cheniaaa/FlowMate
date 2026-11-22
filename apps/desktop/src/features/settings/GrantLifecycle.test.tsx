@@ -162,7 +162,7 @@ it('保存中拒绝关闭、Escape及分类离开；确认后原生分类导航�
   view.rerender(<Settings client={client} section="models" onClose={close} />);
   expect(screen.getByRole('form', { name: '用途授权' })).toBeTruthy();
   await act(async () => finish());
-  await screen.findByRole('heading', { name: '连接设置' });
+  await screen.findByRole('heading', { name: '连接与模型' });
   expect(screen.queryByRole('region', { name: '未保存设置' })).toBeNull();
 });
 

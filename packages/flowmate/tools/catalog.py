@@ -67,6 +67,10 @@ class BoundTool:
     input_validator: Callable | None = None
     result_validator: Callable | None = None
     deferred_dispatch: bool = False
+    resolve_version: Callable | None = None
+    prepare_arguments: Callable | None = None
+    model_spec: Callable | None = None
+    call_permission: Callable | None = None
 
     def validate_input(self, value) -> dict[str, JsonValue]:
         try:
@@ -110,7 +114,8 @@ class ToolCatalog:
         self._tools = {}
         self._write_lock = Lock()
 
-    def register(self, spec, handler, *, input_model, result_model, resolve_dependencies=None):
+    def register(self, spec, handler, *, input_model, result_model, resolve_dependencies=None,
+            prepare_arguments=None, model_spec=None, call_permission=None):
         if (spec.input_schema != input_model.model_json_schema(mode="validation")
                 or spec.result_schema != result_model.model_json_schema(mode="serialization")):
             raise DomainError("tool_schema_mismatch", "工具Schema与实际校验器不一致")
@@ -120,7 +125,9 @@ class ToolCatalog:
             if spec.name in self._tools:
                 raise DomainError("tool_duplicate", "同名工具不能隐式替换")
             self._tools = {**self._tools, spec.name: BoundTool(spec.model_copy(deep=True), handler,
-                input_model, result_model, resolve_dependencies)}
+                input_model, result_model, resolve_dependencies,
+                prepare_arguments=prepare_arguments, model_spec=model_spec,
+                call_permission=call_permission)}
 
     def publish_namespace(self, namespace: str, tools: list[BoundTool]) -> None:
         replacements = {}
@@ -141,6 +148,8 @@ class ToolCatalog:
 
     def get(self, name, version):
         tool = self._tools.get(name)
+        if tool is not None and tool.spec.version != version and tool.resolve_version is not None:
+            return tool.resolve_version(version)
         if tool is None or tool.spec.version != version:
             if name.startswith("mcp."):
                 raise DomainError("blocked_incompatible", "任务固定的 MCP 工具版本已不可用")

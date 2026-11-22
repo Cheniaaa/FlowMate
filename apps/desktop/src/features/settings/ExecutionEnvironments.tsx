@@ -1,8 +1,14 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import { ApiError, commandMeta, type RuntimeClient } from '../../api/client';
 import type { ExecutionEnvironmentPage, ExecutionEnvironmentView, SaveExecutionEnvironmentCommand } from '../../generated/contracts';
 import type { createRuntimeStore } from '../../state/runtime-store';
 import type { EditorLifecycle } from './Settings';
+import IconButton from '../../components/IconButton';
+import { Button } from '../../components/ui/button';
+import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet } from '../../components/ui/field';
+import { Input } from '../../components/ui/input';
+import { NativeSelect, NativeSelectOption } from '../../components/ui/native-select';
+import { Textarea } from '../../components/ui/textarea';
 
 const kinds = { python: 'Python', node: 'Node.js', powershell: 'PowerShell', bash: 'Bash' };
 const states: Record<ExecutionEnvironmentView['status'], string> = {
@@ -22,6 +28,7 @@ type Mode = 'preserve' | 'replace' | 'clear';
 
 export default function ExecutionEnvironments({ client, store, onBusyChange, onSaved, onDiscard, onViewReady, guard = action => action() }:
   { client: RuntimeClient; store: ReturnType<typeof createRuntimeStore> } & EditorLifecycle) {
+  const fieldId = useId();
   const revision = useSyncExternalStore(store.subscribe, () => store.getSnapshot().environmentsRevision);
   const [page, setPage] = useState<ExecutionEnvironmentPage>();
   const [selected, setSelected] = useState<ExecutionEnvironmentView | null>(null);
@@ -161,39 +168,56 @@ export default function ExecutionEnvironments({ client, store, onBusyChange, onS
     {error && <p role="alert" className="status-message">{error}</p>}
     <p role="status" className="status-message">{status}</p>
     {!editing ? <>
-      <button disabled={busy} onClick={reload}>重新读取运行环境</button>
+      <Button className="self-start" disabled={busy} onClick={reload}>重新读取运行环境</Button>
       <div className="provider-grid">{page?.items.map(value => <article className="provider-card" key={value.id}>
         <strong>{kinds[value.kind]}</strong><code style={{ overflowWrap: 'anywhere' }}>{value.executable_path}</code>
-        {facts(value)}<button disabled={busy} onClick={() => choose(value)}>编辑 {kinds[value.kind]}</button>
-      </article>)}<button className="provider-card provider-card--add" disabled={busy || !page} onClick={() => choose(null)}>登记运行环境</button></div>
-      {page?.next_cursor && <button disabled={busy} onClick={more}>更多运行环境</button>}
+        {facts(value)}<Button disabled={busy} onClick={() => choose(value)}>编辑 {kinds[value.kind]}</Button>
+      </article>)}<Button className="min-h-24 border-dashed" disabled={busy || !page} onClick={() => choose(null)}>登记运行环境</Button></div>
+      {!page && !error && <p role="status">正在读取运行环境…</p>}
+      {page?.next_cursor && <Button className="self-start" disabled={busy} onClick={more}>更多运行环境</Button>}
     </> : <>
-      <button disabled={busy} onClick={() => guard(() => setEditing(false))}>返回运行环境列表</button>
+      <IconButton icon="back" label="返回运行环境列表" disabled={busy} onClick={() => guard(() => setEditing(false))} />
       {selected && <>{facts(selected)}<p>完整路径：<code style={{ overflowWrap: 'anywhere' }}>{selected.executable_path}</code></p>
         <p>已保存环境变量：{selected.env_keys.join('、') || '无'}（值不读取）</p></>}
       <form ref={form} className="settings-form" key={`${selected?.id ?? 'new'}:${generation}`} onSubmit={save}
         onChange={() => { setDirty(true); pending.current = undefined; setUnconfirmed(false); }}
         onReset={() => { setDirty(false); pending.current = undefined; setUnconfirmed(false); setManifestMode(selected ? 'preserve' : 'replace'); setEnvMode(selected ? 'preserve' : 'replace'); }}>
-        <fieldset className="settings-grid" disabled={busy}>
-          <legend>现有解释器与执行配置</legend>
-          <label>解释器类别 <select name="kind" defaultValue={selected?.kind ?? 'python'}>
-            {Object.entries(kinds).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select></label>
-          <label>解释器绝对路径 <input name="executable_path" required defaultValue={selected?.executable_path ?? ''} /></label>
-          <p className="muted">可填写现有 venv 的 Scripts\python.exe；始终按选定路径启动。</p>
-          <label>工作目录模式 <select name="cwd_mode" defaultValue={selected?.cwd_mode ?? 'attempt'}>
-            <option value="attempt">本次工作目录</option><option value="package_copy">本次包执行副本</option></select></label>
-          <label>依赖清单处理 <select value={manifestMode} onChange={event => setManifestMode(event.target.value as Mode)}>
-            {selected && <option value="preserve">保留已登记清单</option>}<option value="replace">重新指定清单</option><option value="clear">移除全部清单</option></select></label>
-          {manifestMode === 'replace' && <label>依赖清单绝对路径（每行一个） <textarea name="dependency_manifest_paths" /></label>}
-          <label>环境变量处理 <select value={envMode} onChange={event => setEnvMode(event.target.value as Mode)}>
-            {selected && <option value="preserve">保留已保存环境变量</option>}<option value="replace">重新指定非秘密变量</option><option value="clear">移除全部环境变量</option></select></label>
-          {envMode === 'replace' && <label>非秘密环境变量（每行 NAME=value） <textarea name="env" autoComplete="off" /></label>}
-          <button type="submit" disabled={busy}>保存运行环境</button>
-          {unconfirmed && <button type="button" disabled={busy} onClick={check}>核对保存结果</button>}
-          <button type="button" disabled={busy || !selected || dirty || unconfirmed} onClick={probe}>检测版本</button>
-          {dirty && <p>先保存更改后再检测。</p>}
-          <button type="button" disabled={busy} onClick={() => { onDiscard?.(form.current!); setEditing(false); setDirty(false); pending.current = undefined; }}>取消编辑</button>
-        </fieldset>
+        <FieldSet disabled={busy}>
+          <FieldLegend>现有解释器与执行配置</FieldLegend>
+          <FieldGroup className="grid gap-3 rounded-md border border-border p-3 md:grid-cols-2">
+          <Field><FieldLabel htmlFor={`${fieldId}-kind`}>解释器类别</FieldLabel>
+            <NativeSelect id={`${fieldId}-kind`} name="kind" defaultValue={selected?.kind ?? 'python'}>
+              {Object.entries(kinds).map(([kind, label]) => <NativeSelectOption key={kind} value={kind}>{label}</NativeSelectOption>)}
+            </NativeSelect></Field>
+          <Field><FieldLabel htmlFor={`${fieldId}-path`}>解释器绝对路径</FieldLabel>
+            <Input id={`${fieldId}-path`} aria-describedby={`${fieldId}-path-help`} name="executable_path" required defaultValue={selected?.executable_path ?? ''} />
+            <FieldDescription id={`${fieldId}-path-help`}>可填写现有 venv 的 Scripts\python.exe；始终按选定路径启动。</FieldDescription>
+          </Field>
+          <Field><FieldLabel htmlFor={`${fieldId}-cwd`}>工作目录模式</FieldLabel>
+            <NativeSelect id={`${fieldId}-cwd`} name="cwd_mode" defaultValue={selected?.cwd_mode ?? 'attempt'}>
+              <NativeSelectOption value="attempt">本次工作目录</NativeSelectOption><NativeSelectOption value="package_copy">本次包执行副本</NativeSelectOption>
+            </NativeSelect></Field>
+          <Field><FieldLabel htmlFor={`${fieldId}-manifest`}>依赖清单处理</FieldLabel>
+            <NativeSelect id={`${fieldId}-manifest`} value={manifestMode} onChange={event => setManifestMode(event.target.value as Mode)}>
+              {selected && <NativeSelectOption value="preserve">保留已登记清单</NativeSelectOption>}<NativeSelectOption value="replace">重新指定清单</NativeSelectOption><NativeSelectOption value="clear">移除全部清单</NativeSelectOption>
+            </NativeSelect></Field>
+          {manifestMode === 'replace' && <Field className="col-span-full"><FieldLabel htmlFor={`${fieldId}-manifest-paths`}>依赖清单绝对路径（每行一个）</FieldLabel>
+            <Textarea id={`${fieldId}-manifest-paths`} name="dependency_manifest_paths" /></Field>}
+          <Field className="col-span-full"><FieldLabel htmlFor={`${fieldId}-env`}>环境变量处理</FieldLabel>
+            <NativeSelect id={`${fieldId}-env`} value={envMode} onChange={event => setEnvMode(event.target.value as Mode)}>
+              {selected && <NativeSelectOption value="preserve">保留已保存环境变量</NativeSelectOption>}<NativeSelectOption value="replace">重新指定非秘密变量</NativeSelectOption><NativeSelectOption value="clear">移除全部环境变量</NativeSelectOption>
+            </NativeSelect></Field>
+          {envMode === 'replace' && <Field className="col-span-full"><FieldLabel htmlFor={`${fieldId}-env-values`}>非秘密环境变量（每行 NAME=value）</FieldLabel>
+            <Textarea id={`${fieldId}-env-values`} name="env" autoComplete="off" /></Field>}
+          <div role="group" aria-label="运行环境操作" className="col-span-full flex flex-wrap items-center gap-2">
+            <Button type="submit" variant="default" disabled={busy}>保存运行环境</Button>
+            {unconfirmed && <Button type="button" disabled={busy} onClick={check}>核对保存结果</Button>}
+            <Button type="button" disabled={busy || !selected || dirty || unconfirmed} onClick={probe}>检测版本</Button>
+            <Button type="button" disabled={busy} onClick={() => { onDiscard?.(form.current!); setEditing(false); setDirty(false); pending.current = undefined; }}>取消编辑</Button>
+          </div>
+          {dirty && <FieldDescription className="col-span-full">先保存更改后再检测。</FieldDescription>}
+          </FieldGroup>
+        </FieldSet>
       </form>
     </>}
   </section>;

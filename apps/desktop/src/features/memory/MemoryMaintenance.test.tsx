@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { RuntimeClient } from '../../api/client';
 import { reduceStream } from '../../api/events';
 import { createRuntimeStore } from '../../state/runtime-store';
-import { event, page, secondId } from '../../test/fixtures';
+import { event, modelResolution, page, secondId } from '../../test/fixtures';
 import { maintenanceDetail, maintenanceNotice, maintenancePolicy, maintenanceRun, maintenanceTask, sourceBoundary, sourceItem } from '../../test/maintenance-fixtures';
 import MemoryMaintenance from './MemoryMaintenance';
 import MemoryPage from './MemoryPage';
@@ -22,8 +22,8 @@ function server(conflict = false, modelBlocked = false) {
     }
     if (path.endsWith('/settings/memory')) return Response.json({ ...maintenancePolicy, scope: parsed.searchParams.get('scope_kind') === 'workspace'
       ? { kind: 'workspace', workspace_id: parsed.searchParams.get('workspace_id'), session_id: null } : maintenancePolicy.scope });
-    if (path.endsWith('/resolved')) return Response.json({ ...sourceItem.run.config.model_profile,
-      model_pricing: null, pricing_unknown_reason: '合成测试价格未知', blockers: modelBlocked ? ['model_unavailable'] : [] });
+    if (path.endsWith('/resolved')) return Response.json({ ...modelResolution,
+      blockers: modelBlocked ? ['model_unavailable'] : [] });
     if (path.includes('/source-boundaries/')) return Response.json(sourceBoundary);
     if (path.endsWith('/tasks')) return Response.json(page(parsed.searchParams.has('workspace_id') && parsed.searchParams.get('workspace_id') !== sourceItem.run.workspace_id ? [] : [sourceItem]));
     if (path.endsWith(`/runs/${maintenanceRun.id}`)) return Response.json(maintenanceDetail);
@@ -40,8 +40,10 @@ it('从真实普通Run选择读取正式边界/策略，单次确认提交，不
   await user.selectOptions(await screen.findByLabelText('整理来源运行'), sourceItem.run.id);
   await user.click(screen.getByRole('button', { name: '整理记忆' }));
   const confirm = await screen.findByRole('region', { name: '确认整理记忆' });
-  expect(confirm.textContent).toContain(sourceBoundary.event_id);
-  expect(confirm.textContent).toContain('策略版本 5');
+  expect(confirm.textContent).not.toContain(sourceBoundary.event_id);
+  expect(confirm.textContent).not.toContain(sourceBoundary.run_id);
+  expect(confirm.textContent).not.toContain('策略版本');
+  expect(confirm.textContent).toContain('适用范围：个人');
   expect(confirm.textContent).toContain('独立维护预算');
   expect(confirm.textContent).toContain('900 秒');
   expect(confirm.textContent).toContain(sourceItem.run.config.model_profile.endpoint);
@@ -84,7 +86,8 @@ it('用户暂不确认预算时不提交，模型不可用时也不提供旧的�
   const blocked = server(false, true);
   render(<MemoryMaintenance client={runtime} store={store} scope={maintenancePolicy.scope} onOpenTask={vi.fn()} />);
   await user.selectOptions(await screen.findByLabelText('整理来源运行'), sourceItem.run.id);
-  await screen.findByText(/model_unavailable/);
+  await screen.findByText(/整理模型不可用/);
+  expect(screen.queryByText(/model_unavailable/)).toBeNull();
   expect((screen.getByRole('button', { name: '整理记忆' }) as HTMLButtonElement).disabled).toBe(true);
   expect(blocked.writes).toHaveLength(0);
 });
@@ -95,13 +98,14 @@ it('全局持久事件使当前维护历史重读，显示安全阻塞原因且�
   await user.selectOptions(await screen.findByLabelText('整理来源运行'), sourceItem.run.id);
   await user.click(screen.getByRole('button', { name: '整理记忆' }));
   await user.click(await screen.findByRole('button', { name: '确认提交整理任务' }));
-  await screen.findByText(/version_conflict/);
+  await screen.findByText('策略版本已改变');
   expect(api.writes).toHaveLength(1);
   api.blocked();
   await act(async () => { store.update(state => reduceStream(state, { kind: 'durable', event_id: event.event_id,
     event: { ...event, kind: 'memory.maintenance_changed', workspace_id: null, run_id: null, seq: null,
       payload: { ...maintenanceNotice, task: null, reason: 'allocation_exceeded' } } })); });
-  await screen.findByText(/allocation_exceeded/);
+  await screen.findByText(/原因果组没有剩余整理额度/);
+  expect(screen.queryByText(/allocation_exceeded/)).toBeNull();
   expect(screen.queryByRole('button', { name: '查看维护任务' })).toBeNull();
   expect(api.writes).toHaveLength(1);
 });
@@ -119,7 +123,11 @@ it('记忆页候选的维护关联沿真实记录ID读取，打开关联返回�
   });
   render(<MemoryPage client={runtime} store={store} onClose={() => {}} onSettings={() => {}} onOpenTask={open} />);
   await screen.findByText(memory.text);
+  await user.click(screen.getByRole('button', { name: '更多' }));
+  await user.click(await screen.findByRole('menuitem', { name: '查看关联整理任务' }));
   await user.click(await screen.findByRole('button', { name: '查看此候选的维护任务' }));
+  expect(screen.queryByText(maintenanceNotice.source_boundary.run_id)).toBeNull();
+  expect(screen.queryByText(maintenanceNotice.source_boundary.event_id, { exact: false })).toBeNull();
   expect(open).toHaveBeenCalledWith(maintenanceTask);
   expect(reads).toContain(`/v3/memory/records/${memory.id}/maintenance`);
   expect(maintenanceTask.task_id).not.toBe(sourceItem.root.id);

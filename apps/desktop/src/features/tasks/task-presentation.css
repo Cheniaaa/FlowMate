@@ -1,0 +1,67 @@
+.task-step-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.task-step-heading h3 {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-step-heading .status {
+  white-space: nowrap;
+}
+
+.task-management:has(> div:not([hidden]) > .task-center) {
+  padding-block: 12px;
+  scroll-padding-top: 50px;
+}
+
+.task-management:has(> div:not([hidden]) > .task-center) > .panel-header {
+  top: -12px;
+  padding-block: 4px;
+  margin-bottom: 6px;
+}
+
+.task-center > header {
+  margin-bottom: 8px;
+}
+
+.task-center > header h2 {
+  margin: 0;
+}
+
+.task-center .task-filters {
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.task-center .task-center-row {
+  gap: 6px 12px;
+  padding: 6px 12px;
+  margin-bottom: 5px;
+}
+
+.task-center-row .status {
+  font-size: var(--text-xs);
+}
+
+.task-center-row .button-row {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
+.task-center-row .task-center-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.task-center-meta:not(:empty) {
+  margin-top: 3px;
+}

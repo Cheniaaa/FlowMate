@@ -25,7 +25,8 @@ def settled_budget(budget, activity, receipt):
                            reserved_units=budget.reserved_units - activity.reserved_units)
     tokens = known_tokens(receipt)
     old_tokens = known_tokens(previous) if previous is not None else None
-    if tokens is not None and (old_tokens is None or activity.reserved_tokens):
+    # 已确认回执补正旧 token 总量时，只结算尚未入账的差额。
+    if tokens is not None and (tokens != old_tokens or activity.reserved_tokens):
         changes.update(total_tokens=budget.total_tokens + tokens - (old_tokens or 0),
                        reserved_tokens=budget.reserved_tokens - activity.reserved_tokens)
     return bump(budget, **changes) if changes else None
@@ -33,7 +34,10 @@ def settled_budget(budget, activity, receipt):
 
 def known_tokens(receipt):
     usage = receipt.usage
-    if usage.status == "known" and usage.input_tokens is not None and usage.output_tokens is not None:
+    # 终帧可已证实 token 总量，即使缓存写入的 TTL 分项仍待核价。
+    totals_reported = usage.status == "known" or (
+        receipt.confirmed and usage.source == "provider_wire" and usage.cache_read_reported is True)
+    if totals_reported and usage.input_tokens is not None and usage.output_tokens is not None:
         return usage.input_tokens + usage.output_tokens
     return None
 
@@ -49,6 +53,29 @@ DIMENSIONS = {
 
 
 class BudgetService:
+    @staticmethod
+    def model_requests_left(tx, run):
+        return min(ledger.limits.max_model_requests - ledger.model_requests for ledger in (
+            load(tx, BudgetSnapshot, run.budget_id), load(tx, BudgetGroupSnapshot, run.budget_group_id)))
+
+    @staticmethod
+    def check_mcp_continuation(tx, run, *, requery=False):
+        # 留给生成答复和提交答复各一步；用户另发单独计一步。
+        steps_needed = 2 + int(requery)
+        for ledger in (load(tx, BudgetSnapshot, run.budget_id),
+                       load(tx, BudgetGroupSnapshot, run.budget_group_id)):
+            if ledger.steps + steps_needed > ledger.limits.max_steps:
+                raise DomainError("step_limit", "剩余步骤不足以继续并提交答复")
+            if ledger.model_requests >= ledger.limits.max_model_requests:
+                raise DomainError("request_limit", "没有剩余模型请求可用于答复")
+            cost_cap = ledger.limits.max_cost_units
+            if cost_cap is not None and ledger.spent_units + ledger.reserved_units > cost_cap:
+                raise DomainError("budget_exceeded", "累计费用已超过授权上限")
+            cap = ledger.limits.max_total_tokens
+            if (cap is not None and ledger.total_tokens + ledger.reserved_tokens
+                    + run.config.model_profile.max_output_tokens >= cap):
+                raise DomainError("token_limit", "剩余 Token 不足以生成答复")
+
     def allocate(self, tx, origin_run_id, target_run_id, limits):
         origin = load(tx, RunSnapshot, origin_run_id)
         budget = load(tx, BudgetSnapshot, origin.budget_id)
@@ -140,7 +167,8 @@ class BudgetService:
                     raise DomainError("pricing_unknown", "开启金额限制时需要可估算价格")
                 if ledger.spent_units + ledger.reserved_units + cost > cap:
                     raise DomainError("budget_exceeded", "剩余金额不足")
-            if ledger.model_requests + (request_kind == "model") > ledger.limits.max_model_requests:
+            needed = 2 if activity.intent.operation == "memory.review" else int(request_kind == "model")
+            if ledger.model_requests + needed > ledger.limits.max_model_requests:
                 raise DomainError("request_limit", "模型请求次数已达上限")
             token_cap = ledger.limits.max_total_tokens
             if token_cap is not None and ledger.total_tokens + ledger.reserved_tokens + tokens > token_cap:

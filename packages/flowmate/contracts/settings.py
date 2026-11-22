@@ -5,15 +5,20 @@ from urllib.parse import urlsplit
 
 from pydantic import AfterValidator, Field, model_validator
 
-from flowmate.contracts.base import Contract, Id, Name, Version, identifier
+from flowmate.contracts.base import Contract, Id, Name, Units, Version, identifier
 from flowmate.contracts.pricing import Price as Price
 from flowmate.contracts.pricing import PricingSnapshot
+
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 
 class ModelCapabilities(Contract):
     tools: bool | None = None
     thinking: bool | None = None
     structured_output: bool | None = None
+    vision: bool | None = None
+    reasoning_efforts: list[ReasoningEffort] | None = Field(
+        default=None, exclude_if=lambda value: value is None)
 
 
 class ModelPricing(Contract):
@@ -51,7 +56,7 @@ def _endpoint(value: str) -> str:
 
 
 Endpoint = Annotated[str, AfterValidator(_endpoint)]
-ModelProtocol = Literal["openai_compatible", "anthropic"]
+ModelProtocol = Literal["openai_compatible", "openai_responses", "anthropic"]
 OpenAIMaxTokensField = Literal["max_tokens", "max_completion_tokens"]
 
 
@@ -86,7 +91,7 @@ class ModelProfile(Contract):
 
 
 class MetadataSource(Contract):
-    kind: Literal["user", "catalog", "application", "unknown"]
+    kind: Literal["user", "service", "observed", "catalog", "application", "unknown"]
     source: str | None = None
     version: str | None = None
     verified_at: str | None = None
@@ -109,8 +114,31 @@ class ModelCandidate(Contract):
     model_id: Name
     display_name: Name | None = None
     context_window_tokens: int | None = Field(default=None, gt=0, le=9007199254740991)
+    max_input_tokens: int | None = Field(default=None, gt=0, le=9007199254740991)
+    max_output_tokens: int | None = Field(default=None, gt=0, le=9007199254740991)
     capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
     metadata_sources: dict[str, MetadataSource]
+
+
+class DiscoveredModel(Contract):
+    model_id: Name
+    display_name: Name | None = None
+    canonical_id: Name | None = None
+    context_window_tokens: int | None = Field(default=None, gt=0, le=9007199254740991)
+    max_input_tokens: int | None = Field(default=None, gt=0, le=9007199254740991)
+    max_output_tokens: int | None = Field(default=None, gt=0, le=9007199254740991)
+    capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
+    metadata_sources: dict[str, MetadataSource] = Field(default_factory=dict)
+
+
+class ModelDiscoveryResult(Contract):
+    connection_id: Id
+    connection_version: Version
+    status: Literal["ready", "unavailable", "authentication_error", "error"]
+    items: list[DiscoveredModel] = Field(default_factory=list)
+    cached: bool = False
+    fetched_at: str | None = None
+    message: str
 
 
 class ModelResolution(Contract):
@@ -127,6 +155,9 @@ class ModelResolution(Contract):
     secret_ref: Id | None
     provider_preset_id: Name | None
     context_window_tokens: int | None = Field(gt=0, le=9007199254740991)
+    max_input_tokens: int | None = Field(gt=0, le=9007199254740991)
+    max_supported_output_tokens: int | None = Field(gt=0, le=9007199254740991)
+    local_context_budget_tokens: int = Field(gt=0, le=9007199254740991)
     max_output_tokens: int = Field(gt=0, le=9007199254740991)
     request_timeout_seconds: float = Field(gt=0)
     capabilities: ModelCapabilities
@@ -138,14 +169,27 @@ class ModelResolution(Contract):
     blockers: list[str]
 
 
+def context_margin(total: int) -> int:
+    return max(1024, (total + 19) // 20)
+
+
 class ResolvedModelProfile(ModelProfile):
     connection_version: Version
+    canonical_model_id: Name | None = None
     protocol: ModelProtocol
     endpoint: Endpoint
     secret_ref: Id | None
     provider_preset_id: Name | None = None
     context_window_tokens: int = Field(gt=0, le=9007199254740991)
+    max_input_tokens: int | None = Field(default=None, gt=0, le=9007199254740991)
+    max_supported_output_tokens: int | None = Field(default=None, gt=0, le=9007199254740991)
     metadata_sources: dict[str, MetadataSource] = Field(default_factory=dict)
+    reasoning_effort: ReasoningEffort | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    def input_budget(self, output_tokens: int) -> int:
+        """所有输入在扣除本次输出和安全余量后，还须遵守独立输入限制。"""
+        remaining = self.context_window_tokens - output_tokens - context_margin(self.context_window_tokens)
+        return remaining if self.max_input_tokens is None else min(remaining, self.max_input_tokens)
 
 
 class Workspace(Contract):
@@ -153,6 +197,22 @@ class Workspace(Contract):
     version: Version = 1
     name: Name
     directory_resource_id: Id | None = None
+
+
+class TitleModelBinding(Contract):
+    model_profile_id: Id
+    model_version: Version
+    connection_version: Version
+    endpoint: str
+    max_requests: int = Field(ge=1, le=1000)
+    max_tokens: int = Field(ge=1, le=1_000_000)
+    max_cost_units: Units | None = None
+
+
+class TitlePolicy(Contract):
+    workspace_id: Id
+    version: Version | None = None
+    binding: TitleModelBinding | None = None
 
 
 class Session(Contract):
@@ -163,3 +223,4 @@ class Session(Contract):
     agent_profile_id: Id
     kind: Literal["interaction", "execution"] = "interaction"
     archived: bool = False
+    automatic_title: Literal["pending"] | Version | None = Field(default=None, exclude_if=lambda value: value is None)

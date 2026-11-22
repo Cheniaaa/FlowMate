@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { commandMeta, type RuntimeClient } from '../../api/client';
-import { checkWorkspaceDirectoryCommand, createWorkspaceFromDirectory, retryWorkspaceFromDirectory, windowError } from '../../api/windows';
+import type { RuntimeClient } from '../../api/client';
+import { windowError } from '../../api/windows';
 import { laterCursor, mergeVersioned } from '../../api/events';
-import type { CommandMeta, InboxPage, NavigationView, PendingAction, SessionPage, Workspace, WorkspaceDirectoryResult } from '../../generated/contracts';
+import type { InboxPage, NavigationView, PendingAction, Session, SessionPage, Workspace } from '../../generated/contracts';
 import { PendingActionList } from '../notifications/Inbox';
+import IconButton, { UiIcon } from '../../components/IconButton';
 import Dialog from '../../components/Dialog';
+import { Button } from '../../components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '../../components/ui/sheet';
+import ProjectNameForm from './ProjectNameForm';
 
 export interface ProjectNavigation { workspaceId: string; sessionId?: string; runId?: string }
 
@@ -31,37 +34,47 @@ function mergeNavigation(current: NavigationView | undefined, incoming: Navigati
   } };
 }
 
-export default function ProjectSidebar({ client, onNavigate, onCreated, onSettings, children, allowDirectoryCreation = true, onDefaultWorkspace, onNewSession, deletedWorkspaceIds = [], deletedSessionIds = [], onFormActiveChange, onTaskCenter, onAssistants, onMemory, onCapabilities, onPendingOpen, onPendingAction, refreshKey, workspaceId, sessionId }: {
+export default function ProjectSidebar({ client, onNavigate, onCreated, onSettings, children, renderScopeActions, allowDirectoryCreation = true, onDefaultWorkspace, onNewSession, deletedWorkspaceIds = [], deletedSessionIds = [], onFormActiveChange, onTaskCenter, onAssistants, onMemory, onCapabilities, onPendingOpen, onPendingAction, onOpenInbox, refreshKey, workspaceId, sessionId, activePage, drawerToggleRef, sessionVersions }: {
   client: RuntimeClient; onNavigate: (target: ProjectNavigation) => void; onCreated: (workspace: Workspace) => void;
   onSettings: () => void; children?: ReactNode;
+  renderScopeActions?: (target: Session | Workspace, createSession?: (trigger: HTMLButtonElement) => void) => ReactNode;
   allowDirectoryCreation?: boolean; onDefaultWorkspace?: (id: string | null) => void;
   onNewSession?: (workspaceId?: string, returnFocus?: () => void) => void; workspaceId?: string; sessionId?: string;
   deletedWorkspaceIds?: readonly string[]; deletedSessionIds?: readonly string[];
   onFormActiveChange?: (active: boolean) => void;
-  onTaskCenter?: () => void; onPendingOpen?: (item: InboxPage['items'][number]) => void;
+  onTaskCenter?: () => void; onPendingOpen?: (item: InboxPage['items'][number], returnToInbox: () => void) => void;
   onAssistants?: () => void;
   onMemory?: () => void;
   onCapabilities?: () => void;
-  onPendingAction?: (item: PendingAction, action: PendingAction['allowed_actions'][number]) => Promise<unknown>;
+  onPendingAction?: (item: PendingAction, action: PendingAction['allowed_actions'][number], returnToInbox: () => void) => Promise<unknown>;
+  onOpenInbox?: (open: () => void) => void;
   refreshKey?: string;
+  activePage?: 'tasks' | 'assistants' | 'memory' | 'capabilities';
+  drawerToggleRef?: React.RefObject<HTMLButtonElement | null>;
+  sessionVersions?: Readonly<Record<string, Session>>;
 }) {
   const [navigation, setNavigation] = useState<NavigationView>();
   const navigationClient = useRef(client);
   const navigationCursors = useRef<string[]>([]);
-  const [section, setSection] = useState<'projects' | 'recent' | 'tasks' | 'inbox'>('projects');
+  const [section, setSection] = useState<'projects' | 'recent'>('projects');
   const [recent, setRecent] = useState<SessionPage>();
   const [inbox, setInbox] = useState<InboxPage>();
+  const [inboxOpen, setInboxOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('flowmate.sidebar.collapsed') === 'true');
+  const [foldedProjects, setFoldedProjects] = useState<Set<string>>(() => new Set());
   const [drawer, setDrawer] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [name, setName] = useState('');
-  const [frozen, setFrozen] = useState<{ name: string; meta: CommandMeta }>();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
-  const formActive = creating || !!name || !!frozen || busy;
+  const formActive = creating || busy;
   useEffect(() => { onFormActiveChange?.(formActive); }, [formActive, onFormActiveChange]);
-  const drawerToggle = useRef<HTMLButtonElement>(null);
+  const localDrawerToggle = useRef<HTMLButtonElement>(null);
+  const drawerToggle = drawerToggleRef ?? localDrawerToggle;
+  const inboxTrigger = useRef<HTMLButtonElement>(null);
+  const inboxOrigin = useRef<HTMLButtonElement | null>(null);
+  const inboxDismissed = useRef(false);
+  const sheetTransfer = useRef(false);
   const projectPlus = useRef<HTMLButtonElement>(null);
   function newSession(target: string | undefined, trigger: HTMLButtonElement) {
     onNewSession?.(target, () => {
@@ -72,6 +85,10 @@ export default function ProjectSidebar({ client, onNavigate, onCreated, onSettin
   }
   const deletionKey = [...deletedWorkspaceIds, ...deletedSessionIds].join(',');
   const visible = (workspaceId: string, sessionId?: string) => !deletedWorkspaceIds.includes(workspaceId) && (!sessionId || !deletedSessionIds.includes(sessionId));
+  function displayedSession(session: Session) {
+    const latest = sessionVersions?.[session.id];
+    return latest && latest.version > session.version ? latest : session;
+  }
   async function readNavigation() {
     // 重读已加载项目页，尾页项目徽标也来自同一权威查询；不重置用户的续页位置。
     const pages = await Promise.all([client.navigation(), ...navigationCursors.current.map(cursor => client.navigation({ cursor }))]);
@@ -91,11 +108,11 @@ export default function ProjectSidebar({ client, onNavigate, onCreated, onSettin
     return () => { ignore = true; };
   }, [client, deletionKey, refreshKey]);
   useEffect(() => {
-    if (section !== 'inbox') return;
+    if (!inboxOpen) return;
     let ignore = false;
     client.inbox({ limit: 50 }).then(value => { if (!ignore) setInbox(value); }).catch(error => { if (!ignore) setError(windowError(error)); });
     return () => { ignore = true; };
-  }, [client, section, refreshKey]);
+  }, [client, inboxOpen, refreshKey]);
   async function act(action: () => Promise<unknown>) {
     if (pending.current) return;
     pending.current = true; setBusy(true); setError('');
@@ -106,74 +123,108 @@ export default function ProjectSidebar({ client, onNavigate, onCreated, onSettin
   async function open(next: typeof section) {
     setCollapsed(false); localStorage.setItem('flowmate.sidebar.collapsed', 'false'); setSection(next);
     if (next === 'recent') setRecent(await client.recentSessions());
-    if (next === 'tasks') { onTaskCenter?.(); setDrawer(false); }
-    if (next === 'inbox') setInbox(await client.inbox());
   }
-  function installed(value: WorkspaceDirectoryResult | null) {
-    if (!value) { setFrozen(undefined); return; }
-    onCreated(value.workspace); navigate({ workspaceId: value.workspace.id }); setFrozen(undefined); setCreating(false); setName(''); projectPlus.current?.focus();
+  function showInbox(trigger: HTMLButtonElement) {
+    inboxOrigin.current = drawer ? drawerToggle.current : trigger;
+    if (drawer) sheetTransfer.current = true;
+    inboxDismissed.current = false;
+    setError(''); setDrawer(false); setInboxOpen(true);
   }
+  function requestInbox(trigger: HTMLButtonElement) {
+    if (drawer) {
+      sheetTransfer.current = true;
+      setDrawer(false);
+    }
+    const openInbox = () => showInbox(trigger);
+    if (onOpenInbox) onOpenInbox(openInbox);
+    else openInbox();
+  }
+  function reopenInbox() { setInboxOpen(true); }
   const sidebar = <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''} ${drawer ? 'sidebar--open' : ''}`} aria-label="项目导航">
-      {drawer && <button className="sidebar-drawer-close" aria-label="关闭项目导航" onClick={() => { setDrawer(false); drawerToggle.current?.focus(); }}>×</button>}
-      <header className="sidebar-brand"><span className="brand-mark" aria-hidden="true">F</span><strong>FlowMate</strong><button aria-label={collapsed ? '展开侧栏' : '折叠侧栏'} onClick={() => {
+      {drawer && <IconButton className="sidebar-drawer-close" icon="close" label="关闭项目导航" onClick={() => { setDrawer(false); drawerToggle.current?.focus(); }} />}
+      <header className="sidebar-brand"><span className="brand-mark" aria-hidden="true">F</span><strong>FlowMate</strong>{!drawer && <IconButton icon={collapsed ? 'openSidebar' : 'closeSidebar'} label={collapsed ? '展开侧栏' : '折叠侧栏'} aria-expanded={!collapsed} onClick={() => {
         setCollapsed(!collapsed); localStorage.setItem('flowmate.sidebar.collapsed', String(!collapsed));
-      }}>{collapsed ? '›' : '‹'}</button></header>
+      }} />}</header>
       <nav className="global-navigation">
-        <button aria-label="新建会话" title="新建会话" onClick={event => { setCollapsed(false); newSession(workspaceId || navigation?.default_workspace_id || undefined, event.currentTarget); }}><span>＋</span><span>新建会话</span></button>
-        <button title="日常助理" aria-label="日常助理" disabled={!navigation?.default_workspace_id || !visible(navigation.default_workspace_id)} onClick={() => navigate({ workspaceId: navigation!.default_workspace_id! })}><span>✦</span><span>日常助理</span></button>
-        <button title="最近创建" aria-label="最近创建" aria-pressed={section === 'recent'} onClick={() => void act(() => open('recent'))}><span>◷</span><span>最近创建</span></button>
-        <button title="待办" aria-pressed={section === 'inbox'} onClick={() => void act(() => open('inbox'))}><span>☷</span><span>待办 {navigation?.pending_count ?? ''}</span></button>
-        <button title="任务" aria-pressed={section === 'tasks'} onClick={() => void act(() => open('tasks'))}><span>◇</span><span>任务</span></button>
-        <button title="我的助理" onClick={() => { onAssistants?.(); setDrawer(false); }}><span>✧</span><span>我的助理</span></button>
-        {onMemory && <button title="记忆与成长" onClick={() => { onMemory(); setDrawer(false); }}><span>◇</span><span>记忆与成长</span></button>}
-        {onCapabilities && <button title="能力库" onClick={() => { onCapabilities(); setDrawer(false); }}><span>✦</span><span>能力库</span></button>}
+        <Button variant="ghost" size="sm" className="justify-start" aria-label="新建会话" title="新建会话" onClick={event => { setCollapsed(false); newSession(workspaceId || navigation?.default_workspace_id || undefined, event.currentTarget); }}><UiIcon name="newSession" /><span>新建会话</span></Button>
+        <Button variant="ghost" size="sm" className="justify-start" title="日常助理" aria-label="日常助理" disabled={!navigation?.default_workspace_id || !visible(navigation.default_workspace_id)} onClick={() => navigate({ workspaceId: navigation!.default_workspace_id! })}><UiIcon name="assistant" /><span>日常助理</span></Button>
+        <Button variant="ghost" size="sm" className="justify-start" title="最近创建" aria-label="最近创建" aria-pressed={section === 'recent'} onClick={() => void act(() => open('recent'))}><UiIcon name="recent" /><span>最近创建</span></Button>
+        <Button variant="ghost" size="sm" className="justify-start" ref={inboxTrigger} title="待办" aria-label={`待办 ${navigation?.pending_count ?? ''}`.trim()} aria-haspopup="dialog" onClick={event => requestInbox(event.currentTarget)}><UiIcon name="inbox" /><span>待办 {navigation?.pending_count ?? ''}</span></Button>
+        <Button variant="ghost" size="sm" className="justify-start" title="任务" aria-label="任务" aria-pressed={activePage === 'tasks'} onClick={() => { onTaskCenter?.(); setDrawer(false); }}><UiIcon name="tasks" /><span>任务中心</span></Button>
+        <Button variant="ghost" size="sm" className="justify-start" title="我的助理" aria-label="我的助理" aria-pressed={activePage === 'assistants'} onClick={() => { onAssistants?.(); setDrawer(false); }}><UiIcon name="members" /><span>我的助理</span></Button>
+        {onMemory && <Button variant="ghost" size="sm" className="justify-start" title="记忆与成长" aria-label="记忆与成长" aria-pressed={activePage === 'memory'} onClick={() => { onMemory(); setDrawer(false); }}><UiIcon name="memory" /><span>记忆与成长</span></Button>}
+        {onCapabilities && <Button variant="ghost" size="sm" className="justify-start" title="能力库" aria-label="能力库" aria-pressed={activePage === 'capabilities'} onClick={() => { onCapabilities(); setDrawer(false); }}><UiIcon name="library" /><span>能力库</span></Button>}
       </nav>
       <div className="sidebar-content">
-        <div className="sidebar-section-heading"><button onClick={() => setSection('projects')}>项目</button><button ref={projectPlus} aria-label="新建项目" onClick={() => setCreating(true)}>＋</button></div>
+         <div className="sidebar-section-heading"><Button variant="ghost" size="sm" onClick={() => setSection('projects')}>项目</Button><IconButton ref={projectPlus} icon="add" label="新建项目" onClick={() => setCreating(true)} /></div>
         {error && !creating && <p role="alert">{error}</p>}
-        {creating && <Dialog title="新建项目" onClose={() => { if (!busy && !frozen) { setCreating(false); setName(''); projectPlus.current?.focus(); } }}><form className="project-create" onSubmit={event => { event.preventDefault(); void act(async () => {
-          const workspace = await client.createWorkspace({ meta: commandMeta(), data: { name } }); onCreated(workspace); navigate({ workspaceId: workspace.id }); setCreating(false); setName(''); projectPlus.current?.focus();
-        }); }}><label>项目名称 <input autoFocus required value={name} disabled={!!frozen || busy} onChange={event => setName(event.target.value)} /></label>
-          <button disabled={busy || !!frozen}>创建项目</button>{allowDirectoryCreation && <button type="button" disabled={busy || !name.trim() || !!frozen} onClick={() => void act(async () => {
-            const command = { name, meta: commandMeta() }; setFrozen(command); installed(await createWorkspaceFromDirectory(command.name, command.meta));
-          })}>从目录创建</button>}
-          {frozen && <><p>目录创建结果待核对；查不到不表示未提交。</p><button type="button" disabled={busy} onClick={() => void act(async () => {
-            const result = await checkWorkspaceDirectoryCommand(frozen.meta.command_id!); if (result.status === 'confirmed') installed(result.result);
-          })}>核对目录创建</button><button type="button" disabled={busy} onClick={() => void act(async () => installed(await retryWorkspaceFromDirectory(frozen.name, frozen.meta)))}>重试目录创建</button></>}
-          {error && <p role="alert">{error}</p>}
-          <button type="button" disabled={busy || !!frozen} onClick={() => { setCreating(false); setName(''); projectPlus.current?.focus(); }}>取消</button>
-        </form></Dialog>}
+        {creating && <ProjectNameForm client={client} allowDirectory={allowDirectoryCreation}
+          onClose={() => setCreating(false)} onReturnFocus={() => (projectPlus.current ?? drawerToggle.current)?.focus()}
+          onCreated={workspace => { onCreated(workspace); setCreating(false); navigate({ workspaceId: workspace.id }); }} />}
         {section === 'projects' && navigation?.workspaces.items.filter(item => visible(item.workspace.id)).map(item => <section className="project-group" key={item.workspace.id}>
-          <div className="project-heading"><button className="project-name" aria-label={item.workspace.name} aria-current={workspaceId === item.workspace.id ? 'true' : undefined} onClick={() => navigate({ workspaceId: item.workspace.id })}>▱ {item.workspace.name}<span>{item.pending_count || ''}</span></button>
-            <button aria-label={`在${item.workspace.name}新建会话`} onClick={event => newSession(item.workspace.id, event.currentTarget)}>＋</button></div>
-          {item.sessions.items.filter(session => visible(session.workspace_id, session.id)).map(session => <button className="session-nav" aria-current={sessionId === session.id ? 'page' : undefined} key={session.id} onClick={() => navigate({ workspaceId: session.workspace_id, sessionId: session.id })}>{session.title}</button>)}
-          {item.sessions.next_cursor && <button onClick={() => void act(async () => { const next = await client.sessions(item.workspace.id, { cursor: item.sessions.next_cursor! }); setNavigation(current => current && ({ ...current, workspaces: { ...current.workspaces, items: current.workspaces.items.map(value => value.workspace.id === item.workspace.id ? { ...value, sessions: { ...next, items: Object.values(mergeVersioned(Object.fromEntries(value.sessions.items.map(session => [session.id, session])), next.items)) } } : value) } })); })}>更多项目会话</button>}
-        </section>)}
-        {section === 'projects' && navigation?.workspaces.next_cursor && <button onClick={() => void act(async () => {
+          <div className="project-heading"><IconButton className="project-disclosure" size="icon-xs"
+            icon={foldedProjects.has(item.workspace.id) ? 'folded' : 'expand'} aria-expanded={!foldedProjects.has(item.workspace.id)}
+            aria-controls={`sessions-${item.workspace.id}`} label={`${foldedProjects.has(item.workspace.id) ? '展开' : '收起'}${item.workspace.name}的会话`}
+            onClick={() => setFoldedProjects(current => { const next = new Set(current); if (next.has(item.workspace.id)) next.delete(item.workspace.id); else next.add(item.workspace.id); return next; })} />
+            <Button variant="ghost" size="sm" className="project-name justify-between gap-1 px-0.5" aria-label={item.workspace.name} aria-current={workspaceId === item.workspace.id ? 'true' : undefined} onClick={() => navigate({ workspaceId: item.workspace.id })}><span className="truncate">{item.workspace.name}</span>{item.pending_count > 0 && <small>{item.pending_count}</small>}</Button>
+            {renderScopeActions?.(item.workspace, trigger => newSession(item.workspace.id, trigger))}</div>
+          <div id={`sessions-${item.workspace.id}`} hidden={foldedProjects.has(item.workspace.id)}>
+           {item.sessions.items.filter(session => visible(session.workspace_id, session.id)).map(displayedSession).map(session => <div className="session-nav-row" key={session.id}>
+            <Button variant="ghost" size="sm" className="session-nav justify-start" aria-current={sessionId === session.id ? 'page' : undefined} onClick={() => navigate({ workspaceId: session.workspace_id, sessionId: session.id })}><span className="truncate">{session.title}</span></Button>
+            {renderScopeActions?.(session)}</div>)}
+          {item.sessions.next_cursor && <Button variant="ghost" size="sm" onClick={() => void act(async () => { const next = await client.sessions(item.workspace.id, { cursor: item.sessions.next_cursor! }); setNavigation(current => current && ({ ...current, workspaces: { ...current.workspaces, items: current.workspaces.items.map(value => value.workspace.id === item.workspace.id ? { ...value, sessions: { ...next, items: Object.values(mergeVersioned(Object.fromEntries(value.sessions.items.map(session => [session.id, session])), next.items)) } } : value) } })); })}>更多项目会话</Button>}
+          </div></section>)}
+        {section === 'projects' && navigation?.workspaces.next_cursor && <Button variant="ghost" size="sm" onClick={() => void act(async () => {
           const cursor = navigation.workspaces.next_cursor!, next = await client.navigation({ cursor });
           if (!navigationCursors.current.includes(cursor)) navigationCursors.current.push(cursor);
           setNavigation(current => mergeNavigation(current, next, true));
-        })}>更多项目</button>}
-        {section === 'recent' && <section aria-label="最近创建会话"><h2>最近创建</h2>{recent?.items.filter(session => visible(session.workspace_id, session.id)).map(session => <button key={session.id} onClick={() => navigate({ workspaceId: session.workspace_id, sessionId: session.id })}>{session.title}</button>)}
-          {recent?.next_cursor && <button onClick={() => void act(async () => { const next = await client.recentSessions({ cursor: recent.next_cursor! }); setRecent({ ...next, items: [...recent.items, ...next.items] }); })}>更多最近创建</button>}</section>}
-        {section === 'inbox' && <section aria-label="全局待办"><h2>待办</h2><PendingActionList items={inbox?.items.filter(item => visible(item.workspace_id, item.session_id ?? undefined)) ?? []} busy={busy}
-          workspaceNames={Object.fromEntries(navigation?.workspaces.items.map(item => [item.workspace.id, item.workspace.name]) ?? [])}
-          onOpen={item => { if (onPendingOpen) onPendingOpen(item); else navigate({ workspaceId: item.workspace_id, sessionId: item.session_id ?? undefined, runId: item.run_id }); setDrawer(false); }}
-          onAction={(item, action) => void act(async () => {
-            try { await onPendingAction?.(item, action); }
-            catch (error) { setInbox(await client.inbox({ limit: 50 })); throw error; }
-            setInbox(await client.inbox({ limit: 50 }));
-          })} />
-          {inbox?.next_cursor && <button onClick={() => void act(async () => { const next = await client.inbox({ cursor: inbox.next_cursor! }); setInbox({ ...next, items: [...inbox.items, ...next.items] }); })}>更多全局待办</button>}</section>}
+        })}>更多项目</Button>}
+        {section === 'recent' && <section aria-label="最近创建会话"><h2>最近创建</h2>{recent?.items.filter(session => visible(session.workspace_id, session.id)).map(displayedSession).map(session => <div className="session-nav-row" key={session.id}>
+          <Button variant="ghost" size="sm" className="session-nav justify-start" onClick={() => navigate({ workspaceId: session.workspace_id, sessionId: session.id })}><span className="truncate">{session.title}</span></Button>
+          {renderScopeActions?.(session)}</div>)}
+          {recent?.next_cursor && <Button variant="ghost" size="sm" onClick={() => void act(async () => { const next = await client.recentSessions({ cursor: recent.next_cursor! }); setRecent({ ...next, items: [...recent.items, ...next.items] }); })}>更多最近创建</Button>}</section>}
         {children}
-      </div><footer className="sidebar-footer"><button title="设置" onClick={onSettings}>⚙ <span>设置</span></button><button title="刷新导航" aria-label="刷新导航" disabled={busy} onClick={() => void act(async () => {
+      </div><footer className="sidebar-footer"><Button variant="ghost" size="sm" title="设置" aria-label="设置" onClick={() => {
+        setDrawer(false);
+        onSettings();
+      }}><UiIcon name="settings" /><span>设置</span></Button><IconButton icon="refresh" label="刷新导航" disabled={busy} onClick={() => void act(async () => {
         const pages = await readNavigation();
         setNavigation(current => pages.reduce((value, page) => mergeNavigation(value, page), current));
-      })}>↻</button></footer>
+      })} /></footer>
     </aside>;
   return <>
-    <button ref={drawerToggle} className="sidebar-drawer-toggle" aria-label="打开项目导航" onClick={() => setDrawer(true)}>☰</button>
+    <IconButton ref={drawerToggle} className="sidebar-drawer-toggle" icon="openSidebar" label="打开项目导航" onClick={() => setDrawer(true)} />
     {!drawer && sidebar}
-    <Sheet open={drawer} onOpenChange={setDrawer}><SheetContent className="sidebar-sheet" onCloseAutoFocus={event => { event.preventDefault(); drawerToggle.current?.focus(); }}><SheetTitle className="sr-only">项目导航</SheetTitle>{drawer && sidebar}</SheetContent></Sheet>
+    <Sheet open={drawer} onOpenChange={setDrawer}><SheetContent className="sidebar-sheet" onCloseAutoFocus={event => {
+      event.preventDefault();
+      if (!sheetTransfer.current && (!document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected)) drawerToggle.current?.focus();
+      sheetTransfer.current = false;
+    }} onEscapeKeyDown={event => { if (event.isComposing || event.keyCode === 229) event.preventDefault(); }}>
+      <SheetTitle className="sr-only">项目导航</SheetTitle>{drawer && sidebar}</SheetContent></Sheet>
+    {inboxOpen && <Dialog title="待办" onClose={() => { inboxDismissed.current = true; setInboxOpen(false); }} onReturnFocus={() => {
+      if (!inboxDismissed.current) return;
+      inboxDismissed.current = false;
+      const origin = inboxOrigin.current;
+      if (origin?.isConnected) origin.focus();
+      else inboxTrigger.current?.focus();
+    }}>
+      {error && <p role="alert">{error}</p>}
+      {!inbox && !error && <p role="status">正在读取待办…</p>}
+      {inbox && <PendingActionList items={inbox.items.filter(item => visible(item.workspace_id, item.session_id ?? undefined))} busy={busy}
+        workspaceNames={Object.fromEntries(navigation?.workspaces.items.map(item => [item.workspace.id, item.workspace.name]) ?? [])}
+        onOpen={item => {
+          setInboxOpen(false);
+          if (onPendingOpen) onPendingOpen(item, reopenInbox);
+          else navigate({ workspaceId: item.workspace_id, sessionId: item.session_id ?? undefined, runId: item.run_id });
+        }}
+        onAction={(item, action) => void act(async () => {
+          const opensDetail = !!onPendingAction && (action.kind === 'view_task' || action.kind === 'inspect_export_recovery');
+          if (opensDetail) setInboxOpen(false);
+          try { await onPendingAction?.(item, action, reopenInbox); }
+          catch (error) { setInbox(await client.inbox({ limit: 50 })); if (opensDetail) reopenInbox(); throw error; }
+          setInbox(await client.inbox({ limit: 50 }));
+        })} />}
+      {inbox?.next_cursor && <Button variant="outline" size="sm" onClick={() => void act(async () => { const next = await client.inbox({ cursor: inbox.next_cursor! }); setInbox({ ...next, items: [...inbox.items, ...next.items] }); })}>更多全局待办</Button>}
+    </Dialog>}
   </>;
 }

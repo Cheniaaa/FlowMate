@@ -2,26 +2,34 @@
   {
     "provider_preset_id": "openai",
     "model_id": "gpt-4.1",
-    "capabilities": {"tools": true, "thinking": false},
+    "aliases": ["gpt-4.1-2025-04-14"],
+    "context_window_tokens": 1047576,
+    "max_output_tokens": 32768,
+    "capabilities": {"tools": true, "thinking": false, "vision": true, "structured_output": true},
     "source_url": "https://developers.openai.com/api/docs/models/gpt-4.1",
-    "source_version": "flowmate-model-metadata-2026-11-12",
-    "verified_at": "2026-11-12"
+    "source_version": "flowmate-model-metadata-2026-11-20",
+    "verified_at": "2026-11-20"
   },
   {
     "provider_preset_id": "openai",
     "model_id": "gpt-6.1-sol",
-    "capabilities": {"tools": false, "thinking": true},
+    "context_window_tokens": 1050000,
+    "max_input_tokens": 922000,
+    "max_output_tokens": 128000,
+    "capabilities": {"tools": false, "thinking": true, "vision": true, "structured_output": true},
+    "protocol_capabilities": {"openai_responses": {"tools": true}},
     "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-    "source_version": "flowmate-model-metadata-2026-11-12",
-    "verified_at": "2026-11-12",
-    "note": "Tool calling requires the Responses API; this preset uses Chat Completions."
+    "source_version": "flowmate-model-metadata-2026-11-20",
+    "verified_at": "2026-11-20"
   },
   {
     "provider_preset_id": "anthropic",
     "model_id": "claude-sonnet-5-5",
-    "capabilities": {"tools": true, "thinking": true},
+    "context_window_tokens": 1000000,
+    "max_output_tokens": 128000,
+    "capabilities": {"tools": true, "thinking": true, "vision": true},
     "source_url": "https://platform.claude.com/docs/en/models/overview",
-    "source_version": "flowmate-model-metadata-2026-11-12",
-    "verified_at": "2026-11-12"
+    "source_version": "flowmate-model-metadata-2026-11-20",
+    "verified_at": "2026-11-20"
   }
 ]

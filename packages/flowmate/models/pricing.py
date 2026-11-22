@@ -220,9 +220,13 @@ def calculate_units(
 def estimate_request(
     body: bytes, max_output_tokens: int, snapshot: PricingSnapshot | None,
 ) -> ReservationEstimate:
-    """完整 wire bytes + 1024 margin；保守估算而非供应商账单硬上界。"""
+    """文本保守字节估算，图片使用有来源的本地像素预留；均非供应商精确 token。"""
+    from flowmate.models.image_budget import image_input_budget
+
+    input_estimate, input_estimate_source = image_input_budget(body)
     estimate = ReservationEstimate(
-        estimated_units=None, input_estimate=len(body) + 1024, max_output_tokens=max_output_tokens,
+        estimated_units=None, input_estimate=input_estimate, max_output_tokens=max_output_tokens,
+        input_estimate_source=input_estimate_source,
     )
     if snapshot is None or "input_mtok" not in snapshot.rules or "output_mtok" not in snapshot.rules:
         return estimate
@@ -244,4 +248,5 @@ def estimate_request(
     return ReservationEstimate(
         estimated_units=_units(amount * Fraction(snapshot.effective_multiplier) * SCALE),
         input_estimate=estimate.input_estimate, max_output_tokens=estimate.max_output_tokens,
+        input_estimate_source=estimate.input_estimate_source,
     )

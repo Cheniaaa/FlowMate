@@ -15,9 +15,13 @@ const fixturePath = process.env.FLOWMATE_T13_NATIVE_FIXTURE;
 it.skipIf(!fixturePath)('真实宿主下能力库确认保存与显式发现使用实际 API/私有绑定', { timeout: 25_000 }, async () => {
   const fixture = JSON.parse(readFileSync(fixturePath!, 'utf-8'));
   const nativeFetch = globalThis.fetch;
-  vi.stubGlobal('fetch', (input: RequestInfo | URL, init: RequestInit = {}) => nativeFetch(input, {
-    ...init, headers: { ...Object.fromEntries(new Headers(init.headers)), Origin: 'http://127.0.0.1:5173' },
-  }));
+  vi.stubGlobal('fetch', (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers);
+    headers.set('Origin', 'http://127.0.0.1:5173');
+    // Node 可能复用即将被 Runtime 一秒空闲超时回收的 socket；SSE 保持长连接。
+    if (headers.get('Accept') !== 'text/event-stream') headers.set('Connection', 'close');
+    return nativeFetch(input, { ...init, headers });
+  });
   const controllers = [new AbortController(), new AbortController()];
   const streams: Promise<void>[] = [];
   try {
@@ -38,19 +42,17 @@ it.skipIf(!fixturePath)('真实宿主下能力库确认保存与显式发现使�
     const mainUi = within(main.container), observerUi = within(observer.container);
     await waitFor(() => expect(connected.size).toBe(2), { timeout: 7000 });
     const mainDetail = within(await mainUi.findByRole('region', { name: 'MCP 配置详情' }));
-    await mainDetail.findByText('已保存 · 0 个工具');
-    fireEvent.click(mainDetail.getByText('连接技术详情'));
-    expect(mainDetail.getByText('配置修订 1').closest('details')).toHaveProperty('open', true);
+    await mainDetail.findByText('已保存 · 工具数量未知');
+    expect(mainDetail.queryByText(fixture.config.id)).toBeNull();
     fireEvent.click(mainUi.getByRole('button', { name: '连接并发现工具' }));
-    const detailStatus = { selector: 'section[aria-label="MCP 配置详情"] > p' };
-    await mainUi.findByText('已连接 · 1 个工具', detailStatus, { timeout: 15_000 });
-    await observerUi.findByText('已连接 · 1 个工具', detailStatus, { timeout: 7000 });
+    await waitFor(() => within(mainUi.getByRole('region', { name: 'MCP 配置详情' }))
+      .getByText('已连接 · 1 个工具'), { timeout: 15_000 });
+    await waitFor(() => within(observerUi.getByRole('region', { name: 'MCP 配置详情' }))
+      .getByText('已连接 · 1 个工具'), { timeout: 7000 });
     const observerDetail = within(await observerUi.findByRole('region', { name: 'MCP 配置详情' }));
-    fireEvent.click(observerDetail.getByText('连接技术详情'));
-    expect(observerDetail.getByText('配置修订 1').closest('details')).toHaveProperty('open', true);
+    expect(observerDetail.queryByText(fixture.config.id)).toBeNull();
     const echo = await mainUi.findByRole('checkbox', { name: '允许工具 echo' });
-    expect(echo).toHaveProperty('checked', false);
-    fireEvent.click(echo);
+    expect(echo.getAttribute('aria-checked')).toBe('true');
     fireEvent.click(mainUi.getByRole('button', { name: '保存允许的工具' }));
     await mainUi.findByText('当前固定选择：echo');
     await observerUi.findByText('当前固定选择：echo', {}, { timeout: 7000 });
@@ -60,7 +62,7 @@ it.skipIf(!fixturePath)('真实宿主下能力库确认保存与显式发现使�
     fireEvent.change(mainUi.getByLabelText('Command'), { target: { value: 'not-started.exe' } });
     fireEvent.change(mainUi.getByLabelText('Args（JSON 字符串数组）'), { target: { value: '["中文 参数", ""]' } });
     const enabled = mainUi.getByRole('checkbox', { name: '启用此配置' });
-    expect(enabled).toHaveProperty('checked', true);
+    expect(enabled.getAttribute('aria-checked')).toBe('true');
     fireEvent.click(enabled);
     fireEvent.click(mainUi.getByRole('button', { name: '预览配置' }));
     await mainUi.findByRole('button', { name: '确认保存配置' });

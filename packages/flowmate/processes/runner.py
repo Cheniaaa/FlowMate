@@ -1,6 +1,8 @@
 """有界异步进程入口；不持有 Store，不解释或构造脚本。"""
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 
 from flowmate.processes.contracts import (
@@ -9,10 +11,22 @@ from flowmate.processes.contracts import (
     ProcessSpec,
 )
 
+_start_authorization = ContextVar("process_start_authorization", default=None)
+
 
 class ProcessRunner:
     def __init__(self, max_processes: int = DEFAULT_MAX_PROCESSES):
         self._slots = asyncio.Semaphore(max_processes)
+
+    @staticmethod
+    @contextmanager
+    def authorize_start(check):
+        """调用者提供同步围栏；槽位等待结束后、创建进程前消费最新事实。"""
+        token = _start_authorization.set(check)
+        try:
+            yield
+        finally:
+            _start_authorization.reset(token)
 
     async def run(self, spec: ProcessSpec, cancel: asyncio.Event) -> ProcessResult:
         aborted = asyncio.Event()
@@ -56,6 +70,9 @@ class ProcessRunner:
                 # Windows 能力缺失直接失败，不为非 Windows 或缺绑定提供降级后端。
                 from flowmate.processes.windows import POLL_INTERVAL_SECONDS, WindowsProcess
 
+                check = _start_authorization.get()
+                if check is not None:
+                    check(spec)
                 process = WindowsProcess(spec)
                 while True:
                     progress = process.drain()

@@ -5,7 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { RuntimeClient } from '../../api/client';
 import { validate } from '../../api/validation';
 import type { ModelProfile, SaveConnectionCommand, SaveModelCommand } from '../../generated/contracts';
-import { agent, connection, model, page } from '../../test/fixtures';
+import { agent, connection, model, modelResolution, page } from '../../test/fixtures';
 import Settings from './Settings';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
@@ -73,9 +73,8 @@ describe('连接设置编辑生命周期', () => {
           openai_max_tokens_field: body.data.openai_max_tokens_field ?? null, version: saved.version + 1 });
         return Response.json(saved);
       }
-      if (parsed.pathname.endsWith('/resolved')) return Response.json({ ...saved, connection_version: 1,
-        protocol: other.protocol, endpoint: other.endpoint, secret_ref: null, provider_preset_id: null,
-        metadata_sources: {}, model_pricing: null, pricing_unknown_reason: null, blockers: [] });
+      if (parsed.pathname.endsWith('/resolved')) return Response.json({ ...modelResolution, ...saved,
+        connection_id: other.id, protocol: other.protocol, endpoint: other.endpoint });
       if (parsed.pathname.endsWith('/models')) return Response.json(page([saved]));
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -229,7 +228,7 @@ describe('连接设置编辑生命周期', () => {
     await user.click(screen.getByRole('button', { name: '助理设置' }));
     await user.click(screen.getByRole('button', { name: '放弃更改' }));
     expect(screen.queryByLabelText('API Key（仅保存到系统凭据）')).toBeNull();
-    await user.click(screen.getByRole('button', { name: '模型与连接' }));
+    await user.click(screen.getByRole('button', { name: '连接与模型' }));
     await user.click(await screen.findByRole('button', { name: new RegExp(connection.display_name) }));
     await user.selectOptions(await screen.findByLabelText('编辑连接'), connection.id);
     expect((screen.getByLabelText('API Key（仅保存到系统凭据）') as HTMLInputElement).value).toBe('');

@@ -9,6 +9,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from flowmate.contracts.base import CallId, DomainError
 from flowmate.contracts.execution import DispatchRequest, Usage
+from flowmate.models.endpoints import resolve_model_endpoint
 from flowmate.models.pricing import estimate_request
 
 
@@ -33,12 +34,14 @@ class WireEvidence:
         self._data = []
         self._event_bytes = 0
         self.raw_input = self.output = None
-        self.cache_read = self.cache_write = self.cache_write_1h = 0
-        self.cache_write_5m = 0
+        self.cache_read = None
+        self.cache_write = None
+        self.cache_write_1h = self.cache_write_5m = None if protocol == "anthropic" else 0
         self.price_context = {}
         self.terminal = False
         self.request_id = None
         self.call_ids = {}
+        self.item_ids = {}
         self.call_id_conflict = False
         self.response_status = None
         self.response_complete = False
@@ -103,24 +106,48 @@ class WireEvidence:
                 if "completion_tokens" in usage:
                     self.output = self._count(usage["completion_tokens"])
                 details = usage.get("prompt_tokens_details") or {}
-                if "cached_tokens" in details:
+                if details.get("cached_tokens") is not None:
                     self.cache_read = self._count(details["cached_tokens"])
-                if "cache_write_tokens" in details:
+                if details.get("cache_write_tokens") is not None:
                     self.cache_write = self._count(details["cache_write_tokens"])
                 tier = event.get("service_tier")
+            elif self.protocol == "openai_responses":
+                kind = event.get("type")
+                if kind in {"response.output_item.added", "response.output_item.done"}:
+                    item = event["item"]
+                    if item.get("type") == "function_call":
+                        self._responses_call(event["output_index"], item)
+                terminal = kind in {"response.completed", "response.incomplete", "response.failed"}
+                response = event.get("response") or {}
+                if terminal:
+                    for index, item in enumerate(response.get("output") or []):
+                        if item.get("type") == "function_call":
+                            self._responses_call(index, item)
+                    usage = response.get("usage") or {}
+                    if "input_tokens" in usage:
+                        self.raw_input = self._count(usage["input_tokens"])
+                    if "output_tokens" in usage:
+                        self.output = self._count(usage["output_tokens"])
+                    details = usage.get("input_tokens_details") or {}
+                    if "cached_tokens" in details:
+                        self.cache_read = self._count(details["cached_tokens"])
+                    if "cache_write_tokens" in details:
+                        self.cache_write = self._count(details["cache_write_tokens"])
+                    self.terminal = True
+                tier = response.get("service_tier")
             else:
                 kind = event.get("type")
                 if kind == "content_block_start" and (event.get("content_block") or {}).get("type") == "tool_use":
                     self.call_ids[event["index"]] = event["content_block"].get("id")
                 usage = ((event.get("message") or {}).get("usage") if kind == "message_start"
                          else event.get("usage")) or {}
-                if "input_tokens" in usage:
+                if usage.get("input_tokens") is not None:
                     self.raw_input = self._count(usage["input_tokens"])
                 if "output_tokens" in usage and kind == "message_delta":
                     self.output = self._count(usage["output_tokens"])
-                if "cache_read_input_tokens" in usage:
+                if usage.get("cache_read_input_tokens") is not None:
                     self.cache_read = self._count(usage["cache_read_input_tokens"])
-                if "cache_creation_input_tokens" in usage:
+                if usage.get("cache_creation_input_tokens") is not None:
                     count = self._count(usage["cache_creation_input_tokens"])
                     if count != self.cache_write:
                         self.cache_write_5m = self.cache_write_1h = None if count else 0
@@ -130,7 +157,10 @@ class WireEvidence:
                     self.cache_write_5m = (self._count(creation["ephemeral_5m_input_tokens"])
                                           if "ephemeral_5m_input_tokens" in creation else None)
                     self.cache_write_1h = (self._count(creation["ephemeral_1h_input_tokens"])
-                                          if "ephemeral_1h_input_tokens" in creation else None)
+                                           if "ephemeral_1h_input_tokens" in creation else None)
+                    if (usage.get("cache_creation_input_tokens") is None
+                            and self.cache_write_5m is not None and self.cache_write_1h is not None):
+                        self.cache_write = self.cache_write_5m + self.cache_write_1h
                 tier = usage.get("service_tier")
                 self.terminal |= kind == "message_stop"
             if tier is not None:
@@ -139,6 +169,13 @@ class WireEvidence:
                 self.price_context = {"processing" if tier == "batch" else "service_tier": tier}
         except (ValueError, TypeError, AttributeError, KeyError):
             raise DomainError("invalid_response", "模型流数据无效") from None
+
+    def _responses_call(self, index, item):
+        identity = (item.get("id"), item.get("call_id"))
+        previous = self.item_ids.setdefault(index, identity)
+        if previous != identity:
+            self.call_id_conflict = True
+        self.call_ids.setdefault(index, item.get("call_id"))
 
     def check_call_ids(self, sdk_ids):
         # SDK可能给缺失/空ID生成默认值；只能接受wire中真实出现且未改写的身份。
@@ -153,16 +190,21 @@ class WireEvidence:
     def usage(self):
         total = self.raw_input
         if total is not None and self.protocol == "anthropic":
-            total += self.cache_read + self.cache_write
+            # Messages 的 input_tokens 只含非缓存输入，需要缓存分项才能还原总量。
+            total = (total + self.cache_read + self.cache_write
+                     if self.cache_read is not None and self.cache_write is not None else None)
         known = (total is not None and self.output is not None and self.cache_write_1h is not None
                  and self.cache_write_5m is not None)
-        if total is not None and (self.cache_read + self.cache_write > total
-                or self.cache_write_1h is not None and self.cache_write_1h > self.cache_write):
+        if total is not None and (self.cache_read or 0) + (self.cache_write or 0) > total:
             raise DomainError("invalid_response", "模型缓存用量不一致")
-        if (self.protocol == "anthropic" and self.cache_write_1h is not None and self.cache_write_5m is not None
+        if self.cache_write_1h is not None and self.cache_write is not None and self.cache_write_1h > self.cache_write:
+            raise DomainError("invalid_response", "模型缓存用量不一致")
+        if (self.protocol == "anthropic" and self.cache_write is not None
+                and self.cache_write_1h is not None and self.cache_write_5m is not None
                 and self.cache_write_1h + self.cache_write_5m != self.cache_write):
             raise DomainError("invalid_response", "模型缓存TTL分类与总量不一致")
         return Usage(input_tokens=total, output_tokens=self.output, cached_input_tokens=self.cache_read,
+            cache_read_reported=True if self.cache_read is not None else None,
             cache_write_tokens=self.cache_write, cache_write_1h_tokens=self.cache_write_1h,
             source="provider_wire", status="known" if known else "unknown")
 
@@ -203,14 +245,12 @@ class GuardTransport(httpx2.AsyncBaseTransport):
         if self.sent:
             raise DomainError("model_retry_forbidden", "同一模型活动不能自动重发")
         body = await request.aread()
-        endpoint = self.profile.endpoint.rstrip("/") + (
-            "/chat/completions" if self.profile.protocol == "openai_compatible" else "/v1/messages")
+        endpoint = resolve_model_endpoint(self.profile.protocol, self.profile.endpoint).operation_url
         if request.method != "POST" or str(request.url) != endpoint:
             raise DomainError("model_endpoint_mismatch", "模型请求目的地与配置不一致")
         self.check()
         estimate = estimate_request(body, self.max_output_tokens, self.pricing)
-        margin = max(1024, (self.profile.context_window_tokens + 19) // 20)
-        if estimate.input_estimate + self.max_output_tokens + margin > self.profile.context_window_tokens:
+        if estimate.input_estimate > self.profile.input_budget(self.max_output_tokens):
             raise DomainError("context_limit", "完整模型请求超出上下文预算，请缩小范围")
         digest = hashlib.sha256(request.method.encode() + b"\n" + str(request.url).encode() + b"\n" + body).hexdigest()
         beta = request.headers.get("anthropic-beta") if self.profile.protocol == "anthropic" else None

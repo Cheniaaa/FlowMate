@@ -16,14 +16,18 @@ export interface WorkbenchRequest { target: WorkbenchTarget | null; from_quick: 
 export const showWorkbench = (target: WorkbenchTarget | null) => invoke<void>('show_workbench', { target });
 export const windowError = (error: unknown) => error instanceof Error ? error.message : String(error);
 export const setQuickFormActive = (active: boolean) => invoke<void>('set_quick_form_active', { active });
-export type SettingsSection = 'models' | 'assistant' | 'resources' | 'windows' | 'memory' | 'environments';
+export type SettingsSection = 'models' | 'assistant' | 'resources' | 'windows' | 'memory' | 'environments' | 'appearance';
 export interface SettingsNavigation { section: SettingsSection; from_quick: boolean }
 export const openSettings = (section: SettingsSection) => invoke<void>('open_settings', { section });
 
+export const selectWorkspaceDirectory = (commandId: string) =>
+  invoke<string | null>('select_workspace_directory', { commandId });
+export const discardWorkspaceDirectorySelection = (commandId: string) =>
+  invoke<void>('discard_workspace_directory_selection', { commandId });
+
 export async function createWorkspaceFromDirectory(name: string, meta: CommandMeta) {
   validate('CommandMeta', meta);
-  const result = await invoke<unknown>('create_workspace_from_directory', { name, meta });
-  return result === null ? null : validate('WorkspaceDirectoryResult', result);
+  return validate('WorkspaceDirectoryResult', await invoke<unknown>('create_workspace_from_directory', { name, meta }));
 }
 
 export async function retryWorkspaceFromDirectory(name: string, meta: CommandMeta) {

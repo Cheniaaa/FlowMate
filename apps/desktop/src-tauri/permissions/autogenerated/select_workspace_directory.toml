@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-select-workspace-directory"
+description = "Enables the select_workspace_directory command without any pre-configured scope."
+commands.allow = ["select_workspace_directory"]
+
+[[permission]]
+identifier = "deny-select-workspace-directory"
+description = "Denies the select_workspace_directory command without any pre-configured scope."
+commands.deny = ["select_workspace_directory"]

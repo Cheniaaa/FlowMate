@@ -17,18 +17,21 @@ function item(kind: InboxPage['items'][number]['kind'], other: boolean): InboxPa
   return { ...owner, kind, task_id, version: 5, reason: '同一个原因', allowed_actions: [{ kind: 'cancel_run', target_id: owner.run_id, expected_version: 7 }] };
 }
 
-it.each(['question', 'approval', 'recovery', 'blocked', 'delivery_failed'] as const)('%s跨项目同文案在操作前显示准确项目/Task，点击绑定对应DTO对象/允许动作', async kind => {
-  const first = item(kind, false), second = item(kind, true);
+it.each(['question', 'approval', 'recovery', 'blocked', 'delivery_failed'] as const)('%s 跨项目同文案按真实名称区分，点击绑定原目标', async kind => {
+  const first = { ...item(kind, false), workspace_name: '项目甲', session_title: '会话甲', task_goal: '核对甲的发票' };
+  const second = { ...item(kind, true), workspace_name: '项目乙', session_title: '会话乙', task_goal: '核对乙的发票' };
   const onOpen = vi.fn(), onAction = vi.fn();
-  render(<PendingActionList items={[first, second]} workspaceNames={{ [id]: '项目甲', [secondId]: '项目乙' }} onOpen={onOpen} onAction={onAction} />);
+  render(<PendingActionList items={[first, second]} workspaceNames={{ [id]: '过时的项目名称' }} onOpen={onOpen} onAction={onAction} />);
   const cards = screen.getAllByRole('article');
   expect(cards).toHaveLength(2);
   for (const [index, workspace, task] of [[0, id, taskA], [1, secondId, taskB]] as const) {
-    expect(within(cards[index]).getByText(workspace)).toBeTruthy();
-    expect(within(cards[index]).getByText(task)).toBeTruthy();
+    expect(cards[index].textContent).not.toContain(workspace);
+    expect(cards[index].textContent).not.toContain(task);
   }
   expect(within(cards[0]).getByText('项目甲')).toBeTruthy();
   expect(within(cards[1]).getByText('项目乙')).toBeTruthy();
+  expect(within(cards[1]).getByText('会话乙')).toBeTruthy();
+  expect(within(cards[1]).getByText('核对乙的发票')).toBeTruthy();
   const user = userEvent.setup();
   await user.click(within(cards[1]).getByRole('button'));
   if (second.kind === 'question' || second.kind === 'approval') {
@@ -40,24 +43,26 @@ it.each(['question', 'approval', 'recovery', 'blocked', 'delivery_failed'] as co
   }
 });
 
-it('分页外项目名称未知仍保留准确项目/Task，不借用当前/唯一已知项目，不发请求', () => {
+it('归属名称缺失时保留可行动的问题，不展示内部 ID 或借用其他项目名称', () => {
   const unknown = item('question', true), fetch = vi.spyOn(globalThis, 'fetch');
   render(<PendingActionList items={[unknown]} workspaceNames={{ [id]: '唯一已知项目' }} onOpen={vi.fn()} onAction={vi.fn()} />);
-  expect(screen.getByText(secondId)).toBeTruthy();
-  expect(screen.getByText(taskB)).toBeTruthy();
+  expect(screen.getByRole('button', { name: '确认范围' })).toBeTruthy();
+  expect(screen.queryByText(secondId)).toBeNull();
+  expect(screen.queryByText(taskB)).toBeNull();
   expect(screen.queryByText('唯一已知项目')).toBeNull();
   expect(fetch).not.toHaveBeenCalled();
   fetch.mockRestore();
 });
 
-it('成员条件待办显示实际Task，恢复Run动作严格使用allowed_action目标/版本且说明多成员范围', async () => {
+it('条件待办解释授权原因，恢复仍使用原目标和版本', async () => {
   const action = { kind: 'resume' as const, target_id: secondId, expected_version: 21 };
   const pending = { id, kind: 'blocked' as const, workspace_id: id, session_id: id, run_id: secondId, task_id: taskA, version: 7,
     reason: 'context_authorization_required', allowed_actions: [action] };
   const onAction = vi.fn();
   render(<PendingActionList items={[pending]} onOpen={vi.fn()} onAction={onAction} />);
-  expect(screen.getByText(taskA)).toBeTruthy();
-  expect(screen.getByText(/该 Run 内符合条件的等待成员/)).toBeTruthy();
+  expect(screen.getByText('请检查本次任务需要的资料及发送授权。')).toBeTruthy();
+  expect(screen.queryByText(/context_authorization_required/)).toBeNull();
+  expect(screen.getByText(/符合条件的等待成员/)).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: '恢复本任务中的条件等待' }));
   expect(onAction).toHaveBeenCalledWith(pending, { kind: 'resume', target_id: secondId, expected_version: 21 });
 });

@@ -1,8 +1,9 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
 import { RuntimeClient } from '../../api/client';
 import { agent, binding, id, secondId } from '../../test/fixtures';
-import type { MemberLane } from '../../generated/contracts';
+import type { ArtifactRef, MemberLane } from '../../generated/contracts';
 import MemberResult from './MemberResult';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -20,4 +21,37 @@ it('Task completed的partial仍明确部分交付；展示完整AgentResult而�
   expect(screen.getByText(/不代表父任务目标已完成/)).toBeTruthy();
   expect(screen.getByText(/不等同已执行工具事实/)).toBeTruthy();
   expect(paths).toEqual([`/v3/tasks/${secondId}/result`]);
+});
+
+it('成员交付用产生文件的脚本投影命名，预览固定产物', async () => {
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const activityId = '00000000-0000-4000-8000-000000000015';
+  const artifact: ArtifactRef = { id: '00000000-0000-4000-8000-000000000020', task_id: secondId, activity_id: activityId, version: 1, media_type: 'text/plain',
+    content_hash: 'b'.repeat(64), dependencies: [] };
+  vi.stubGlobal('fetch', async (url: string) => {
+    const { pathname, search } = new URL(url);
+    const path = pathname + search;
+    if (path === `/v3/tasks/${secondId}/result`) return Response.json({
+      handle: { task_id: secondId, run_id: id, lifetime: 'run_bound', submitted_state: 'completed' },
+      result_version: 1, state: 'completed', artifacts: [artifact], dependencies: [], error: null,
+      result: { status: 'completed', summary: '已完成成员报告', structured_result: null, artifact_ids: [artifact.id], evidence_refs: [],
+        unresolved: [], verification: [], handled_failures: [] },
+    });
+    if (path === `/v3/artifacts/${artifact.id}/content?offset=0`) return Response.json({
+      text: '成员产物正文', start: 0, end: 6, total_chars: 6, source_version: 'v1',
+    });
+    throw new Error(`未定义HTTP ${path}`);
+  });
+  const content = vi.spyOn(client, 'artifactContent');
+  render(<MemberResult client={client} lane={{ ...lane, activities: [{ id: activityId, version: 1, task_id: secondId, run_id: id,
+    kind: 'tool', operation: 'skills.run_script', state: 'succeeded', error: null, usage: null, dependencies: [], actual_units: null,
+    script_execution: { skill_id: id, content_hash: 'b'.repeat(64), script_relative_path: 'scripts/write.py', environment_id: id,
+      environment_revision: 1, attempt_id: id, exit_code: 0, termination_reason: 'exited', truncated: false,
+      outputs: [{ relative_path: '研究结论.txt', artifact }], collection_error: null, external_costs: 'unknown' },
+  }] }} />);
+  await userEvent.click(await screen.findByRole('button', { name: '研究结论.txt' }));
+  const detail = screen.getByRole('region', { name: '产物详情' });
+  expect(within(detail).getByRole('heading', { name: '研究结论.txt' })).toBeTruthy();
+  expect((await within(detail).findByTitle('产物预览')).getAttribute('srcdoc')).toContain('成员产物正文');
+  expect(content).toHaveBeenCalledExactlyOnceWith(artifact.id, 0, 'text');
 });

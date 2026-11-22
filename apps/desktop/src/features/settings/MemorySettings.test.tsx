@@ -30,6 +30,10 @@ it('读取与自动整理策略保存不创建发送授权；目的地授权明�
   const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 }), store = createRuntimeStore(client);
   const user = userEvent.setup(); render(<MemorySettings client={client} store={store} />);
   const read = await screen.findByLabelText('启用个人画像读取');
+  expect(read.getAttribute('aria-describedby')).toBeTruthy();
+  expect(document.getElementById(read.getAttribute('aria-describedby')!)?.textContent).toContain('目标模型授权');
+  const organize = screen.getByRole('checkbox', { name: '启用自动记忆整理' });
+  expect(document.getElementById(organize.getAttribute('aria-describedby')!)?.textContent).toContain('维护任务');
   expect(screen.getByText('已授权')).toBeTruthy();
   await user.click(read); await user.click(screen.getByRole('button', { name: '保存记忆策略' }));
   await screen.findByText('记忆策略已保存');
@@ -67,8 +71,8 @@ it('全局策略更新不覆盖设置草稿或替聊天选择授权；关闭沿�
   policy = { ...memoryPolicy, version: 2, read_profile: false };
   await act(async () => { store.update(state => ({ ...state, memoryRevision: state.memoryRevision + 1 })); });
   await screen.findByText(/记忆策略已在另一窗改变/);
-  expect((screen.getByLabelText('启用自动记忆整理') as HTMLInputElement).checked).toBe(true);
-  expect((screen.getByLabelText('启用个人画像读取') as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByRole('checkbox', { name: '启用自动记忆整理', checked: true })).toBeTruthy();
+  expect(screen.getByRole('checkbox', { name: '启用个人画像读取', checked: true })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: '关闭设置' }));
   expect(close).not.toHaveBeenCalled();
   await user.click(screen.getByRole('button', { name: '保存后继续' }));

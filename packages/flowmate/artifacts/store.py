@@ -1,9 +1,11 @@
 """产物内容先暂存，引用只在Activity回执事务发布。"""
 
 import hashlib
+import json
 import os
 from pathlib import Path
 
+from flowmate.artifacts.tool_results import mcp_receipt_text, receipt_json
 from flowmate.config import RuntimeConfig
 from flowmate.contracts.base import DomainError, identifier
 from flowmate.contracts.execution import (
@@ -14,12 +16,14 @@ from flowmate.contracts.execution import (
     RuntimeChange,
     ScopeDependency,
     StagedArtifact,
+    TaskSnapshot,
     TextSlice,
 )
 from flowmate.runtime.transitions import check_scopes, context_for, emit, load
 from flowmate.tools.export_publication import ExportPublication
 from flowmate.tools.files import ExportTarget, FileAnchor
 
+TEXT_MEDIA_TYPES = frozenset({"text/plain", "text/markdown", "application/json"})
 
 class ArtifactStore:
     def __init__(self, store, policy, files, *, config=None):
@@ -52,12 +56,18 @@ class ArtifactStore:
         return decision.dependencies
 
     def stage_text(self, ctx, text, media_type, dependencies):
-        if not isinstance(text, str) or media_type not in {"text/plain", "text/markdown"}:
+        if not isinstance(text, str) or media_type not in TEXT_MEDIA_TYPES:
             raise DomainError("artifact_type_invalid", "只支持文本产物")
         return self._stage(ctx, text.encode("utf-8"), media_type, dependencies)
 
     def stage_binary(self, ctx, data: bytes, dependencies):
         return self._stage(ctx, data, "application/octet-stream", dependencies)
+
+    def stage_image(self, ctx, data, media_type, dependencies):
+        # 解码与预算已在 MCP 接收边界完成，不重新读取或转码原图。
+        if media_type not in {"image/png", "image/jpeg"}:
+            raise DomainError("artifact_type_invalid", "图片产物仅支持 PNG/JPEG")
+        return self._stage(ctx, data, media_type, dependencies)
 
     def _stage(self, ctx, data, media_type, dependencies):
         if ctx.activity_id is None:
@@ -129,21 +139,62 @@ class ArtifactStore:
             raise DomainError("artifact_scope_mismatch", "产物不在当前上下文范围")
         ref = ArtifactRef.model_validate_json(row[1])
         if for_user:
-            memory_dependencies = [dependency for dependency in ref.dependencies if tx.execute(
-                "SELECT 1 FROM scopes WHERE id=? AND kind='memory'", (dependency.scope_id,)).fetchone()]
-            check_scopes(tx, memory_dependencies)
-        if not for_user:
+            self.policy.check_user_artifact_sources(tx, ctx.workspace_id, ref.dependencies)
+        else:
             self.policy.artifact_input(tx, ctx, ref, artifact_version=artifact_version, content_hash=content_hash)
             self.policy.check_run_sources(tx, ctx, ref.dependencies,
                 source_run_id=owner.id,source_task_id=ref.task_id)
         return ref
 
     def _text(self, ref):
-        if ref.media_type == "application/octet-stream":
+        if ref.media_type not in TEXT_MEDIA_TYPES:
             raise DomainError("artifact_not_text", "此产物须按文件保存")
         return self._bytes(ref).decode("utf-8")
 
-    def read(self, ctx, artifact_id, offset=0, limit=40000, *, for_user=False):
+    def _readable_text(self, ref, *, ctx, for_user, follow_source=True, view="text"):
+        text = self._text(ref)
+        original = (text, False) if view == "text" else (None, False)
+        if ref.media_type != "text/plain":
+            return original
+        with self.store.transaction(write=False) as tx:
+            activity = load(tx, ActivitySnapshot, ref.activity_id)
+            if activity.receipt is None or not activity.content_committed:
+                return original
+            operation = activity.intent.operation
+            read_slice = operation in {"files.read_text", "artifacts.read"}
+            if not read_slice and activity.intent.kind != "tool":
+                return original
+            mcp = activity.mcp_source.binding if activity.mcp_source is not None else None
+            if mcp is None and not read_slice:
+                task = load(tx, TaskSnapshot, ref.task_id)
+                mcp = task.binding.config.catalog.mcp_tools.get(operation)
+            if mcp is None and not read_slice:
+                return original
+        result = activity.receipt.result
+        # 旧版只把精确匹配该活动完整回执的 blob 写成无换行 JSON，普通文件按原样读取。
+        if text != receipt_json(result):
+            return original
+        if read_slice:
+            page = TextSlice.model_validate(result)
+            if operation == "artifacts.read" and follow_source and page.start == 0 and page.end == page.total_chars:
+                # 只有旧回执覆盖完整原件，且内容与原件指纹完全一致，才沿真实读取关系展开。
+                if hashlib.sha256(page.text.encode("utf-8")).hexdigest() == page.source_version:
+                    source_id = activity.intent.arguments["arguments"]["artifact_id"]
+                    source = self.reference(ctx, source_id, for_user=for_user)
+                    if source.content_hash == page.source_version:
+                        return self._readable_text(source, ctx=ctx, for_user=for_user, follow_source=False, view=view)
+            return (page.text, False) if view == "text" else (None, False)
+        if isinstance(result, dict) and result.get("server_id") == mcp.server_id and result.get("tool_name") == mcp.original_name:
+            structured = result["structured_content"]
+            if view == "structured" and structured is not None:
+                return json.dumps(structured, ensure_ascii=False, separators=(",", ":")), True
+            if view == "text" and result["texts"]:
+                return mcp_receipt_text(result), structured is not None
+            if view == "text" and structured is not None:
+                return json.dumps(structured, ensure_ascii=False, separators=(",", ":")), True
+        return original
+
+    def read(self, ctx, artifact_id, offset=0, limit=40000, *, for_user=False, view="text"):
         if type(offset) is not int or offset < 0 or type(limit) is not int or not (
             1 <= limit <= self.config.max_read_chars
         ):
@@ -151,12 +202,14 @@ class ArtifactStore:
         ref = self.reference(ctx, artifact_id, for_user=for_user)
         if not for_user:
             self._allow(self.policy.check(ctx, ref.dependencies, "read", artifact_id=ref.id))
-        text = self._text(ref)
+        text, has_structured = self._readable_text(ref, ctx=ctx, for_user=for_user, view=view)
+        if text is None:
+            raise DomainError("not_found", "该历史回执没有独立的结构化内容")
         if offset > len(text):
             raise DomainError("artifact_range_invalid", "产物读取位置超出内容")
         end = min(len(text), offset + limit)
-        return TextSlice(text=text[offset:end], start=offset, end=end,
-                         total_chars=len(text), source_version=ref.content_hash)
+        return TextSlice(text=text[offset:end], start=offset, end=end, total_chars=len(text),
+                         source_version=ref.content_hash, has_structured_content=True if for_user and has_structured else None)
 
     def export(self, ctx, artifact_id, selection, expected_target_hash=None, *, artifact_version, content_hash):
         ref = self.reference(ctx, artifact_id, artifact_version=artifact_version, content_hash=content_hash)
@@ -173,7 +226,7 @@ class ArtifactStore:
         info = selection.export_target
         target = ExportTarget(parent=FileAnchor(info.parent_path, info.parent_identity, "directory"),
                               name=info.name, identity=info.target_identity, content_hash=info.content_hash)
-        content = self._bytes(ref) if ref.media_type == "application/octet-stream" else self._text(ref)
+        content = self._text(ref) if ref.media_type in {"text/plain", "text/markdown"} else self._bytes(ref)
         result = self.publication.publish(ctx, target, content, expected_target_hash=expected_target_hash)
         return ExportReceipt(activity_id=ctx.activity_id, target_ref=selection.id,
                               content_hash=result.content_hash,

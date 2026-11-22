@@ -5,8 +5,9 @@ import asyncio
 from flowmate import __version__
 from flowmate.contracts.events import NewEvent
 from flowmate.host.secrets import HostSecrets
-from flowmate.integrations.configuration import McpConfiguration
+from flowmate.integrations.configuration import McpConfiguration, connection_identity
 from flowmate.integrations.configuration_contracts import McpNotice
+from flowmate.integrations.contracts import McpCatalog, McpServerConfig
 from flowmate.integrations.credentials import McpCredentials
 from flowmate.integrations.managed import McpManagedConnections
 from flowmate.integrations.tools import McpTools
@@ -22,9 +23,34 @@ class _McpProvider:
     async def start(self):
         await self.service.manager.start()
         configs = self.service.reconnect_snapshot()
+        self._restore_catalogs(configs)
         self.service.reconnection = asyncio.create_task(self.service.reconnect(
             publisher=self.publisher, configs=configs))
         self.reconnection = self.service.reconnection
+
+    def _restore_catalogs(self, configs):
+        for config in configs:
+            if not config.enabled or config.connection_identity is None:
+                continue
+            try:
+                if connection_identity(config) != config.connection_identity:
+                    continue
+            except OSError:
+                self.service._failed_connection(config, "mcp_connection_trust_changed")
+                continue
+            with self.service.store.transaction() as tx:
+                row = tx.execute("SELECT document FROM mcp_catalogs WHERE server_id=? "
+                    "AND json_extract(document,'$.config_revision')=? ORDER BY rowid DESC LIMIT 1",
+                    (config.id, config.revision)).fetchone()
+                if row is None:
+                    continue
+                catalog = McpCatalog.model_validate_json(row[0])
+                names = self.service.effective_tool_names(tx, config, catalog)
+                if names is None:
+                    continue
+                self.publisher.publish(McpServerConfig.model_validate(config.model_dump(
+                    include=McpServerConfig.model_fields.keys())), catalog, names, tx=tx)
+                self.service.manager.restored[config.id] = (config.revision, config.connection_identity)
 
     async def drain(self):
         task = self.reconnection
@@ -48,7 +74,12 @@ class _McpProvider:
 
 def register_mcp(runtime, host, *, limits):
     def changed(tx, config):
-        runtime.mcp_tools.invalidate(tx, config.id, config.revision)
+        restored = configuration.manager.restored.get(config.id)
+        # 连接失败不等于用户撤销能力。保留本次启动核实过的目录供普通聊天固定；
+        # 实际调用仍由失败的当前连接拒绝。保存新修订、停用和发现新目录照常失效。
+        if not (config.enabled and restored is not None and restored[0] == config.revision
+                and configuration.manager.status(config.id) == "failed"):
+            runtime.mcp_tools.invalidate(tx, config.id, config.revision)
         tx.append_event(NewEvent(kind="mcp.changed", workspace_id=config.scope.workspace_id,
             payload=McpNotice(server_id=config.id, config_revision=config.revision, scope=config.scope)))
 
@@ -58,7 +89,8 @@ def register_mcp(runtime, host, *, limits):
     configuration.manager = McpManagedConnections(
         current=configuration.get, credentials=credentials, limits=limits,
     )
-    runtime.mcp_tools = McpTools(runtime.catalog, runtime.service.catalog, configuration.manager, runtime.store)
+    runtime.mcp_tools = McpTools(runtime.catalog, runtime.service.catalog, configuration.manager,
+        runtime.store, artifacts=runtime.artifacts)
     runtime.plugins.register(PluginManifest(
         plugin_id="builtin.mcp", version=__version__, requires=("builtin.tools",),
         provides=(SlotSpec(name="mcp_manager", exclusive=True),),

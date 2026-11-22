@@ -10,8 +10,11 @@ from flowmate.contracts.scopes import ScopeRef
 
 AuthorKind = Literal["user", "assistant", "tool"]
 MemoryKind = Literal["fact", "preference", "instruction", "episode"]
+PERSONAL_PROFILE_MEMORY_KINDS: tuple[MemoryKind, ...] = ("preference", "instruction")
+DEFAULT_PROJECT_MEMORY_KINDS: tuple[MemoryKind, ...] = ("preference", "instruction")
+OTHER_PROJECT_MEMORY_KINDS: tuple[MemoryKind, ...] = ("fact", "episode")
 MemoryStatus = Literal["candidate", "confirmed", "rejected", "deleted"]
-MemoryAction = Literal["accept", "reject", "revise", "delete"]
+MemoryAction = Literal["accept", "reject", "revise", "delete", "undo"]
 
 
 class MemoryEvidence(Contract):
@@ -37,6 +40,14 @@ class MemoryRecord(Contract):
     evidence: list[MemoryEvidence] = Field(default_factory=list)
     dependencies: list[ScopeDependency] = Field(default_factory=list)
     claim_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @property
+    def project_preference(self):
+        return self.scope.kind == "workspace" and self.kind in DEFAULT_PROJECT_MEMORY_KINDS
+
+    @property
+    def personal_preference(self):
+        return self.scope.kind == "user_global" and self.kind in PERSONAL_PROFILE_MEMORY_KINDS
 
     @model_validator(mode="after")
     def long_term_scope(self):
@@ -148,3 +159,9 @@ class MemoryProposalReceipt(Contract):
     id: Id
     revision: Version
     status: MemoryStatus
+
+
+class MemoryRememberReceipt(Contract):
+    outcome: Literal["staged", "candidate", "turn_only", "ambiguous", "existing", "budget"]
+    id: Id | None = None
+    revision: Version | None = None

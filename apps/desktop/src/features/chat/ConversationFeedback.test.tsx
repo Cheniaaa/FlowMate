@@ -5,9 +5,12 @@ import { RuntimeClient } from '../../api/client';
 import type { ModelMessage, PendingUserCommand, RunSnapshot } from '../../generated/contracts';
 import { agent, connection, event, id, limits, model, page, pendingUserCommand, run, runDetailSummary, secondId } from '../../test/fixtures';
 import { Conversation } from './Conversation';
+import { Toaster } from '../../components/ui/sonner';
+import { toast } from 'sonner';
+import type { ActivityView } from '../../generated/contracts';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => undefined) }));
-afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
+afterEach(() => { toast.dismiss(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks(); });
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
 const workspace = { id, version: 1, name: '反馈项目', directory_resource_id: null };
@@ -41,7 +44,42 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-it('105条乱序UUID历史：仅补可见Run的轻量事实，翻页和重开仍显示原连接失败', async () => {
+it('后台交付实时进入会话一次，保持正在输入的草稿和焦点', async () => {
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const initial = { ...message(1, run.id, '我已安排后台处理'), role: 'assistant' as const };
+  const final = { ...run, state: 'completed' as const,
+    output: { summary: '我已安排后台处理', artifact_ids: [], unresolved: [], handled_failures: [] } };
+  const report = { ...initial, id: uuid(678), event_id: '9007199254740994',
+    origin: 'background_report' as const, parts: [{ kind: 'text' as const, text: '后台交付正文' }] };
+  vi.stubGlobal('fetch', async (url: string) => {
+    const path = new URL(url).pathname.replace('/v3', '');
+    if (path.endsWith('/events')) return new Response(new ReadableStream({ start(controller) { stream = controller; } }));
+    if (path.endsWith('/messages')) return Response.json(page([initial]));
+    if (path.endsWith('/runs')) return Response.json(page([final]));
+    if (path === `/runs/${run.id}`) return Response.json(detail(final, [initial]));
+    return Response.json(base(path));
+  });
+  render(<Conversation client={client} compact />);
+  await screen.findByText('我已安排后台处理');
+  const composer = screen.getByLabelText('消息') as HTMLTextAreaElement;
+  composer.focus();
+  fireEvent.change(composer, { target: { value: '另外一件事的草稿' } });
+  await waitFor(() => expect(stream).toBeDefined());
+  await act(async () => {
+    stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({
+      kind: 'durable', event_id: report.event_id, event: { ...event, kind: 'task.stepped',
+        event_id: report.event_id, payload: { ...event.payload, messages: [report] } },
+    })}\n\n`));
+  });
+  const article = await screen.findByRole('article', { name: '后台交付' });
+  expect(within(article).getByText('后台交付正文')).toBeTruthy();
+  expect(screen.getAllByText('我已安排后台处理')).toHaveLength(1);
+  expect(screen.getAllByText('后台交付正文')).toHaveLength(1);
+  expect(composer.value).toBe('另外一件事的草稿');
+  expect(document.activeElement).toBe(composer);
+});
+
+it('105条乱序UUID历史：只在任务范围保留原连接失败，翻页和重开不向聊天补发错误', async () => {
   const runs = Array.from({ length: 105 }, (_, n): RunSnapshot => ({ ...run, id: uuid(200 + n), state: 'cancelled', reason: 'user_cancelled' }));
   const messages = [...runs].reverse().map((value, n) => message(n, value.id));
   const batches: string[][] = [], heavy: string[] = [];
@@ -51,7 +89,7 @@ it('105条乱序UUID历史：仅补可见Run的轻量事实，翻页和重开仍
     if (path.endsWith('/run-feedback')) {
       const ids = parsed.searchParams.getAll('run_id'); batches.push(ids);
       return Response.json(page(ids.map(run_id => ({ run_id, version: 1, workspace_id: id, session_id: id,
-        connection_id: connection.id, root_task_id: run.root_task_id, state: 'cancelled', reason: 'user_cancelled',
+        connection_id: connection.id, root_task_id: run.root_task_id, state: 'cancelled', reason: 'user_cancelled', context_usage: null,
         model_activity: { id: uuid(900), version: 3, run_id, task_id: run.root_task_id, kind: 'model',
           operation: 'model.generate', state: 'uncertain', error: 'model_authentication_failed', usage: null,
           actual_units: null, dependencies: [], script_execution: null } }))));
@@ -64,17 +102,25 @@ it('105条乱序UUID历史：仅补可见Run的轻量事实，翻页和重开仍
   });
   const view = render(<Conversation client={client} />);
   const thread = await screen.findByRole('region', { name: '持久对话' });
-  await waitFor(() => expect(within(thread).getAllByText(/拒绝了此前的请求/)).toHaveLength(100));
-  fireEvent.click(within(thread).getAllByRole('button', { name: '检查连接' })[0]);
+  await waitFor(() => expect(batches.flat()).toHaveLength(100));
+  expect(within(thread).queryByText(/拒绝了此前的请求/)).toBeNull();
+  expect(within(thread).queryByRole('button', { name: '检查连接' })).toBeNull();
+  fireEvent.click(document.querySelector('[data-conversation-panel="tasks"]')!);
+  const task = await screen.findByRole('dialog', { name: '任务详情' });
+  expect(await within(task).findByText(/拒绝了此前的请求/)).toBeTruthy();
+  fireEvent.click(within(task).getByRole('button', { name: '检查连接' }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('show_workbench', { target: { kind: 'connection', connection_id: connection.id } }));
   fireEvent.click(screen.getByRole('button', { name: '更多历史' }));
-  await waitFor(() => expect(within(thread).getAllByText(/拒绝了此前的请求/)).toHaveLength(105));
+  await waitFor(() => expect(within(thread).getAllByRole('article', { name: '你的消息' })).toHaveLength(105));
+  expect(within(thread).queryByText(/拒绝了此前的请求/)).toBeNull();
   expect(batches[0]).toContain(uuid(304));
   expect(Math.max(...batches.map(ids => ids.length))).toBeLessThanOrEqual(100);
   expect(new Set(heavy).size).toBeLessThanOrEqual(2);
   view.unmount();
   render(<Conversation client={client} />);
-  await waitFor(() => expect(screen.getAllByText(/拒绝了此前的请求/)).toHaveLength(100));
+  const reopened = await screen.findByRole('region', { name: '持久对话' });
+  await waitFor(() => expect(within(reopened).getAllByRole('article', { name: '你的消息' })).toHaveLength(100));
+  expect(screen.queryByText(/拒绝了此前的请求/)).toBeNull();
 });
 
 it.each([false, true])('缺凭据异步失败保留输入并定位真实连接，较新编辑不会被覆盖 newDraft=%s', async newDraft => {
@@ -90,7 +136,7 @@ it.each([false, true])('缺凭据异步失败保留输入并定位真实连接�
     if (path === `/runs/${run.id}`) return Response.json(detail(current, [input]));
     if (path.endsWith('/run-feedback')) return Response.json(page([{ run_id: run.id, version: current.version,
       workspace_id: id, session_id: id, root_task_id: run.root_task_id, connection_id: connection.id,
-      state: current.state, reason: current.reason, model_activity: null }]));
+      state: current.state, reason: current.reason, model_activity: null, context_usage: null }]));
     return Response.json(base(path));
   });
   render(<Conversation client={client} compact />);
@@ -145,7 +191,7 @@ it.each([
     if (path === `/runs/${current.id}`) return Response.json({ ...detail(current), watermark: mark });
     if (path.endsWith('/run-feedback')) return Response.json(markedPage(parsed.searchParams.getAll('run_id').map(run_id => ({
       run_id, version: current.version, workspace_id: id, session_id: id, connection_id: connection.id,
-      root_task_id: current.root_task_id, state: current.state, reason: current.reason, model_activity: null,
+      root_task_id: current.root_task_id, state: current.state, reason: current.reason, model_activity: null, context_usage: null,
     }))));
     if (path.endsWith('/snapshot')) {
       const value = base(path) as object;
@@ -167,7 +213,10 @@ it.each([
   await screen.findByRole('heading', { name: session.title });
   const input = screen.getByLabelText('消息') as HTMLTextAreaElement;
   fireEvent.change(input, { target: { value: '原始排队输入' } });
-  fireEvent.click(screen.getByLabelText('完成后自动总结'));
+  fireEvent.click(screen.getByRole('button', { name: '运行配置' }));
+  const configuration = within(screen.getByRole('dialog', { name: '运行配置' }));
+  fireEvent.click(configuration.getByRole('checkbox', { name: '完成后自动总结' }));
+  fireEvent.click(configuration.getByRole('button', { name: '关闭对话框' }));
   await waitFor(() => expect((screen.getByRole('button', { name: '排队发送' }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.submit(input.closest('form')!);
   await waitFor(() => expect(writes).toHaveLength(1));
@@ -198,7 +247,10 @@ it.each([
     await screen.findByRole('heading', { name: session.title });
   }
   expect(input.value).toBe(draftCase === 'edited' ? '后来编辑的输入' : '原始排队输入');
-  expect((screen.getByLabelText('完成后自动总结') as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: '运行配置' }));
+  const reopened = within(screen.getByRole('dialog', { name: '运行配置' }));
+  expect(reopened.getByRole('checkbox', { name: '完成后自动总结' }).getAttribute('aria-checked')).toBe('true');
+  fireEvent.click(reopened.getByRole('button', { name: '关闭对话框' }));
   await publish(3, 'task.stepped');
   expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'show_workbench')).toHaveLength(draftCase === 'other-session' ? 0 : 1);
   expect(writes.map(item => item.path)).toEqual([`/sessions/${id}/commands`]);
@@ -222,6 +274,8 @@ it('消息反馈读取失败可明确只读重试，重试期间锁定按钮，�
     return Response.json(base(path));
   });
   render(<Conversation client={client} compact />);
+  await screen.findByRole('heading', { name: session.title });
+  fireEvent.click(document.querySelector('[data-conversation-panel="tasks"]')!);
   const retry = await screen.findByRole('button', { name: '重新读取消息反馈' });
   fireEvent.change(screen.getByLabelText('消息'), { target: { value: '仍在编辑的草稿' } });
   expect(reads).toBe(1);
@@ -229,7 +283,7 @@ it('消息反馈读取失败可明确只读重试，重试期间锁定按钮，�
   await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(true));
   expect(reads).toBe(2);
   await act(async () => { late.resolve(Response.json(page([{ run_id: run.id, version: run.version, workspace_id: id,
-    session_id: id, root_task_id: run.root_task_id, connection_id: connection.id, state: stopped.state, reason: stopped.reason,
+    session_id: id, root_task_id: run.root_task_id, connection_id: connection.id, state: stopped.state, reason: stopped.reason, context_usage: null,
     model_activity: { id: uuid(800), version: 3, run_id: run.id, task_id: run.root_task_id, kind: 'model', operation: 'model.generate',
       state: 'uncertain', error: 'model_authentication_failed', usage: null, actual_units: null, dependencies: [], script_execution: null } }]))); });
   expect(await screen.findByText(/拒绝了此前的请求/)).toBeTruthy();
@@ -256,8 +310,11 @@ it('切会话后不显示前会话的读取重试，迟到的重试失败也不�
     return Response.json(base(path, [session, other]));
   });
   render(<Conversation client={client} compact />);
+  await screen.findByRole('heading', { name: session.title });
+  fireEvent.click(document.querySelector('[data-conversation-panel="tasks"]')!);
   fireEvent.click(await screen.findByRole('button', { name: '重新读取消息反馈' }));
   await waitFor(() => expect(reads).toBe(2));
+  fireEvent.click(screen.getByRole('button', { name: '关闭详情' }));
   fireEvent.click(await screen.findByRole('button', { name: other.title }));
   await screen.findByRole('heading', { name: other.title });
   await act(async () => { late.resolve(Response.json({ error: { code: 'unavailable', safe_message: 'fixture offline', related_ids: [], retryable: true } }, { status: 503 })); });
@@ -265,4 +322,87 @@ it('切会话后不显示前会话的读取重试，迟到的重试失败也不�
   expect(screen.queryByText(/暂时无法读取本会话的消息反馈/)).toBeNull();
   expect(screen.queryByRole('alert')).toBeNull();
   expect(invoke).not.toHaveBeenCalled();
+});
+
+it.each([false, true])('新认证错误只在前台右上角出现一次并定位失败连接，关闭后草稿仍在 compact=%s', async compact => {
+  toast.dismiss();
+  const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  let current = { ...run };
+  let activity: ActivityView = { id: uuid(700), run_id: run.id, task_id: run.root_task_id, version: 1,
+    kind: 'model', operation: 'model.generate', state: 'dispatched', error: null, usage: null,
+    actual_units: null, dependencies: [], script_execution: null };
+  vi.stubGlobal('fetch', async (url: string) => {
+    const path = new URL(url).pathname.replace('/v3', '');
+    if (path.endsWith('/events')) return new Response(new ReadableStream({ start(controller) { stream = controller; } }));
+    if (path.endsWith('/messages')) return Response.json(page([message(0, run.id, '问文档')]));
+    if (path.endsWith('/runs')) return Response.json(page([current]));
+    if (path.endsWith('/run-feedback')) return Response.json(page([]));
+    if (path === `/runs/${run.id}`) return Response.json({ ...detail(current), activities: page([activity]) });
+    return Response.json(base(path));
+  });
+  const view = render(<><Conversation client={client} compact={compact} /><Toaster /></>);
+  await screen.findByRole('heading', { name: session.title });
+  const input = screen.getByLabelText('消息') as HTMLTextAreaElement;
+  fireEvent.change(input, { target: { value: '未发送的下一轮草稿' } });
+  current = { ...current, version: 2, state: 'failed', reason: 'model_authentication_failed' };
+  activity = { ...activity, version: 2, state: 'failed', error: 'model_authentication_failed' };
+  async function publish(offset: number, activities = [activity]) {
+    const mark = (BigInt(event.event_id) + BigInt(offset)).toString();
+    await act(async () => { stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({
+      kind: 'durable', event_id: mark, event: { ...event, kind: 'activity.received', event_id: mark,
+        payload: { ...event.payload, runs: [current], activities } },
+    })}\n\n`)); });
+  }
+  await publish(1);
+  const notification = await screen.findByText(/拒绝了此连接的凭据/, { selector: '[data-sonner-toast] [data-title]' });
+  expect(notification.closest('[data-sonner-toaster]')?.getAttribute('data-y-position')).toBe('top');
+  expect(notification.closest('[data-sonner-toaster]')?.getAttribute('data-x-position')).toBe('right');
+  expect(notification.closest('[data-sonner-toast]')?.getAttribute('data-type')).toBe('error');
+  fireEvent.click(within(notification.closest('li')!).getByRole('button', { name: '检查连接' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('show_workbench', { target: { kind: 'connection', connection_id: connection.id } }));
+  await waitFor(() => expect(screen.queryAllByText(/拒绝了此连接的凭据/, { selector: '[data-sonner-toast] [data-title]' })).toHaveLength(0));
+  await publish(2);
+  await publish(3, []);
+  expect(screen.queryAllByText(/拒绝了此连接的凭据/, { selector: '[data-sonner-toast] [data-title]' })).toHaveLength(0);
+  expect(input.value).toBe('未发送的下一轮草稿');
+  focus.mockReturnValue(false);
+  activity = { ...activity, id: uuid(701) };
+  await publish(4);
+  expect(screen.queryAllByText(/拒绝了此连接的凭据/, { selector: '[data-sonner-toast] [data-title]' })).toHaveLength(0);
+  focus.mockReturnValue(true);
+  await publish(5);
+  expect(screen.queryAllByText(/拒绝了此连接的凭据/, { selector: '[data-sonner-toast] [data-title]' })).toHaveLength(0);
+  current = { ...current, version: 3, state: 'cancelled', reason: 'user_cancelled' };
+  activity = { ...activity, id: uuid(702), error: 'cancelled' };
+  await publish(6);
+  expect(screen.queryByText('模型请求未完成，请查看任务。', { selector: '[data-sonner-toast] [data-title]' })).toBeNull();
+  view.unmount();
+  render(<><Conversation client={client} compact={compact} /><Toaster /></>);
+  await screen.findByRole('heading', { name: session.title });
+  expect(screen.queryAllByText(/拒绝了此连接的凭据/, { selector: '[data-sonner-toast] [data-title]' })).toHaveLength(0);
+});
+
+it('会话只显示同轮一次最终答复，重新挂载仍保留同文不同轮的两份答复', async () => {
+  const output = { summary: '两轮相同的正式答复', artifact_ids: [], unresolved: [], handled_failures: [] };
+  const first = { ...run, state: 'completed' as const, output }, second = { ...first, id: secondId };
+  const messages: ModelMessage[] = [
+    message(0, first.id, '第一轮'), { ...message(1, first.id, output.summary), role: 'assistant' },
+    message(2, second.id, '第二轮'), { ...message(3, second.id, output.summary), role: 'assistant' },
+  ];
+  vi.stubGlobal('fetch', async (url: string) => {
+    const path = new URL(url).pathname.replace('/v3', '');
+    if (path.endsWith('/events')) return new Response(new ReadableStream());
+    if (path.endsWith('/messages')) return Response.json(page(messages));
+    if (path.endsWith('/runs')) return Response.json(page([second, first]));
+    if (path.endsWith('/run-feedback')) return Response.json(page([]));
+    if (path.startsWith('/runs/')) return Response.json(detail(path.endsWith(first.id) ? first : second));
+    return Response.json(base(path));
+  });
+  const view = render(<Conversation client={client} />);
+  await waitFor(() => expect(screen.getAllByText(output.summary)).toHaveLength(2));
+  expect(document.querySelector('.run-output')).toBeNull();
+  view.unmount();
+  render(<Conversation client={client} compact />);
+  await waitFor(() => expect(screen.getAllByText(output.summary)).toHaveLength(2));
 });

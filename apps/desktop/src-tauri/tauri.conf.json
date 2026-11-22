@@ -11,9 +11,9 @@
   },
   "app": {
     "windows": [
-      { "label": "main", "title": "FlowMate", "create": false, "width": 1000, "height": 750 },
+      { "label": "main", "title": "FlowMate", "create": false, "visible": false, "width": 1000, "height": 750 },
       { "label": "quick", "title": "FlowMate — 快捷助理", "url": "index.html?window=quick", "create": false, "visible": false, "width": 520, "height": 720 },
-      { "label": "ball", "title": "FlowMate", "url": "index.html?window=ball", "create": false, "visible": false, "width": 88, "height": 88, "decorations": false, "resizable": false, "shadow": false, "alwaysOnTop": true, "skipTaskbar": true, "focus": false, "focusable": false }
+      { "label": "ball", "title": "FlowMate 折纸鸟", "url": "index.html?window=ball", "create": false, "visible": false, "width": 88, "height": 88, "transparent": true, "decorations": false, "resizable": false, "shadow": false, "alwaysOnTop": true, "skipTaskbar": true, "focus": false, "focusable": false }
     ],
     "security": {
       "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost; object-src 'none'; frame-src 'self'",

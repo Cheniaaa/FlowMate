@@ -3,8 +3,10 @@ import userEvent from '@testing-library/user-event';
 import { invoke } from '@tauri-apps/api/core';
 import { afterEach, expect, it, vi } from 'vitest';
 import { RuntimeClient } from '../../api/client';
-import { agent, connection, event, grant, id, limits, model, page, pendingUserCommand, resource, run, runDetailSummary, secondId } from '../../test/fixtures';
+import { agent, connection, event, grant, id, limits, model, modelResolution, page, pendingUserCommand, resource, run, runDetailSummary, secondId } from '../../test/fixtures';
 import { createDraftStore } from '../../state/draft-store';
+import type { SkillView } from '../../generated/contracts';
+import { expectComposerModel, selectComposerModel } from '../../test/composer-model';
 import { Conversation } from './Conversation';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
@@ -13,15 +15,29 @@ Object.defineProperties(HTMLDialogElement.prototype, {
   showModal: { configurable: true, value(this: HTMLDialogElement) { this.open = true; } },
   close: { configurable: true, value(this: HTMLDialogElement) { this.open = false; } },
 });
-afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); localStorage.clear(); });
 const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 });
 const session = { id, version: 1, workspace_id: id, title: '会话 A', agent_profile_id: id, kind: 'interaction', archived: false };
 const otherSession = { ...session, id: secondId, title: '会话 B' };
-const task = { id: run.root_task_id, version: 1, run_id: id, binding: { agent_work: null, input_artifacts: [], input_result: null, execution_session_id: run.execution_session_id, interaction_session_id: run.interaction_session_id, config: run.config, sources: run.sources, delegation_depth: 0 }, parent_task_id: null, origin_task_id: null, kind: 'agent',
+const draftScope = { kind: 'workspace' as const, workspace_id: id, session_id: null };
+const draftFile = { ...resource, id: '00000000-0000-4000-8000-000000000019', label: '项目原附件.txt', scope: draftScope };
+const skillHash = 'a'.repeat(64);
+const draftSkill: SkillView = {
+  version: { skill_id: secondId, content_hash: skillHash, directory_name: 'release-note', name: 'release-note',
+    description: '整理真实发布说明', metadata: {}, license: null, compatibility: null, allowed_tools: null, files: [],
+    source: { kind: 'user_created', command_id: id, base_hash: null, resource_id: null, resource_version: null,
+      source_version: null, run_id: null, task_id: null, activity_id: null, attempt_id: null }, scope: draftScope, dependencies: [] },
+  binding: { id, skill_id: secondId, scope: draftScope, enabled: true, environment_id: null, environment_revision: null, revision: 1 },
+  readiness: 'content_available',
+};
+const task = { id: run.root_task_id, version: 1, run_id: id, binding: { agent_work: null, input_artifacts: [], input_result: null, additional_result_inputs: [], file_inputs: {}, execution_session_id: run.execution_session_id, interaction_session_id: run.interaction_session_id, config: run.config, sources: run.sources, delegation_depth: 0 }, parent_task_id: null, origin_task_id: null, kind: 'agent',
   executor_id: 'builtin.agent', state: 'running', created_seq: 1, deadline_at: null, result_version: null, reason: null };
 const question = { id: secondId, version: 1, run_id: id, task_id: task.id, call_id: 'ask', message_id: id,
   question: '请确认范围', answer_schema: { type: 'string' }, status: 'pending', answer_message_id: null, dependencies: [] };
 const json = (value: unknown) => Response.json(value);
+const modelUse = (eventId: string, sessionId: string, modelId: string) => ({
+  event_id: eventId, session_id: sessionId, model_profile_id: modelId, reasoning_effort: null,
+});
 function server(active: 'agent' | 'tool' | 'follow_up' | null = null, questions = false) {
   const activeRun = active === 'follow_up' ? { ...run, kind: 'follow_up', allow_follow_up: true } : run;
   const requests: { path: string; method: string; body: any }[] = [];
@@ -56,19 +72,701 @@ function server(active: 'agent' | 'tool' | 'follow_up' | null = null, questions 
   return requests;
 }
 
-it.each([false, true])('发送会话草稿中固定的 Skill 版本，排队=%s', async queued => {
+it.each([false, true])('发送会话草稿中固定的 Skill 版本和许可选择，排队=%s', async queued => {
   const requests = server(queued ? 'follow_up' : null);
   const drafts = createDraftStore(), key = { workspaceId: id, sessionId: id };
-  const selected = { [secondId]: 'a'.repeat(64) };
+  const selected = { [secondId]: 'a'.repeat(64), [id]: 'b'.repeat(64) };
+  const permissions = { [secondId]: id, [id]: null };
   const user = userEvent.setup();
   render(<Conversation client={client} draftStore={drafts} />);
   await screen.findByRole('heading', { name: session.title });
-  act(() => { drafts.update(key, { skillVersions: selected }); });
+  act(() => { drafts.update(key, { skillVersions: selected, skillExecutionPermissions: permissions }); });
   await user.type(screen.getByLabelText('消息'), '用选定版本整理发布说明');
   await user.click(screen.getByRole('button', { name: queued ? '排队发送' : '发送' }));
   const path = `/sessions/${id}/${queued ? 'commands' : 'runs'}`;
-  await waitFor(() => expect(requests.find(item => item.method === 'POST' && item.path === path)?.body.data.sources.skill_versions).toEqual(selected));
-  await waitFor(() => expect(drafts.read(key).skillVersions).toEqual({}));
+  await waitFor(() => expect(requests.find(item => item.method === 'POST' && item.path === path)?.body.data.sources)
+    .toMatchObject({ skill_versions: selected, skill_execution_permissions: permissions }));
+  await waitFor(() => expect(drafts.read(key)).toMatchObject({ skillVersions: {}, skillExecutionPermissions: {} }));
+});
+
+it('切换同名模型连接后只发送新模型支持的强度，队列保留确切模型与档位', async () => {
+  const requests = server('follow_up');
+  const previous = globalThis.fetch;
+  const relay = { ...connection, id, display_name: '备用连接', endpoint: 'https://alternative.invalid/v1' };
+  const primary = { ...model, capabilities: { ...model.capabilities, reasoning_efforts: ['high'] } };
+  const other = { ...primary, id, connection_id: relay.id, capabilities: { ...model.capabilities, reasoning_efforts: ['low'] } };
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const path = new URL(url).pathname;
+    if (path === '/v3/models') return json(page([primary, other]));
+    if (path === '/v3/model-connections') return json(page([connection, relay]));
+    if (path === `/v3/models/${model.id}/resolved`) return json({ ...modelResolution, ...primary });
+    if (path === `/v3/models/${id}/resolved`) return json({ ...modelResolution, ...other, endpoint: relay.endpoint });
+    return previous(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={client} />);
+  await user.click(await screen.findByRole('button', { name: '思考强度' }));
+  await user.click(await screen.findByRole('menuitemradio', { name: '高' }));
+  await selectComposerModel(user, other.id);
+  await user.click(await screen.findByRole('button', { name: '思考强度' }));
+  expect(screen.queryByRole('menuitemradio', { name: '高' })).toBeNull();
+  await user.click(await screen.findByRole('menuitemradio', { name: '低' }));
+  fireEvent.change(screen.getByLabelText('消息'), { target: { value: '排入新目标' } });
+  await user.click(screen.getByRole('button', { name: '排队发送' }));
+  await waitFor(() => expect(requests.find(item => item.method === 'POST' && item.path === `/sessions/${id}/commands`)?.body.data)
+    .toMatchObject({ model_profile_id: other.id, reasoning_effort: 'low' }));
+});
+
+it('已存在会话恢复最近一轮人工发送的模型，自动总结不覆盖它', async () => {
+  server();
+  const previous = globalThis.fetch;
+  const historicalRunId = '00000000-0000-4000-8000-000000000033';
+  const humanRun = {
+    ...run, id: historicalRunId, state: 'completed', config: {
+      ...run.config, model_profile: { ...run.config.model_profile, id, model_id: 'another-model' },
+    },
+  };
+  const followUpRun = { ...run, id: secondId, state: 'completed', kind: 'follow_up' };
+  const earlierRun = { ...run, state: 'completed' };
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const parsed = new URL(url);
+    if (init.method !== 'POST' && parsed.pathname === `/v3/sessions/${id}/runs`) {
+      return json({ ...page([earlierRun, followUpRun]), last_model_use: modelUse('9007199254740992', id, humanRun.config.model_profile.id) });
+    }
+    return previous(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={client} />);
+  await screen.findByRole('heading', { name: session.title });
+  await user.type(screen.getByLabelText('消息'), '继续之前的任务');
+  const requests: Array<{ data: { model_profile_id: string } }> = [];
+  const read = globalThis.fetch;
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    if (init.method === 'POST' && new URL(url).pathname === `/v3/sessions/${id}/runs`) {
+      requests.push(JSON.parse(String(init.body)));
+    }
+    return read(url, init);
+  });
+  const send = screen.getByRole('button', { name: '发送' });
+  await waitFor(() => expect(send).toHaveProperty('disabled', false));
+  await user.click(send);
+  await waitFor(() => expect(requests[0]?.data.model_profile_id).toBe(id));
+});
+
+it.each(['accepted', 'project-grant-already-covers', 'send-rejected', 'create-response-lost', 'create-timeout', 'grant-response-lost', 'send-response-lost', 'after-model-setup', 'changed-file-text-only'] as const)('项目首发保留附件、Skill 与原命令：%s', async mode => {
+  server();
+  const previous = globalThis.fetch;
+  const firstSession = { ...otherSession, title: '新会话' };
+  const chosenModel = { ...model, id, model_id: 'another-model', capabilities: { ...model.capabilities, reasoning_efforts: ['high'] } };
+  const sessionPath = `/workspaces/${id}/sessions`;
+  const sendPath = `/sessions/${firstSession.id}/runs`;
+  const writes: { path: string; body: any }[] = [];
+  let grantReceipt: Record<string, unknown> | undefined;
+  let cancelPicker = true;
+  let created = false;
+  let configured = mode !== 'after-model-setup';
+  const createUnconfirmed = mode === 'create-response-lost' || mode === 'create-timeout';
+  vi.mocked(invoke).mockImplementation(async (name, args) => {
+    if (name !== 'select_resources') return;
+    expect(args).toEqual({ scope: draftScope, kind: 'file' });
+    return { resources: cancelPicker ? [] : [draftFile] };
+  });
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const path = new URL(url).pathname.replace('/v3', '');
+    if (path === '/capabilities/skills') return json(page([draftSkill]));
+    if (path === '/capabilities/skill-exports') return json([]);
+    if (path.endsWith('/file')) return json({ skill_id: secondId, content_hash: skillHash, path: 'SKILL.md',
+      file_hash: skillHash, encoding: 'utf-8', content: '正文', start: 0, end: 2, total: 2 });
+    if (path === '/capabilities/skills/resolve') {
+      expect(JSON.parse(String(init.body))).toEqual({ scope: draftScope, versions: { [secondId]: skillHash } });
+      return json({ versions: { [secondId]: skillHash }, dependencies: [],
+        entries: [{ skill_id: secondId, content_hash: skillHash, name: 'release-note', description: '整理真实发布说明' }] });
+    }
+    if (path.endsWith('/resource-coverage')) {
+      expect(path).toBe(`/sessions/${firstSession.id}/resource-coverage`);
+      expect(JSON.parse(String(init.body))).toEqual({ resource_ids: [draftFile.id], model_profile_id: id });
+      const allowed = !!grantReceipt || mode === 'project-grant-already-covers';
+      const missing = allowed ? [] : [draftFile.id];
+      return json({ allowed, destination: connection.endpoint, missing_read: missing, missing_model_send: missing });
+    }
+    if (init.method === 'POST') {
+      const body = JSON.parse(String(init.body));
+      writes.push({ path, body });
+      if (path === sessionPath) {
+        created = true;
+        if (mode === 'create-response-lost' && writes.length === 1) throw new TypeError('synthetic network loss');
+        if (mode === 'create-timeout' && writes.length === 1) throw new DOMException('synthetic timeout', 'TimeoutError');
+        return json(firstSession);
+      }
+      if (path === '/grants') {
+        grantReceipt = { ...grant, ...body.data };
+        if (mode === 'grant-response-lost') throw new TypeError('synthetic grant response loss');
+        return json(grantReceipt);
+      }
+      if (path === sendPath) {
+        if (writes.filter(write => write.path === sendPath).length === 1) {
+          if (mode === 'send-rejected') {
+            return Response.json({ error: { code: 'model_rejected', safe_message: '模型请求尚未接收', retryable: false, related_ids: [] } }, { status: 409 });
+          }
+          if (mode === 'send-response-lost') throw new TypeError('synthetic run response loss');
+          if (mode === 'changed-file-text-only') return Response.json({ error: { code: 'file_source_changed',
+            safe_message: '附件内容已改变', retryable: false, related_ids: [draftFile.id] } }, { status: 409 });
+        }
+        return json({ ...run, state: 'completed', interaction_session_id: firstSession.id, execution_session_id: firstSession.id });
+      }
+    }
+    if (path.startsWith(`/sessions/${firstSession.id}/commands/`)) {
+      const grantCommand = writes.find(write => write.path === '/grants');
+      return json(path.endsWith(grantCommand?.body.meta.command_id)
+        ? { status: 'confirmed', result: grantReceipt } : { status: 'not_found', result: null });
+    }
+    if (path === `/workspaces/${id}/grants`) return json(page(grantReceipt ? [grantReceipt] : []));
+    if (path === '/profiles/default') return json({ ...agent, default_model_profile_id: model.id });
+    if (path === '/models') return json(page(configured ? [model, chosenModel] : []));
+    if (path === `/models/${id}/resolved`) return json({ ...modelResolution, ...chosenModel });
+    if (path === `/workspaces/${id}/snapshot`) {
+      const value = await (await previous(url, init)).json();
+      return json({ ...value, sessions: page(created ? [firstSession] : []) });
+    }
+    return previous(url, init);
+  });
+  const drafts = createDraftStore();
+  const user = userEvent.setup();
+  render(<Conversation client={client} draftStore={drafts} />);
+  await screen.findByRole('heading', { name: 'FlowMate' });
+  const picker = screen.getByRole('button', { name: '选择文本文件' });
+  await waitFor(() => expect(picker).toHaveProperty('disabled', false));
+  await user.click(picker);
+  expect(screen.queryByRole('list', { name: '本次附件' })).toBeNull();
+  expect(drafts.read({ workspaceId: id, sessionId: '' }).revision).toBe(0);
+  cancelPicker = false;
+  await user.click(picker);
+  await screen.findByRole('button', { name: `移除附件「${draftFile.label}」` });
+  expect(screen.queryByRole('button', { name: /授权读取并发送|当前范围已授权/ })).toBeNull();
+  expect(screen.getByRole('button', { name: '选择目录' })).toHaveProperty('disabled', true);
+  const skills = screen.getByRole('button', { name: '选择 Skill' });
+  await user.click(skills);
+  await user.click(await screen.findByRole('button', { name: '返回对话与草稿' }));
+  await waitFor(() => expect(document.activeElement).toBe(skills));
+  await user.click(skills);
+  await user.click(await screen.findByRole('button', { name: '用于本次草稿' }));
+  await screen.findByRole('button', { name: '移除 Skill release-note' });
+  expect(document.activeElement).toBe(skills);
+  if (!configured) {
+    await screen.findByRole('button', { name: '配置模型' });
+    fireEvent.change(screen.getByLabelText('消息'), { target: { value: '第一次在这个项目发送' } });
+    expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', true);
+    fireEvent.submit(screen.getByLabelText('消息').closest('form')!);
+    expect(writes).toEqual([]);
+    configured = true;
+    await act(async () => window.dispatchEvent(new Event('flowmate:settings-changed')));
+    expect(screen.getByLabelText('消息')).toHaveProperty('value', '第一次在这个项目发送');
+    expect(screen.getByRole('button', { name: `移除附件「${draftFile.label}」` })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '移除 Skill release-note' })).toBeTruthy();
+  }
+  await selectComposerModel(user, id);
+  const effort = await screen.findByRole('button', { name: '思考强度' });
+  await user.click(effort);
+  await user.click(await screen.findByRole('menuitemradio', { name: '高' }));
+  if (mode !== 'after-model-setup') fireEvent.change(screen.getByLabelText('消息'), { target: { value: '第一次在这个项目发送' } });
+  expect(writes).toEqual([]);
+  const submit = async () => {
+    const button = await screen.findByRole('button', { name: '发送' });
+    await waitFor(() => expect(button).toHaveProperty('disabled', false));
+    await user.click(button);
+  };
+  await submit();
+  if (mode === 'send-response-lost') {
+    await screen.findByText('提交状态待确认');
+    await user.click(screen.getByRole('button', { name: '核对提交状态' }));
+    await user.click(await screen.findByRole('button', { name: '使用原命令重试' }));
+  } else if (createUnconfirmed) {
+    await screen.findByText('提交状态待确认');
+    expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', true);
+    fireEvent.change(screen.getByLabelText('消息'), { target: { value: '后来录入的新目标' } });
+    await user.click(screen.getByRole('button', { name: '使用原命令重试' }));
+  } else if (mode === 'grant-response-lost') {
+    await screen.findByText('提交状态待确认');
+    expect(writes.map(write => write.path)).toEqual([sessionPath, '/grants']);
+    await user.click(screen.getByRole('button', { name: '核对提交状态' }));
+  } else if (mode === 'changed-file-text-only') {
+    const decision = await screen.findByRole('region', { name: '处理会话文件' });
+    expect(within(decision).getByText(draftFile.label)).toBeTruthy();
+    await user.click(within(decision).getByRole('button', { name: '仅发送本条文字' }));
+  } else if (mode === 'send-rejected') {
+    await screen.findByRole('heading', { name: firstSession.title });
+    await waitFor(() => expect(writes).toHaveLength(3));
+    expect(screen.getByLabelText('消息')).toHaveProperty('value', '第一次在这个项目发送');
+    await submit();
+  }
+  const starts = () => writes.filter(write => write.path === sendPath);
+  await waitFor(() => expect(starts()).toHaveLength(['send-rejected', 'send-response-lost', 'changed-file-text-only'].includes(mode) ? 2 : 1));
+  expect(starts().map(write => write.body.data)).toEqual(starts().map((_, index) => expect.objectContaining({
+    text: '第一次在这个项目发送', model_profile_id: id, reasoning_effort: 'high', agent_profile_id: firstSession.agent_profile_id,
+    model_selection: { model_version: chosenModel.version, connection_id: connection.id, connection_version: connection.version },
+    ...(mode === 'changed-file-text-only' && index === 1
+      ? { inherit_session_files: false, sources: expect.objectContaining({ resource_ids: [], skill_versions: {} }) }
+      : { sources: expect.objectContaining({ resource_ids: [draftFile.id], skill_versions: { [secondId]: skillHash } }) }),
+  })));
+  const creates = writes.filter(write => write.path === sessionPath);
+  expect(creates).toHaveLength(createUnconfirmed ? 2 : 1);
+  if (createUnconfirmed) expect(creates[1].body.meta.command_id).toBe(creates[0].body.meta.command_id);
+  if (mode === 'send-response-lost') expect(starts()[1].body).toEqual(starts()[0].body);
+  const grants = writes.filter(write => write.path === '/grants');
+  expect(grants).toHaveLength(1);
+  expect(grants[0].body.data).toMatchObject({ scope: { kind: 'session', workspace_id: id, session_id: firstSession.id },
+    resource_ids: [draftFile.id], destination: connection.endpoint, purposes: ['read', 'model_send'] });
+  await waitFor(() => expect(drafts.read({ workspaceId: id, sessionId: firstSession.id }).text)
+    .toBe(createUnconfirmed ? '后来录入的新目标' : ''));
+});
+
+it.each(['text', 'recipient', 'replacement', 'adopt-pin', 'adopt-pin-changed'] as const)('会话文件接纳拒绝后，明确决定才重新发送：%s', async choice => {
+  server();
+  const previous = globalThis.fetch;
+  const commands: { path: string; body: any }[] = [];
+  let authorized: string[] = [];
+  let picked = false;
+  const visiblePin = 'b'.repeat(64);
+  const adoptPin = choice === 'adopt-pin' || choice === 'adopt-pin-changed';
+  const oldRun = { ...run, state: 'completed', attached_file_ids: [resource.id],
+    file_inputs: { [resource.id]: { source_version: visiblePin, file_identity: 'c'.repeat(64) } } };
+  const replacement = { ...resource, id: draftFile.id, label: '最新版.txt' };
+  vi.mocked(invoke).mockImplementation(async name => name === 'select_resources'
+    ? { resources: picked ? [replacement] : [] } : undefined);
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const path = new URL(url).pathname.replace('/v3', '');
+    if (adoptPin && path === `/sessions/${id}/messages`) return json(page([{
+      id, run_id: run.id, role: 'user', origin: 'conversation', event_id: '1', event_index: 0, activity_id: null,
+      private_ref: null, source_dependencies: [], parts: [{ kind: 'text', text: '原文件目标' }],
+      attachments: [{ resource_id: resource.id, name: resource.label, resource_lineage: [resource.id], read_grant_ids: [grant.id] }],
+    }]));
+    if (adoptPin && path === `/sessions/${id}/runs` && init.method !== 'POST') return json(page([oldRun]));
+    if (adoptPin && path === `/workspaces/${id}/snapshot`) {
+      const snapshot = await (await previous(url, init)).json();
+      return json({ ...snapshot, resources: page([{ ...resource, source_version: 'd'.repeat(64) }]) });
+    }
+    if (path.endsWith('/resource-coverage')) {
+      const ids: string[] = JSON.parse(String(init.body)).resource_ids;
+      const missing = ids.filter(id => !authorized.includes(id));
+      return json({ allowed: !missing.length, destination: connection.endpoint, missing_read: missing, missing_model_send: missing });
+    }
+    if (init.method === 'POST') {
+      const body = JSON.parse(String(init.body));
+      commands.push({ path, body });
+      if (path === '/grants') {
+        authorized = body.data.resource_ids;
+        return json({ ...grant, ...body.data });
+      }
+      if (commands.length === 1) return Response.json({ error: {
+        code: choice === 'replacement' ? 'file_source_changed' : 'session_file_recipient_changed',
+        safe_message: '会话文件需要处理', retryable: false, related_ids: [resource.id],
+      } }, { status: 409 });
+      if (choice === 'adopt-pin-changed' && body.data.session_file_adoptions) return Response.json({ error: {
+        code: 'file_source_changed', safe_message: '原版本已改变', retryable: false, related_ids: [resource.id],
+      } }, { status: 409 });
+      return json({ ...run, state: 'completed' });
+    }
+    if (path === `/workspaces/${id}/grants`) return json(page([]));
+    return previous(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={client} />);
+  await screen.findByRole('heading', { name: session.title });
+  await user.type(screen.getByLabelText('消息'), '继续整理会话文件');
+  const send = screen.getByRole('button', { name: '发送' });
+  await waitFor(() => expect(send).toHaveProperty('disabled', false));
+  await user.click(send);
+  const panel = await screen.findByRole('region', { name: '处理会话文件' });
+  if (!adoptPin) expect(within(panel).queryByText(resource.label)).toBeNull();
+  expect(commands).toHaveLength(1);
+  expect(commands[0].body.data).not.toHaveProperty('inherit_session_files');
+  expect(send).toHaveProperty('disabled', true);
+  if (choice === 'text') {
+    await user.click(within(panel).getByRole('button', { name: '仅发送本条文字' }));
+  } else if (adoptPin) {
+    expect(within(panel).getByText(visiblePin.slice(0, 12), { exact: false })).toBeTruthy();
+    await user.click(within(panel).getByRole('button', { name: '向此接收方使用原文件版本' }));
+    await waitFor(() => expect(commands.at(-1)?.body.data).toMatchObject({
+      inherit_session_files: false, session_file_adoptions: { [resource.id]: visiblePin },
+      sources: { resource_ids: [resource.id] },
+      model_selection: { model_version: model.version, connection_id: connection.id, connection_version: connection.version },
+    }));
+    if (choice === 'adopt-pin-changed') {
+      expect(await within(panel).findByRole('button', { name: '重新选择以使用新版' })).toBeTruthy();
+      expect(screen.getByLabelText('消息')).toHaveProperty('value', '继续整理会话文件');
+      return;
+    }
+  } else {
+    if (choice === 'recipient') expect(within(panel).getByText(connection.endpoint, { exact: false })).toBeTruthy();
+    const reselect = within(panel).getByRole('button', { name: choice === 'recipient' ? '重新选择要发送的文件' : '重新选择以使用新版' });
+    await user.click(reselect);
+    expect(panel.isConnected).toBe(true);
+    expect(commands).toHaveLength(1);
+    picked = true;
+    await user.click(reselect);
+    await screen.findByRole('button', { name: `移除附件「${replacement.label}」` });
+    expect(commands).toHaveLength(1);
+    await waitFor(() => expect(send).toHaveProperty('disabled', false));
+    await user.click(send);
+  }
+  await waitFor(() => expect(screen.getByLabelText('消息')).toHaveProperty('value', ''));
+  const final = commands.at(-1)!.body.data;
+  expect(final.text).toBe('继续整理会话文件');
+  expect(commands.map(item => item.path)).toEqual(choice === 'text'
+    ? [`/sessions/${id}/runs`, `/sessions/${id}/runs`]
+    : [`/sessions/${id}/runs`, '/grants', `/sessions/${id}/runs`]);
+  const ids = choice === 'text' ? [] : [adoptPin ? resource.id : replacement.id];
+  expect(final.sources.resource_ids).toEqual(ids);
+  if (choice === 'text') expect(final.inherit_session_files).toBe(false);
+  else expect(commands[1].body.data).toMatchObject({ resource_ids: ids, destination: connection.endpoint,
+    scope: { kind: 'session', workspace_id: id, session_id: id } });
+  if (choice !== 'text' && !adoptPin) expect(final.sources.excluded_source_ids).toEqual([resource.id]);
+});
+
+it('已接纳的续读发现原文件已变，输入框就近提供选择新版与仅发送文字', async () => {
+  server();
+  const previous = globalThis.fetch;
+  const readId = '00000000-0000-4000-8000-000000000092';
+  const resultId = '00000000-0000-4000-8000-000000000093';
+  const messages = [
+    { id: readId, run_id: run.id, role: 'assistant', origin: 'conversation', event_id: '1', event_index: 0,
+      activity_id: null, private_ref: null, source_dependencies: [],
+      parts: [{ kind: 'tool_call', name: 'files.read_text', call_id: 'read', arguments: { resource_id: resource.id } }] },
+    { id: resultId, run_id: run.id, role: 'tool', origin: 'conversation', event_id: '2', event_index: 0,
+      activity_id: null, private_ref: null, source_dependencies: [],
+      parts: [{ kind: 'tool_result', call_id: 'read', origin_message_id: readId, error: 'file_source_changed', result: null }] },
+  ];
+  const sent: any[] = [];
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const path = new URL(url).pathname;
+    if (path === `/v3/sessions/${id}/messages`) return json(page(messages));
+    if (path === `/v3/sessions/${id}/runs`) {
+      if (init.method !== 'POST') return json(page([{ ...run, state: 'completed' }]));
+      sent.push(JSON.parse(String(init.body)));
+      return json({ ...run, id: secondId, state: 'completed' });
+    }
+    if (path === `/v3/runs/${secondId}`) {
+      return json({ ...await (await previous(url.replace(secondId, id), init)).json(), run: { ...run, id: secondId, state: 'completed' } });
+    }
+    if (path.endsWith('/run-feedback')) return json(page([]));
+    return previous(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={client} />);
+  const panel = await screen.findByRole('region', { name: '处理会话文件' });
+  expect(within(panel).getByRole('button', { name: '重新选择以使用新版' })).toBeTruthy();
+  expect(within(panel).queryByText(resource.label)).toBeNull();
+  await user.type(screen.getByLabelText('消息'), '这是下一条文字');
+  await user.click(within(panel).getByRole('button', { name: '仅发送本条文字' }));
+  await waitFor(() => expect(sent[0]?.data).toMatchObject({ text: '这是下一条文字',
+    inherit_session_files: false, sources: { resource_ids: [] } }));
+  await waitFor(() => expect(screen.queryByRole('region', { name: '处理会话文件' })).toBeNull());
+});
+
+it('当前连接被移除后保留同名模型原选择和输入，阻止直接发送到另一条连接', async () => {
+  const requests = server();
+  const previous = globalThis.fetch;
+  const otherConnection = { ...connection, id, display_name: '备用连接', endpoint: 'https://alternative.invalid/v1' };
+  const sameNameModel = { ...model, id, connection_id: otherConnection.id };
+  let removed = false;
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const path = new URL(url).pathname;
+    if (path === '/v3/models') return json(page([model, sameNameModel]));
+    if (path === '/v3/model-connections') return json(page(removed ? [otherConnection] : [connection, otherConnection]));
+    return previous(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={client} />);
+  await screen.findByRole('heading', { name: session.title });
+  await user.type(screen.getByLabelText('消息'), '保留现有输入');
+  const submit = screen.getByRole('button', { name: '发送' });
+  await waitFor(() => expect(submit).toHaveProperty('disabled', false));
+  removed = true;
+  await act(async () => window.dispatchEvent(new Event('flowmate:settings-changed')));
+  await waitFor(() => expect(submit).toHaveProperty('disabled', true));
+  fireEvent.submit(screen.getByLabelText('消息').closest('form')!);
+  expect(requests.filter(request => request.method === 'POST')).toEqual([]);
+  expect(screen.getByLabelText('消息')).toHaveProperty('value', '保留现有输入');
+  await selectComposerModel(user, sameNameModel.id);
+  await user.click(submit);
+  expect(requests.find(request => request.method === 'POST')?.body.data.model_profile_id).toBe(sameNameModel.id);
+});
+
+it('连接被重新配置后重试待确认的原命令时，仍发送原连接和模型版本', async () => {
+  server();
+  const previous = globalThis.fetch;
+  const changedConnection = { ...connection, version: 2, endpoint: 'https://replacement.invalid/v1' };
+  const bodies: unknown[] = [];
+  let reconfigured = false;
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const path = new URL(url).pathname;
+    if (path === '/v3/model-connections') return json(page([reconfigured ? changedConnection : connection]));
+    if (path.includes('/commands/')) return json({ status: 'not_found', result: null });
+    if (init.method === 'POST' && path === `/v3/sessions/${id}/runs`) {
+      bodies.push(JSON.parse(String(init.body)));
+      if (bodies.length === 1) throw new TypeError('synthetic transport error before dispatch');
+      return Response.json({ error: { code: 'version_conflict', safe_message: '模型连接已改变', retryable: false, related_ids: [] } }, { status: 409 });
+    }
+    return previous(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={client} />);
+  await screen.findByRole('heading', { name: session.title });
+  const input = screen.getByLabelText('消息');
+  fireEvent.change(input, { target: { value: '不要改用新地址' } });
+  await user.click(screen.getByRole('button', { name: '发送' }));
+  await screen.findByText('提交状态待确认');
+  reconfigured = true;
+  await act(async () => window.dispatchEvent(new Event('flowmate:settings-changed')));
+  await user.click(screen.getByRole('button', { name: '核对提交状态' }));
+  await user.click(await screen.findByRole('button', { name: '使用原命令重试' }));
+  await waitFor(() => expect(bodies).toHaveLength(2));
+  expect(bodies[1]).toEqual(bodies[0]);
+  expect(bodies[0]).toMatchObject({ data: { model_profile_id: model.id, model_selection: {
+    model_version: model.version, connection_id: connection.id, connection_version: connection.version,
+  } } });
+  expect(input).toHaveProperty('value', '不要改用新地址');
+});
+
+it.each([null, model.id])('快捷小窗的新会话使用固定模型或主窗实际接纳的项目模型：%s', async pinned => {
+  server();
+  const previous = globalThis.fetch;
+  let lastDispatched: ReturnType<typeof modelUse> | undefined;
+  const started: Array<{ path: string; modelId: string }> = [];
+  let quick = false;
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const path = new URL(url).pathname;
+    if (quick && path === '/v3/profiles') return json(page([{ ...agent, default_model_profile_id: pinned }]));
+    if (quick && path === `/v3/workspaces/${id}/snapshot`) {
+      return json({ ...await (await previous(url, init)).json(), sessions: page([otherSession]),
+        recent_model_uses: lastDispatched ? [lastDispatched] : [] });
+    }
+    if (init.method === 'POST' && path.endsWith('/runs')) {
+      const modelId = JSON.parse(String(init.body)).data.model_profile_id;
+      started.push({ path, modelId });
+      if (!quick) lastDispatched = modelUse(event.event_id, id, modelId);
+      return json({ ...run, state: 'completed' });
+    }
+    return previous(url, init);
+  });
+  const user = userEvent.setup();
+  const main = render(<Conversation client={client} />);
+  await screen.findByRole('heading', { name: session.title });
+  await selectComposerModel(user, id);
+  await user.type(screen.getByLabelText('消息'), '确认后记住本次发送的真实模型 ID');
+  await user.click(screen.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(screen.getByLabelText('消息')).toHaveProperty('value', ''));
+  await selectComposerModel(user, model.id);
+  main.unmount();
+  quick = true;
+  render(<Conversation client={client} compact />);
+  await screen.findByRole('heading', { name: otherSession.title });
+  await expectComposerModel(user, pinned ?? id);
+  fireEvent.change(screen.getByLabelText('消息'), { target: { value: '窗口冷开后的消息' } });
+  await user.click(screen.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(started[1]).toEqual({ path: `/v3/sessions/${secondId}/runs`, modelId: pinned ?? id }));
+});
+
+it('返回项目恢复本窗未建会话草稿，显式选择另一窗创建的会话后才离开草稿', async () => {
+  server();
+  const previous = globalThis.fetch;
+  const workspaceA = { id, version: 1, name: '项目 A', directory_resource_id: null };
+  const workspaceB = { ...workspaceA, id: secondId, name: '项目 B' };
+  let createdElsewhere = false;
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const path = new URL(url).pathname;
+    if (path === '/v3/profiles/default') return json({ ...agent, default_model_profile_id: model.id });
+    if (path === '/v3/workspaces') return json(page([workspaceA, workspaceB]));
+    if (path === '/v3/navigation') return json({
+      default_workspace_id: id, workspaces: page([
+        { workspace: workspaceA, sessions: page(createdElsewhere ? [session] : []), pending_count: 0 },
+        { workspace: workspaceB, sessions: page([]), pending_count: 0 },
+      ]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id,
+    });
+    if (path === `/v3/workspaces/${id}/snapshot` || path === `/v3/workspaces/${secondId}/snapshot`) {
+      const value = await (await previous(url.replace(`/workspaces/${secondId}/snapshot`, `/workspaces/${id}/snapshot`), init)).json();
+      return json({ ...value, workspace: path.includes(secondId) ? workspaceB : workspaceA,
+        sessions: page(path.includes(secondId) || !createdElsewhere ? [] : [session]) });
+    }
+    return previous(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={client} />);
+  await screen.findByRole('heading', { name: 'FlowMate' });
+  await selectComposerModel(user, id);
+  fireEvent.change(screen.getByLabelText('消息'), { target: { value: '主窗口项目草稿' } });
+  await user.click(screen.getByRole('button', { name: '项目 B' }));
+  await waitFor(() => expect(screen.getByLabelText('消息')).toHaveProperty('value', ''));
+  createdElsewhere = true;
+  await user.click(screen.getByRole('button', { name: '项目 A' }));
+  await waitFor(() => expect(screen.getByLabelText('消息')).toHaveProperty('value', '主窗口项目草稿'));
+  await expectComposerModel(user, id);
+  await user.click(await screen.findByRole('button', { name: session.title }));
+  await screen.findByRole('heading', { name: session.title });
+  expect(screen.getByLabelText('消息')).toHaveProperty('value', '');
+});
+
+it('主窗发送更新项目偏好时，快捷窗正在写的草稿保留原接收模型', async () => {
+  server();
+  const previous = globalThis.fetch;
+  let lastDispatched: ReturnType<typeof modelUse> | undefined;
+  const streams: Array<ReadableStreamDefaultController<Uint8Array>> = [];
+  let quick = false;
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const path = new URL(url).pathname;
+    if (quick && path === '/v3/profiles') return json(page([agent]));
+    if (quick && path === `/v3/workspaces/${id}/snapshot`) {
+      return json({ ...await (await previous(url, init)).json(), sessions: page([otherSession]),
+        recent_model_uses: lastDispatched ? [lastDispatched] : [] });
+    }
+    if (path.endsWith('/events')) return new Response(new ReadableStream({ start(controller) { streams.push(controller); } }));
+    if (init.method === 'POST' && path === `/v3/sessions/${id}/runs`) {
+      lastDispatched = modelUse((BigInt(event.event_id) + 1n).toString(), id, JSON.parse(String(init.body)).data.model_profile_id);
+      return json({ ...run, state: 'completed' });
+    }
+    return previous(url, init);
+  });
+  const user = userEvent.setup();
+  const main = render(<Conversation client={client} />);
+  const mainWindow = within(main.container);
+  const mainInput = main.container.querySelector<HTMLTextAreaElement>('#message-input')!;
+  await mainWindow.findByRole('heading', { name: session.title });
+  fireEvent.change(mainInput, { target: { value: '第一次使用默认模型' } });
+  await user.click(mainWindow.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(mainInput.value).toBe(''));
+  quick = true;
+  const small = render(<Conversation client={client} compact />);
+  const smallWindow = within(small.container);
+  const quickInput = small.container.querySelector<HTMLTextAreaElement>('#message-input')!;
+  await smallWindow.findByRole('heading', { name: otherSession.title });
+  await expectComposerModel(user, model.id, smallWindow);
+  fireEvent.change(quickInput, { target: { value: '保留快捷窗草稿原模型' } });
+  await selectComposerModel(user, id, mainWindow);
+  fireEvent.change(mainInput, { target: { value: '这次主窗换了模型' } });
+  await user.click(mainWindow.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(mainInput.value).toBe(''));
+  const change = { kind: 'durable', event_id: lastDispatched!.event_id, event: {
+    ...event, kind: 'activity.dispatched', event_id: lastDispatched!.event_id, payload: { ...event.payload, chat_model_use: lastDispatched },
+  } };
+  await act(async () => { for (const stream of streams) stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(change)}\n\n`)); });
+  await expectComposerModel(user, model.id, smallWindow);
+  expect(quickInput.value).toBe('保留快捷窗草稿原模型');
+});
+
+it('两窗按持久人工运行顺序更新最近使用，迟到的旧运行回执保持原顺序', async () => {
+  server();
+  const previous = globalThis.fetch;
+  const streams: Array<ReadableStreamDefaultController<Uint8Array>> = [];
+  const laterRun = {
+    ...run, id: secondId, state: 'completed' as const, interaction_session_id: secondId, execution_session_id: secondId,
+  };
+  const earlierRun = { ...run, state: 'completed' as const, config: {
+    ...run.config, model_profile: { ...run.config.model_profile, id, model_id: 'another-model' },
+  } };
+  let releaseEarlier!: (value: Response) => void;
+  const earlierResponse = new Promise<Response>(resolve => { releaseEarlier = resolve; });
+  let sentEarlier = false;
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/events')) return new Response(new ReadableStream({ start(controller) { streams.push(controller); } }));
+    if (init.method === 'POST' && path === `/v3/sessions/${id}/runs`) { sentEarlier = true; return earlierResponse; }
+    if (init.method === 'POST' && path === `/v3/sessions/${secondId}/runs`) return json(laterRun);
+    if (path === `/v3/runs/${secondId}`) return json({ ...await (await previous(url.replace(secondId, id), init)).json(), run: laterRun });
+    return previous(url, init);
+  });
+  const main = render(<Conversation client={client} />);
+  const small = render(<Conversation compact client={client} />);
+  const mainWindow = within(main.container);
+  const smallWindow = within(small.container);
+  const mainInput = main.container.querySelector<HTMLTextAreaElement>('#message-input')!;
+  const quickInput = small.container.querySelector<HTMLTextAreaElement>('#message-input')!;
+  const user = userEvent.setup();
+  await mainWindow.findByRole('heading', { name: session.title });
+  await smallWindow.findByRole('heading', { name: session.title });
+  await user.click(smallWindow.getByRole('button', { name: '打开项目导航' }));
+  await user.click(await screen.findByRole('dialog', { name: '项目导航' })
+    .then(dialog => within(dialog).findByRole('button', { name: otherSession.title })));
+  await smallWindow.findByRole('heading', { name: otherSession.title });
+  await selectComposerModel(user, id, mainWindow);
+  fireEvent.change(mainInput, { target: { value: '较早的发送' } });
+  await user.click(mainWindow.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(sentEarlier).toBe(true));
+  fireEvent.change(quickInput, { target: { value: '较晚的发送' } });
+  await user.click(smallWindow.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(quickInput.value).toBe(''));
+  await act(async () => {
+    for (const [offset, accepted] of [[1, earlierRun], [2, laterRun]] as const) {
+      const position = (BigInt(event.event_id) + BigInt(offset)).toString();
+      const durable = { kind: 'durable', event_id: position, event: { ...event, kind: 'activity.dispatched', event_id: position, run_id: accepted.id,
+        session_id: accepted.interaction_session_id, payload: { ...event.payload, runs: [accepted],
+          chat_model_use: modelUse(position, accepted.interaction_session_id!, accepted.config.model_profile.id),
+          tasks: [{ ...task, run_id: accepted.id }] } } };
+      for (const stream of streams) stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(durable)}\n\n`));
+    }
+    releaseEarlier(json(earlierRun));
+  });
+  await waitFor(() => expect(mainInput.value).toBe(''));
+  for (const view of [mainWindow, smallWindow]) {
+    await user.click(view.getByRole('button', { name: '选择模型' }));
+    const recent = await screen.findByRole('group', { name: '最近使用' });
+    await waitFor(() => expect(within(recent).getAllByRole('option').map(option => option.dataset.modelId)).toEqual([model.id, id]));
+    await user.keyboard('{Escape}');
+  }
+});
+
+it.each([false, true])('断线期间保留草稿，重连恢复 Runtime 派发记录，快照重置=%s', async reset => {
+  const requests = server();
+  const previous = globalThis.fetch;
+  const position = (BigInt(event.event_id) + 1n).toString();
+  const dispatched = modelUse(position, id, id);
+  let firstStream!: ReadableStreamDefaultController<Uint8Array>;
+  const cursors: string[] = [];
+  let refresh = false;
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith('/events')) {
+      cursors.push(parsed.searchParams.get('after')!);
+      if (cursors.length === 1) {
+        return new Response(new ReadableStream({ start(controller) { firstStream = controller; } }));
+      }
+      if (reset && !refresh) { refresh = true; return new Response(null, { status: 410 }); }
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        if (!reset) controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({
+          kind: 'durable', event_id: position, event: { ...event, kind: 'activity.dispatched', event_id: position,
+            payload: { ...event.payload, runs: [], chat_model_use: dispatched } },
+        })}\n\n`));
+      } }));
+    }
+    if (refresh && parsed.pathname.endsWith('/snapshot')) {
+      const snapshot = await (await previous(url, init)).json();
+      return json({ ...snapshot, watermark: position, recent_model_uses: [dispatched] });
+    }
+    if (refresh && init.method !== 'POST' && parsed.pathname === `/v3/sessions/${id}/runs`) {
+      return json({ ...page([]), last_model_use: dispatched });
+    }
+    return previous(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={client} />);
+  await screen.findByRole('heading', { name: session.title });
+  await screen.findByText('本机事件流已连接');
+  const input = screen.getByLabelText('消息');
+  await act(async () => firstStream.close());
+  await screen.findByText(/事件流断开/);
+  fireEvent.change(input, { target: { value: '离线期间保留' } });
+  expect(input).toHaveProperty('value', '离线期间保留');
+  await screen.findByText('本机事件流已连接', undefined, { timeout: 3000 });
+  await user.click(screen.getByRole('button', { name: '选择模型' }));
+  const recent = await screen.findByRole('group', { name: '最近使用' });
+  expect(within(recent).getByRole('option').dataset.modelId).toBe(id);
+  await user.keyboard('{Escape}');
+  expect(input).toHaveProperty('value', '离线期间保留');
+  expect(cursors).toEqual(reset ? [event.event_id, event.event_id, position] : [event.event_id, event.event_id]);
+  const target = screen.getByRole('button', { name: '发送' });
+  await waitFor(() => expect(target).toHaveProperty('disabled', false));
+  await user.click(target);
+  // 草稿在断线前锁定了原接收方，重放只更新最近使用记录。
+  expect(requests.find(request => request.method === 'POST')?.body.data.model_profile_id).toBe(model.id);
 });
 
 it('待办收起/重开保留回答，后台到达不抢普通草稿焦点；composer 独立于消息滚动区', async () => {
@@ -96,18 +794,18 @@ it('A 提交期间编辑新 B、切换会话往返恢复文字/附件/模型，�
     ? new Promise<Response>(resolve => { finish = resolve; }) : previous(url, init));
   const user = userEvent.setup(); render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
-  await user.selectOptions(screen.getByLabelText('模型'), id);
+  await selectComposerModel(user, id);
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
   await user.type(screen.getByLabelText('消息'), 'A');
   await user.click(screen.getByRole('button', { name: '发送' }));
   await user.clear(screen.getByLabelText('消息')); await user.type(screen.getByLabelText('消息'), '新 B');
   await user.click(screen.getByRole('button', { name: otherSession.title }));
   await user.type(screen.getByLabelText('消息'), '另一个会话草稿');
-  await act(async () => { finish(json(run)); });
+  await act(async () => { finish(json({ ...run, state: 'completed' })); });
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('另一个会话草稿');
   await user.click(screen.getByRole('button', { name: session.title }));
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('新 B');
-  expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe(id);
+  await expectComposerModel(user, id);
   expect(screen.getByText(resource.label)).toBeTruthy();
 });
 
@@ -130,17 +828,18 @@ it('跨项目返回恢复草稿 ID；附件尚未同步齐不能把已加载子�
   });
   const user = userEvent.setup(); render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
-  await user.type(screen.getByLabelText('消息'), '项目 A 草稿'); await user.selectOptions(screen.getByLabelText('模型'), id);
+  await user.type(screen.getByLabelText('消息'), '项目 A 草稿'); await selectComposerModel(user, id);
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
   await user.click(screen.getByRole('button', { name: '项目 B' }));
   await screen.findByRole('heading', { name: otherSession.title }); await user.type(screen.getByLabelText('消息'), '项目 B 草稿');
   await user.click(screen.getByRole('button', { name: '项目 A' }));
   await screen.findByRole('heading', { name: session.title });
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('项目 A 草稿');
-  expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe(id);
-  expect(screen.getByText(`资料尚未同步 · ${extra.id}`)).toBeTruthy();
+  await expectComposerModel(user, id);
+  expect(screen.getByRole('button', { name: '移除附件「附件 2（正在同步）」' })).toBeTruthy();
+  expect(screen.queryByText(extra.id, { exact: false })).toBeNull();
   expect(screen.queryByRole('button', { name: '当前范围已授权' })).toBeNull();
-  expect(screen.getByRole('button', { name: '授权状态同步中' })).toBeTruthy();
+  expect(screen.getByText(/资料与授权同步中/)).toBeTruthy();
 });
 
 it('POST 成功 GET 失败显示已提交详情同步中，显式重试只 GET，不再次创建 Run', async () => {
@@ -301,6 +1000,9 @@ it('另一窗回答同 Question 后保留本窗未提交答案和普通输入，
 it('导出用途授权待确认时切换会话，后续冻结导出仍归属原会话，核对不串路由', async () => {
   server(); const previous = globalThis.fetch;
   const artifact = { id: secondId, version: 1, task_id: task.id, activity_id: id, content_hash: 'a'.repeat(64), dependencies: [], media_type: 'text/plain' };
+  const completed = { ...run, state: 'completed', output: {
+    summary: '正式报告', artifact_ids: [artifact.id], handled_failures: [], unresolved: [],
+  } };
   const commands: { path: string; body: any }[] = []; const checks: string[] = [];
   vi.mocked(invoke).mockResolvedValue({ resources: [{ ...resource, scope: { kind: 'session', workspace_id: id, session_id: id } }] });
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
@@ -313,17 +1015,18 @@ it('导出用途授权待确认时切换会话，后续冻结导出仍归属原�
     if (path.includes('/commands/')) { checks.push(path); return json({ status: 'not_found', result: null }); }
     if (path.endsWith('/grants')) return json(page([]));
     if (path === `/v3/tasks/${task.id}`) return json(task);
-    if (path.endsWith(`/sessions/${id}/runs`)) return json(page([{ ...run, state: 'completed' }]));
+    if (path.endsWith(`/sessions/${id}/runs`)) return json(page([completed]));
     if (path === `/v3/runs/${id}`) {
       const detail = await (await previous(url, init)).json();
-      return json({ ...detail, run: { ...run, state: 'completed' }, artifacts: page([artifact]) });
+      return json({ ...detail, run: completed, artifacts: page([artifact]) });
     }
     if (path.endsWith(`/artifacts/${secondId}/content`)) return json({ text: '产物', start: 0, end: 2, total_chars: 2, source_version: 'v1' });
     return previous(url, init);
   });
   const user = userEvent.setup(); render(<Conversation client={client} />);
   await user.click(await screen.findByRole('button', { name: '产物' }));
-  await user.click(await screen.findByRole('button', { name: '文本产物 1' }));
+  const panel = within(await screen.findByRole('dialog', { name: '产物' }));
+  await user.click(await panel.findByRole('button', { name: '文本产物 1' }));
   await user.click(await screen.findByRole('button', { name: '导出产物' }));
   expect(screen.queryByRole('button', { name: '确认导出到此文件' })).toBeNull();
   await user.click(screen.getByRole('button', { name: '关闭详情' }));
@@ -354,11 +1057,14 @@ it('本次后台授权进入真实startRun且ack后重置，不成为下次全�
   await screen.findByRole('heading', { name: session.title });
   await user.click(screen.getByLabelText('运行配置'));
   await user.click(screen.getByLabelText('允许本次转为独立后台任务'));
+  await user.keyboard('{Escape}');
   await user.type(screen.getByLabelText('消息'), '允许这次后台处理');
   await user.click(screen.getByRole('button', { name: '发送' }));
   await waitFor(() => expect(requests.some(request => request.method === 'POST')).toBe(true));
   expect(requests.find(request => request.method === 'POST')!.body.data.allow_managed).toBe(true);
-  await waitFor(() => expect((screen.getByLabelText('允许本次转为独立后台任务') as HTMLInputElement).checked).toBe(false));
+  await waitFor(() => expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe(''));
+  await user.click(screen.getByLabelText('运行配置'));
+  expect(screen.getByRole('checkbox', { name: '允许本次转为独立后台任务', checked: false })).toBeTruthy();
 });
 
 it('managed不成为当前推进者；后台问答不切会话/模型/来源/草稿，确认后返回原输入', async () => {
@@ -380,7 +1086,7 @@ it('managed不成为当前推进者；后台问答不切会话/模型/来源/草
   await screen.findByLabelText('后台任务条');
   expect(screen.queryByLabelText('回答')).toBeNull();
   const input = screen.getByLabelText('消息'); await user.type(input, '另一个目标的草稿');
-  await user.selectOptions(screen.getByLabelText('模型'), id);
+  await selectComposerModel(user, id);
   expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(false);
   expect(screen.queryByRole('button', { name: '补充指令' })).toBeNull();
   await user.click(screen.getByRole('button', { name: '回答后台问题' }));
@@ -388,7 +1094,7 @@ it('managed不成为当前推进者；后台问答不切会话/模型/来源/草
   await user.click(screen.getByRole('button', { name: '提交回答' }));
   await waitFor(() => expect(screen.queryByRole('button', { name: '返回原页与草稿' })).toBeNull());
   expect((input as HTMLTextAreaElement).value).toBe('另一个目标的草稿');
-  expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe(id);
+  await expectComposerModel(user, id);
   expect(screen.getByRole('heading', { name: session.title })).toBeTruthy();
   expect(requests.filter(request => request.method === 'POST').map(request => request.path)).toEqual([`/questions/${question.id}/answer`]);
 });

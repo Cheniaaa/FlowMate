@@ -11,9 +11,11 @@ from flowmate.contracts.execution import (
     ArtifactRef,
     BudgetSnapshot,
     DeliveryState,
+    FileContentVersion,
     FollowUpIntent,
     JoinFact,
     ModelMessage,
+    ModelSelection,
     PendingUserCommand,
     Question,
     ResultConsumption,
@@ -33,7 +35,10 @@ from flowmate.contracts.settings import (
     AgentProfile,
     ModelConnection,
     ModelProfile,
+    ReasoningEffort,
     Session,
+    TitleModelBinding,
+    TitlePolicy,
     Workspace,
 )
 from flowmate.contracts.workspaces import WorkspaceDirectoryResult as WorkspaceDirectoryResult
@@ -104,14 +109,27 @@ class SetWorkspaceDirectory(Contract):
 
 
 class CreateSession(Contract):
-    title: Name
+    title: Name | None = None
+
+
+class Rename(Contract):
+    name: Name
+
+
+class SaveTitlePolicy(Contract):
+    binding: TitleModelBinding | None
 
 
 class StartRequest(Contract):
     agent_profile_id: Id
     model_profile_id: Id
+    reasoning_effort: ReasoningEffort | None = None
+    model_selection: ModelSelection | None = None
     text: str = Field(min_length=1)
     sources: SourceSelection = Field(default_factory=SourceSelection)
+    inherit_session_files: bool = Field(default=True, exclude_if=lambda value: value)
+    session_file_adoptions: dict[Id, FileContentVersion] = Field(default_factory=dict, max_length=200,
+        exclude_if=lambda value: not value)
     limits: RunLimits = Field(default_factory=RunLimits)
     allow_managed: bool = False
     allow_follow_up: bool = False
@@ -120,6 +138,12 @@ class StartRequest(Contract):
 
 class Steering(Contract):
     text: str = Field(min_length=1)
+
+class VisionContinue(Contract):
+    model_profile_id: Id
+    model_profile_version: Version
+    connection_version: Version
+    endpoint: str
 
 
 class Answer(Contract):
@@ -161,22 +185,31 @@ class MemberLane(Contract):
     handoffs: list[TaskHandle]
 
 
+class MessageAttachment(Contract):
+    resource_id: Id
+    name: str
+    resource_lineage: list[Id]
+    read_grant_ids: list[Id]
+
+
 class MessageView(ModelMessage):
     run_id: Id
     event_id: Units
     event_index: Count
+    source_valid: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    attachments: list[MessageAttachment] = Field(default_factory=list, exclude_if=lambda value: not value)
+    tool_operation: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
-class RunFeedback(Contract):
-    run_id: Id
-    version: Version
-    workspace_id: Id
+class ChatModelUse(Contract):
+    event_id: Units
     session_id: Id
-    root_task_id: Id
-    connection_id: Id
-    state: TaskState
-    reason: str | None
-    model_activity: ActivityView | None
+    model_profile_id: Id
+    reasoning_effort: ReasoningEffort | None
+
+
+class SessionRunPage(Page[RunSnapshot]):
+    last_model_use: ChatModelUse | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class PublicChange(Contract):
@@ -185,6 +218,7 @@ class PublicChange(Contract):
     activities: list[ActivityView] = Field(default_factory=list)
     budgets: list[BudgetSnapshot] = Field(default_factory=list)
     messages: list[MessageView] = Field(default_factory=list)
+    message_watermark: Units | None = Field(default=None, exclude_if=lambda value: value is None)
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
     waits: list[WaitRecord] = Field(default_factory=list)
@@ -192,6 +226,7 @@ class PublicChange(Contract):
     joins: list[JoinFact] = Field(default_factory=list)
     pending_commands: list[PendingUserCommand] = Field(default_factory=list)
     follow_up_intents: list[FollowUpIntent] = Field(default_factory=list)
+    chat_model_use: ChatModelUse | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class PublicPolicyChange(Contract):
@@ -219,7 +254,7 @@ class EventBase(Contract):
 
 
 class WorkspaceEvent(EventBase):
-    kind: Literal["workspace.created", "workspace.default_created", "workspace.directory_changed"]
+    kind: Literal["workspace.created", "workspace.default_created", "workspace.directory_changed", "workspace.renamed"]
     payload: Workspace
 
 
@@ -249,7 +284,8 @@ class ExecutionEvent(EventBase):
         "budget.allocated", "budget.counted", "budget.returned",
         "runtime.recovered", "artifact.published", "question.asked", "question.answered",
         "task.submitted", "task.cancelled", "task.consumed", "task.joined", "wait.registered", "wait.resolved",
-        "follow_up.changed", "command.queued", "command.applied", "command.cancelled", "run.yielded"]
+        "follow_up.changed", "command.queued", "command.applied", "command.cancelled", "run.yielded",
+        "naming.task_changed"]
     payload: PublicChange
 
 
@@ -307,7 +343,12 @@ class McpEvent(EventBase):
     payload: McpNotice
 
 
-PublicEvent = Annotated[WorkspaceEvent | SessionEvent | AgentEvent | ModelProfileEvent | ModelConnectionEvent | ExecutionEvent | PolicyEvent | LifecycleEvent | DeliveryEvent | AdmissionEvent | MemoryEvent | MemoryMaintenanceEvent | SkillEvent | EnvironmentEvent | McpEvent,
+class TitlePolicyEvent(EventBase):
+    kind: Literal["naming.policy_saved"]
+    payload: TitlePolicy
+
+
+PublicEvent = Annotated[WorkspaceEvent | SessionEvent | AgentEvent | ModelProfileEvent | ModelConnectionEvent | ExecutionEvent | PolicyEvent | LifecycleEvent | DeliveryEvent | AdmissionEvent | MemoryEvent | MemoryMaintenanceEvent | SkillEvent | EnvironmentEvent | McpEvent | TitlePolicyEvent,
                         Field(discriminator="kind")]
 
 
@@ -336,6 +377,7 @@ class WorkspaceSnapshot(Contract):
     resources: Page[ResourceRef]
     grants: Page[DataUseGrant]
     watermark: Units
+    recent_model_uses: list[ChatModelUse] = Field(default_factory=list, max_length=10, exclude_if=lambda value: not value)
 
 
 class PricingBasis(Contract):
@@ -369,6 +411,81 @@ class ContextUsageSummary(Contract):
     compaction_reason: str | None = None
 
 
+class ContextFile(Contract):
+    name: str
+    origin: Literal["attached", "inherited"] | None = None
+    changed: bool = False
+    size_bytes: Count | None = None
+    line_count: Count | None = None
+    start: Count | None = None
+    end: Count | None = None
+    total_chars: Count | None = None
+
+
+class ContextActivity(Contract):
+    id: Id
+    kind: Literal["model", "inspect", "read"]
+    state: Literal["prepared", "dispatched", "succeeded", "failed", "uncertain"]
+    model: str | None = None
+    compaction: bool = False
+    input_tokens: Count | None = None
+    output_tokens: Count | None = None
+    cached_input_tokens: Count | None = None
+    input_limit: Count | None = None
+    calculated_units: Units | None = None
+    cost_pending: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
+    files: list[ContextFile] = Field(default_factory=list)
+    hidden_file_count: Count = 0
+    file_changed: bool = False
+
+
+class ContextRound(Contract):
+    run_id: Id
+    state: TaskState
+    source_attention: bool
+    file_changed: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
+    replacement_file_ids: list[Id] = Field(default_factory=list, exclude_if=lambda value: not value)
+
+
+class SessionContextUsage(Contract):
+    requests: Count = 0
+    input_tokens: Count = 0
+    output_tokens: Count = 0
+    input_reported_requests: Count = 0
+    output_reported_requests: Count = 0
+    cached_input_tokens: Count = 0
+    cache_reported_requests: Count = 0
+    cache_reported_input_tokens: Count = 0
+    cached_tokens_with_reported_input: Count = 0
+    calculated_units: Units = 0
+    unknown_cost_requests: Count = 0
+    pending_cost_requests: Count = 0
+    units_per_currency: Units
+
+
+class SessionContext(Contract):
+    round: ContextRound | None
+    files: list[ContextFile]
+    hidden_file_count: Count
+    history: ContextUsageSummary | None
+    latest_request: ContextActivity | None
+    activities: Page[ContextActivity]
+    units_per_currency: Units
+
+
+class RunFeedback(Contract):
+    run_id: Id
+    version: Version
+    workspace_id: Id
+    session_id: Id
+    root_task_id: Id
+    connection_id: Id
+    state: TaskState
+    reason: str | None
+    model_activity: ActivityView | None
+    context_usage: ContextUsageSummary | None
+
+
 class WorkspaceNavigation(Contract):
     workspace: Workspace
     sessions: Page[Session]
@@ -383,21 +500,23 @@ class NavigationView(Contract):
     watermark: Units
 
 
-class InboxQuestion(Contract):
+class InboxOwner(Contract):
     id: Id
-    kind: Literal["question"] = "question"
     workspace_id: Id
     session_id: Id | None
     run_id: Id
+    workspace_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    session_title: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    task_goal: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class InboxQuestion(InboxOwner):
+    kind: Literal["question"] = "question"
     question: Question
 
 
-class InboxApproval(Contract):
-    id: Id
+class InboxApproval(InboxOwner):
     kind: Literal["approval"] = "approval"
-    workspace_id: Id
-    session_id: Id | None
-    run_id: Id
     approval: Approval
 
 
@@ -407,12 +526,8 @@ class PendingActionCommand(Contract):
     expected_version: Version | None
 
 
-class PendingAction(Contract):
-    id: Id
+class PendingAction(InboxOwner):
     kind: Literal["recovery","blocked","delivery_failed"]
-    workspace_id: Id
-    session_id: Id | None
-    run_id: Id
     task_id: Id
     version: Version
     reason: str
@@ -428,10 +543,19 @@ class TaskCenterItem(Contract):
     pending_count: Count
     delivery_state: DeliveryState | None
     origin_task_id: Id | None
+    task_goal: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    task_title: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    session_title: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    source_valid: bool = Field(default=True, exclude_if=lambda value: value)
 
 
 class RunDetail(Contract):
     run: RunSnapshot
+    task_goal: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    task_title: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    task_titles: dict[Id, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    file_names: dict[Id, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    source_valid: bool = Field(default=True, exclude_if=lambda value: value)
     tasks: Page[TaskSnapshot]
     activities: Page[ActivityView]
     messages: Page[MessageView]

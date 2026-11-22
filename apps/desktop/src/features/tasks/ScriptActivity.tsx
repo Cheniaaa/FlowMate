@@ -1,4 +1,7 @@
 import type { ActivityView } from '../../generated/contracts';
+import { Button } from '../../components/ui/button';
+
+const termination = { exited: '进程已退出', cancelled: '进程已取消', timed_out: '执行超时' };
 
 export default function ScriptActivity({ activity, onArtifact }: { activity: ActivityView; onArtifact?: (id: string) => void }) {
   if (activity.operation !== 'skills.run_script') return null;
@@ -9,15 +12,13 @@ export default function ScriptActivity({ activity, onArtifact }: { activity: Act
       : activity.state === 'failed' ? '脚本执行失败' : '脚本执行完成'}</p>
     {activity.error && <p>{activity.error}</p>}
     {summary && <>
-      <p><code>{summary.script_relative_path}</code> · 版本 {summary.content_hash.slice(0, 12)}</p>
-      <p>环境 {summary.environment_id} · 修订 {summary.environment_revision}</p>
-      <p>退出码 {summary.exit_code ?? '未知'} · {summary.termination_reason} · 外部费用未知</p>
+      <p><code>{summary.script_relative_path}</code></p>
+      <p>退出码 {summary.exit_code ?? '未知'} · {termination[summary.termination_reason]} · 外部费用未知</p>
       {summary.truncated && <p>进程日志已截断</p>}
-      <ul>{summary.outputs.map(entry => <li key={entry.relative_path}>
-        {onArtifact ? <button onClick={() => onArtifact(entry.artifact.id)}>{entry.relative_path}</button>
+      {summary.outputs.length > 0 && <ul>{summary.outputs.map(entry => <li key={entry.artifact.id}>
+        {onArtifact ? <Button type="button" size="sm" variant="link" className="h-auto whitespace-normal break-all text-left" onClick={() => onArtifact(entry.artifact.id)}>{entry.relative_path}</Button>
           : <code>{entry.relative_path}</code>}
-        {' → '}产物 <code>{entry.artifact.id}</code>
-      </li>)}</ul>
+      </li>)}</ul>}
     </>}
   </div>;
 }

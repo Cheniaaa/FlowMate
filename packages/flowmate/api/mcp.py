@@ -43,7 +43,10 @@ def router(configuration, *, publisher=None):
         return configuration.view(server_id)
 
     @route.post("/{server_id}/discover", response_model=McpServerView)
-    async def discover(server_id: Id, meta=body(CommandMeta)):
+    async def discover(server_id: Id, meta=body(CommandMeta), session_id: Id | None = None):
+        if session_id is not None:
+            from flowmate.integrations.admission import prepare_for_session
+            return await prepare_for_session(configuration, publisher, session_id, server_id, meta)
         return await configuration.discover(server_id, meta, publisher=publisher)
 
     @route.put("/{server_id}/tools", response_model=McpToolSelection)

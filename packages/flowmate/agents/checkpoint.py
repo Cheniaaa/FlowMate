@@ -17,12 +17,21 @@ from flowmate.contracts.execution import (
     TaskSubmission,
     WaitOutcome,
 )
+from flowmate.contracts.settings import ModelCapabilities
 from flowmate.tools.catalog import ToolSpec
 
 CONTROL_TOOLS = frozenset({
     "user.ask", "run.finish", "agent.finish",
     "task.submit", "task.status", "task.result", "task.await", "task.cancel",
 })
+
+
+def model_tool_visible(tool: ToolSpec, *, maintenance: bool, interactive_root: bool) -> bool:
+    return (
+        tool.model_visible
+        and (maintenance or tool.name not in {"memory.extract", "memory.merge"})
+        and (interactive_root or tool.name != "memory.remember")
+    )
 
 
 def content_dependencies(checkpoint, dependencies, *, delegate=False):
@@ -53,6 +62,15 @@ class FinishInput(Contract):
 
 class FinishAgentInput(Contract):
     output: AgentResult
+
+
+def member_delivery_block_reason(capabilities: ModelCapabilities) -> str | None:
+    if capabilities.tools is False:
+        return "成员模型不支持工具调用，无法提交明确交付；请为该成员选择支持工具的模型"
+    # AgentWork 的 Schema 必填。completed 和 partial 均需原生结构化生成。
+    if capabilities.structured_output is False:
+        return "成员模型不支持原生结构化交付；请为该成员选择支持此能力的模型"
+    return None
 
 
 def agent_output_validator(schema):

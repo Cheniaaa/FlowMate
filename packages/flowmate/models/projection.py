@@ -14,6 +14,7 @@ from pydantic_ai.settings import ModelSettings
 
 from flowmate.contracts.base import DomainError
 from flowmate.models.contracts import ProjectionEstimate
+from flowmate.models.endpoints import ModelEndpoint
 from flowmate.models.pricing import estimate_request
 
 
@@ -61,13 +62,19 @@ class RequestProjection:
 class ProjectionTransport(httpx2.AsyncBaseTransport):
     """真实SDK请求必须复用已计量投影，之后才进入原有GuardTransport。"""
 
-    def __init__(self, projection: RequestProjection, guarded):
+    def __init__(self, projection: RequestProjection, guarded, endpoint: ModelEndpoint):
         self.projection = projection
         self.guarded = guarded
+        self.endpoint = endpoint
 
     async def handle_async_request(self, request):
         if await request.aread() != self.projection.body:
             raise DomainError("projection_changed", "准备的模型投影与真实请求不一致")
+        if request.method != "POST" or str(request.url) != self.endpoint.sdk_operation_url:
+            raise DomainError("model_endpoint_mismatch", "SDK 模型请求目的地与选定连接不一致")
+        if self.endpoint.operation_url != self.endpoint.sdk_operation_url:
+            # 正文已由完整 SDK 序列化并核对；只映射唯一预期 URL，最终 Guard 仍检查确切地址。
+            request.url = httpx2.URL(self.endpoint.operation_url)
         return await self.guarded.handle_async_request(request)
 
     async def aclose(self):

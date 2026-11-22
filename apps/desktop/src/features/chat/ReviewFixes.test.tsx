@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type EventCallback } from '@tauri-apps/api/event';
 import { RuntimeClient } from '../../api/client';
+import { expectComposerModel } from '../../test/composer-model';
 import { agent, binding, connection, event, grant, id, limits, model, page, resultEntry, run, runDetailSummary, secondId } from '../../test/fixtures';
 import type { ModelMessage, ModelProfilePage, RunDetail, RunSnapshot, SessionResultPage, StreamEvent, TaskResult } from '../../generated/contracts';
 import type { SettingsNavigation, WorkbenchRequest } from '../../api/windows';
@@ -81,6 +82,8 @@ const pagedTask = (index: number, owner = id) => ({
 const pagedTasks = (first: number, last: number, next: string | null, watermark: string, owner = id) => ({
   ...page(Array.from({ length: last - first + 1 }, (_, offset) => pagedTask(first + offset, owner))), next_cursor: next, watermark,
 });
+const globalSettings = () => within(screen.getByRole('complementary', { name: '项目导航' }))
+  .getByRole('button', { name: '设置' });
 
 it.each([false, true])('缺凭据自动设置完成后回有效控件，保留后续手动导航焦点=%s', async manual => {
   let current: RunSnapshot = { ...run, state: 'queued' };
@@ -91,7 +94,7 @@ it.each([false, true])('缺凭据自动设置完成后回有效控件，保留�
     if (path === `/runs/${run.id}`) return { ...taskDetail, run: current, messages: page([message]) };
     if (path.endsWith('/run-feedback')) return page([{ run_id: current.id, version: current.version,
       workspace_id: id, session_id: id, root_task_id: current.root_task_id, connection_id: connection.id,
-      state: current.state, reason: current.reason, model_activity: null }]);
+      state: current.state, reason: current.reason, model_activity: null, context_usage: null }]);
   });
   const native = vi.mocked(invoke).getMockImplementation()!;
   vi.mocked(invoke).mockImplementation((name, args, options) => name === 'show_workbench'
@@ -153,7 +156,7 @@ it.each(['tasks', 'assistants', 'memory', 'capabilities'] as const)('主窗dirty
   const server = shellServer((path, _parsed, init) => init.method === 'PUT' && path.startsWith('/model-connections/') ? saved.promise : undefined);
   render(<WorkbenchWindow client={runtime()} />);
   await userEvent.type(await screen.findByLabelText('消息'), '原聊天草稿');
-  await userEvent.click(screen.getByRole('button', { name: '模型设置' }));
+  await userEvent.click(globalSettings());
   await userEvent.click(await screen.findByRole('button', { name: new RegExp(connection.display_name) }));
   await userEvent.type(screen.getByLabelText('连接名称'), '-未保存');
   const target: WorkbenchRequest['target'] = kind === 'tasks' ? { kind, workspace_id: id } : { kind };
@@ -174,7 +177,7 @@ it('保存中的主窗设置排队保留快捷窗导航，直到原保存回执�
   const server = shellServer((path, _parsed, init) => init.method === 'PUT' && path.startsWith('/model-connections/') ? saved.promise : undefined);
   render(<WorkbenchWindow client={runtime()} />);
   await screen.findByRole('heading', { name: session.title });
-  await userEvent.click(screen.getByRole('button', { name: '模型设置' }));
+  await userEvent.click(globalSettings());
   await userEvent.click(await screen.findByRole('button', { name: new RegExp(connection.display_name) }));
   await userEvent.click(screen.getByRole('button', { name: '保存连接' }));
   await server.navigate({ kind: 'tasks', workspace_id: id });
@@ -188,7 +191,11 @@ it.each(['继续编辑', 'Escape'])('正常主窗%s取消外部目标后，关�
   const server = shellServer(() => undefined), user = userEvent.setup();
   render(<WorkbenchWindow client={runtime()} />);
   await screen.findByRole('heading', { name: session.title });
-  await user.click(screen.getByRole('button', { name: '模型设置' }));
+  const configuration = screen.getByRole('button', { name: '运行配置' });
+  await user.click(configuration);
+  const runSettings = await screen.findByRole('dialog', { name: '运行配置' });
+  await user.click(within(runSettings).getByRole('button', { name: '模型设置' }));
+  expect(screen.queryByRole('dialog', { name: '运行配置' })).toBeNull();
   await user.click(await screen.findByRole('button', { name: new RegExp(connection.display_name) }));
   await user.type(screen.getByLabelText('连接名称'), '-第一次编辑');
   await server.navigate({ kind: 'tasks', workspace_id: id });
@@ -197,7 +204,8 @@ it.each(['继续编辑', 'Escape'])('正常主窗%s取消外部目标后，关�
   else await user.click(screen.getByRole('button', { name: cancel }));
   await user.click(screen.getByRole('button', { name: '取消编辑' }));
   await user.click(screen.getByRole('button', { name: '关闭设置' }));
-  await user.click(screen.getByRole('button', { name: '模型设置' }));
+  await waitFor(() => expect(document.activeElement).toBe(configuration));
+  await user.click(globalSettings());
   expect(await screen.findByRole('dialog', { name: '设置' })).toBeTruthy();
   expect(screen.queryByRole('heading', { name: '任务中心' })).toBeNull();
   await user.click(await screen.findByRole('button', { name: new RegExp(connection.display_name) }));
@@ -216,7 +224,7 @@ it.each(['管理页', '设置分类'])('正常主窗保存后继续等待密钥�
   const user = userEvent.setup();
   render(<WorkbenchWindow client={runtime()} />);
   await user.type(await screen.findByLabelText('消息'), '竞争期间保留的聊天草稿');
-  await user.click(screen.getByRole('button', { name: '模型设置' }));
+  await user.click(globalSettings());
   await user.click(await screen.findByRole('button', { name: new RegExp(connection.display_name) }));
   await user.type(screen.getByLabelText('API Key（仅保存到系统凭据）'), 'synthetic-new-key');
   await server.navigate({ kind: 'tasks', workspace_id: id });
@@ -274,7 +282,7 @@ it('正常主窗取消同分类定位后再次定位仍询问，保存后的新�
     ? { ...connection, version: 2 } : undefined), user = userEvent.setup();
   render(<WorkbenchWindow client={runtime()} />);
   await screen.findByRole('heading', { name: session.title });
-  await user.click(screen.getByRole('button', { name: '模型设置' }));
+  await user.click(globalSettings());
   await user.click(await screen.findByRole('button', { name: new RegExp(connection.display_name) }));
   await user.type(screen.getByLabelText('连接名称'), '-原编辑');
   await server.settings('models');
@@ -489,9 +497,9 @@ it('正常 App 各集合保留各自深度，重复续页只读取一次；普�
   await server.emit({ kind: 'durable', event_id: String(BigInt(event.event_id) + 1n),
     event: { ...event, kind: 'task.stepped', event_id: String(BigInt(event.event_id) + 1n), payload: { ...event.payload } } });
   await waitFor(() => expect(cursors).toEqual(['old-tasks', 'new-tasks']));
-  expect(screen.getAllByRole('button', { name: /^查看产物 / })).toHaveLength(100);
+  expect(screen.getAllByRole('button', { name: /^查看二进制文件 / })).toHaveLength(100);
   await user.click(screen.getByRole('button', { name: '更多 artifacts' }));
-  await waitFor(() => expect(screen.getAllByRole('button', { name: /^查看产物 / })).toHaveLength(101));
+  await waitFor(() => expect(screen.getAllByRole('button', { name: /^查看二进制文件 / })).toHaveLength(101));
   expect(cursors).toEqual(['old-tasks', 'new-tasks', 'new-artifacts']);
   expect(within(list).getAllByRole('button')).toHaveLength(150);
 });
@@ -555,10 +563,14 @@ it.each([false, true])('默认模型自动加载续页并报告在途状态，�
   await screen.findByRole('heading', { name: session.title });
   await screen.findByText('正在加载默认模型…');
   await started.promise;
-  if (selected) await userEvent.selectOptions(screen.getByLabelText('模型'), id);
+  const user = userEvent.setup();
+  if (selected) {
+    await user.click(screen.getByRole('button', { name: '选择模型' }));
+    const options = within(screen.getByRole('listbox', { name: '可用模型' })).getAllByRole('option');
+    await user.click(options.find(option => option.dataset.modelId === id)!);
+  }
   await act(async () => tail.resolve(page([model])));
-  if (!selected) await screen.findByRole('option', { name: /explicit-model/ });
-  expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe(selected ? id : model.id);
+  await expectComposerModel(user, selected ? id : model.id);
 });
 
 it('默认模型续页加载失败显示字段错误，可从同一入口重试', async () => {
@@ -572,8 +584,7 @@ it('默认模型续页加载失败显示字段错误，可从同一入口重试'
   await screen.findByText(/默认模型加载失败/);
   fail = false;
   await userEvent.click(screen.getByRole('button', { name: '重试加载默认模型' }));
-  await screen.findByRole('option', { name: /explicit-model/ });
-  expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe(model.id);
+  await expectComposerModel(userEvent.setup(), model.id);
 });
 
 it.each(['全局', '项目'] as const)('快捷窗%s新建会话取消后焦点回到仍存在的导航按钮', async origin => {
@@ -581,7 +592,15 @@ it.each(['全局', '项目'] as const)('快捷窗%s新建会话取消后焦点�
   render(<Conversation compact client={runtime()} />);
   await screen.findByRole('heading', { name: session.title });
   await userEvent.click(screen.getByRole('button', { name: '打开项目导航' }));
-  await userEvent.click(screen.getByRole('button', { name: origin === '全局' ? '新建会话' : `在${workspace.name}新建会话` }));
+  if (origin === '全局') await userEvent.click(screen.getByRole('button', { name: '新建会话' }));
+  else {
+    const actions = screen.getByRole('button', { name: `项目「${workspace.name}」的更多操作` });
+    actions.focus();
+    await userEvent.keyboard('{Enter}');
+    const createSession = await screen.findByRole('menuitem', { name: '在此项目新建会话' });
+    await waitFor(() => expect(document.activeElement).toBe(createSession));
+    await userEvent.keyboard('{Enter}');
+  }
   await userEvent.click(within(screen.getByRole('dialog', { name: '新建会话' })).getByRole('button', { name: '取消' }));
   await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: '打开项目导航' })));
 });

@@ -53,20 +53,20 @@ it.each(['task', 'managed-run', 'tasks', 'assistants', 'existing'] as const)('�
   if (kind === 'tasks') await waitFor(() => expect(urls).toContain(`/tasks?workspace_id=${secondId}&limit=50`));
   if (kind === 'assistants') await screen.findByLabelText('显示名称');
   expect((input as HTMLTextAreaElement).value).toBe('主窗原草稿');
-  expect(screen.getByRole('heading', { name: session.title })).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: session.title })?.textContent).toBe(kind === 'existing' ? session.title : undefined);
   if (kind === 'assistants') {
-    await user.click(within(screen.getByRole('dialog', { name: '我的助理' })).getByRole('button', { name: '返回对话与草稿' }));
+    await user.click(within(screen.getByRole('region', { name: '我的助理' })).getByRole('button', { name: '返回对话与草稿' }));
     await waitFor(() => expect(document.activeElement).toBe(input));
     await user.click(screen.getByTitle('我的助理'));
     await screen.findByLabelText('显示名称');
   }
-  await user.click(kind === 'assistants' ? within(screen.getByRole('dialog', { name: '我的助理' })).getByRole('button', { name: '返回快捷小窗' }) : screen.getByRole('button', { name: '返回快捷小窗' }));
+  await user.click(kind === 'assistants' ? within(screen.getByRole('region', { name: '我的助理' })).getByRole('button', { name: '返回快捷小窗' }) : screen.getByRole('button', { name: '返回快捷小窗' }));
   expect(invoke).toHaveBeenCalledWith('return_to_quick');
   if (kind !== 'existing' && kind !== 'assistants') await user.click(screen.getByRole('button', { name: '返回对话与草稿' }));
   expect(screen.getByLabelText('消息')).toBe(input);
   expect((input as HTMLTextAreaElement).value).toBe('主窗原草稿');
   if (kind === 'tasks') {
-    await user.click(screen.getByTitle('任务'));
+    await user.click(within(screen.getByRole('complementary', { name: '项目导航' })).getByTitle('任务'));
     await screen.findByRole('heading', { name: '任务中心' });
     await waitFor(() => expect(urls.filter(url => url.startsWith('/tasks?')).at(-1)).toBe(`/tasks?workspace_id=${id}&limit=50`));
   }

@@ -7,7 +7,11 @@ beforeEach(() => {
   vi.resetModules();
   document.body.innerHTML = new DOMParser().parseFromString(html, 'text/html').body.innerHTML;
 });
-afterEach(() => { vi.doUnmock('./App'); document.body.innerHTML = ''; });
+afterEach(() => {
+  vi.doUnmock('./App');
+  window.history.replaceState(null, '', '/');
+  document.body.innerHTML = '';
+});
 
 it('应用依赖未就绪时已有首屏状态，依赖加载完成后才挂载应用', async () => {
   let release!: () => void;
@@ -35,4 +39,12 @@ it('应用模块加载失败呈现明确错误，不泄露原始错误或一直�
   expect(screen.getByRole('alert').textContent).toMatch(/加载失败/);
   expect(screen.queryByRole('status')).toBeNull();
   expect(document.body.textContent).not.toContain('synthetic-private-loader-detail');
+});
+
+it('桌宠在正式应用加载失败时保留原生窗口标记和短错误文字', async () => {
+  window.history.replaceState(null, '', '/?window=ball');
+  vi.doMock('./App', () => { throw new Error('synthetic-loader-detail'); });
+  await act(async () => { await import('./main'); await vi.dynamicImportSettled(); });
+  expect(document.querySelector('.startup-shell')?.getAttribute('data-window')).toBe('ball');
+  expect(screen.getByRole('alert').textContent).toBe('加载失败');
 });

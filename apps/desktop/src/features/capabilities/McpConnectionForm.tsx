@@ -2,6 +2,12 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { commandMeta } from '../../api/client';
 import type { McpClient } from '../../api/mcp';
 import type { McpConfiguredServer, McpImportPreview, McpSaveCommand, ScopeRef } from '../../generated/contracts';
+import { Button } from '../../components/ui/button';
+import { Checkbox } from '../../components/ui/checkbox';
+import { FieldLabel, FieldLegend, FieldSet } from '../../components/ui/field';
+import { Input } from '../../components/ui/input';
+import { NativeSelect, NativeSelectOption } from '../../components/ui/native-select';
+import { Textarea } from '../../components/ui/textarea';
 import { splitMcpJson } from './mcp-import';
 import { saveMcpSecret } from './mcp-secrets';
 
@@ -112,31 +118,37 @@ export default function McpConnectionForm({ client, scope, initial, generatedJso
 
   return <section className="mcp-form" aria-label="MCP 配置编辑">
     {!preview && <form onSubmit={event => void prepare(event)}>
-      <fieldset disabled={busy}>
-        <legend>{initial ? '编辑 MCP 配置' : '添加 MCP 配置'}</legend>
+      <FieldSet disabled={busy}>
+        <FieldLegend>{initial ? '编辑 MCP 配置' : '添加 MCP 配置'}</FieldLegend>
         {!initial && <div className="mcp-actions">
-          <button type="button" onClick={() => { setMode('form'); setRaw(''); }}>连接表单</button>
-           <button type="button" onClick={() => { setMode('json'); setEnabled(false); }}>导入 JSON</button>
+          <Button type="button" size="sm" variant={mode === 'form' ? 'secondary' : 'ghost'} aria-pressed={mode === 'form'}
+            onClick={() => { setMode('form'); setRaw(''); }}>连接表单</Button>
+          <Button type="button" size="sm" variant={mode === 'json' ? 'secondary' : 'ghost'} aria-pressed={mode === 'json'}
+            onClick={() => { setMode('json'); setEnabled(false); }}>导入 JSON</Button>
         </div>}
-        {mode === 'json' ? <label>mcpServers JSON<textarea autoComplete="off" rows={10} maxLength={262144}
-          value={raw} onChange={event => setRaw(event.target.value)} /></label> : <>
-          <label>名称<input required value={name} onChange={event => setName(event.target.value)} /></label>
-          <label>传输<select value={transport} onChange={event => { setTransport(event.target.value as typeof transport); setToken(''); setEnv('{}'); }}>
-            <option value="stdio">本机 stdio</option><option value="http">Streamable HTTP</option></select></label>
+        {mode === 'json' ? <FieldLabel>mcpServers JSON<Textarea autoComplete="off" rows={10} maxLength={262144}
+          value={raw} onChange={event => setRaw(event.target.value)} /></FieldLabel> : <>
+          <FieldLabel>名称<Input required value={name} onChange={event => setName(event.target.value)} /></FieldLabel>
+          <FieldLabel>传输<NativeSelect value={transport} onChange={event => { setTransport(event.target.value as typeof transport); setToken(''); setEnv('{}'); }}>
+            <NativeSelectOption value="stdio">本机 stdio</NativeSelectOption>
+            <NativeSelectOption value="http">Streamable HTTP</NativeSelectOption>
+          </NativeSelect></FieldLabel>
           {transport === 'stdio' ? <>
-            <label>Command<input required value={command} onChange={event => setCommand(event.target.value)} /></label>
-            <label>Args（JSON 字符串数组）<textarea rows={3} value={args} onChange={event => setArgs(event.target.value)} /></label>
-            <label>工作目录<input value={cwd} onChange={event => setCwd(event.target.value)} /></label>
-            <label>环境变量（JSON 对象）<textarea autoComplete="off" rows={3} value={env} onChange={event => setEnv(event.target.value)} /></label>
+            <FieldLabel>Command<Input required value={command} onChange={event => setCommand(event.target.value)} /></FieldLabel>
+            <FieldLabel>Args（JSON 字符串数组）<Textarea rows={3} value={args} onChange={event => setArgs(event.target.value)} /></FieldLabel>
+            <FieldLabel>工作目录<Input value={cwd} onChange={event => setCwd(event.target.value)} /></FieldLabel>
+            <FieldLabel>环境变量（JSON 对象）<Textarea autoComplete="off" rows={3} value={env} onChange={event => setEnv(event.target.value)} /></FieldLabel>
           </> : <>
-            <label>URL<input required value={url} onChange={event => setUrl(event.target.value)} /></label>
-            <label>API token<input type="password" autoComplete="new-password" value={token} onChange={event => setToken(event.target.value)} /></label>
+            <FieldLabel>URL<Input required value={url} onChange={event => setUrl(event.target.value)} /></FieldLabel>
+            <FieldLabel>API token<Input type="password" autoComplete="new-password" value={token} onChange={event => setToken(event.target.value)} /></FieldLabel>
           </>}
         </>}
-        <label><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} />启用此配置</label>
+        <FieldLabel className="flex items-center gap-2">
+          <Checkbox disabled={busy} checked={enabled} onCheckedChange={checked => setEnabled(checked === true)} />启用此配置
+        </FieldLabel>
         <p>个人/项目范围由能力库选择。秘密请放在环境变量或 API token；命令与参数按原值保存。</p>
-        <button>预览配置</button>
-      </fieldset>
+        <Button type="submit" variant="default" className="self-start">预览配置</Button>
+      </FieldSet>
     </form>}
     {preview && <section aria-label="待确认 MCP 配置">
       <h3>确认连接配置</h3>
@@ -148,18 +160,18 @@ export default function McpConnectionForm({ client, scope, initial, generatedJso
             || initial.cwd !== config.cwd) && <p>原配置：{initial.command} {JSON.stringify(initial.args)} · 工作目录 {initial.cwd ?? '未指定'}</p>}
           <p>连接与发现会以当前用户权限运行此命令，请确认信任此本机服务。</p></> : <p>URL：<code>{config.url}</code></p>}
       </article>)}
-      <p>启用后将连接上述服务并发现工具，首次连接后仍须选择允许的工具。环境变量和认证仅存入系统凭据。</p>
-      {preview.required_secret_slots.map(slot => <label key={slot.slot}>
+      <p>启用后自动连接。首次连接默认使用受支持的工具，可在详情中调整。凭据保存在系统凭据库中。</p>
+      {preview.required_secret_slots.map(slot => <FieldLabel key={slot.slot}>
         {slot.purpose === 'env' ? `环境变量 ${slot.env_name}` : 'API token'}（待填写可留空）
-        <input type="password" autoComplete="new-password" disabled={busy} value={secrets.current.get(slot.slot) ?? ''}
+        <Input type="password" autoComplete="new-password" disabled={busy} value={secrets.current.get(slot.slot) ?? ''}
           onChange={event => { secrets.current.set(slot.slot, event.target.value); refreshSecrets(value => value + 1); }} />
-      </label>)}
-      {!saved.length && <button disabled={busy} onClick={() => void confirm()}>{pending ? '按原命令核对保存' : enabled ? '连接并启用' : '确认保存配置'}</button>}
-      {!!saved.length && <button disabled={busy} onClick={() => void act(async () => {
+      </FieldLabel>)}
+      {!saved.length && <Button type="button" variant="default" disabled={busy} onClick={() => void confirm()}>{pending ? '按原命令核对保存' : enabled ? '连接并启用' : '确认保存配置'}</Button>}
+      {!!saved.length && <Button type="button" variant="default" disabled={busy} onClick={() => void act(async () => {
         try { await credentials(saved); } finally { secrets.current.clear(); refreshSecrets(value => value + 1); }
-      })}>补存凭据</button>}
+      })}>补存凭据</Button>}
     </section>}
     {error && <p role="alert">{error}</p>}{status && <p role="status">{status}</p>}
-    <button disabled={busy || !!pending} onClick={() => { secrets.current.clear(); onCancel(); }}>取消配置</button>
+    <Button type="button" variant="outline" disabled={busy || !!pending} onClick={() => { secrets.current.clear(); onCancel(); }}>取消配置</Button>
   </section>;
 }

@@ -242,20 +242,20 @@ impl RuntimeHost {
     pub fn channel(&self) -> Channel { self.channel.clone() }
     pub fn credentials(&self) -> Arc<CredentialStore> { self.credentials.clone() }
     pub fn notifications(&self) -> Arc<Mutex<Notifications>> { self.notifications.clone() }
-    pub fn start(directory: &Path, executable: &Path, diagnostics: bool, development: bool)
+    pub fn start(directory: &Path, executable: &Path, development: bool)
         -> Result<Self, String> {
         let mut command = Command::new(executable);
         command.args(["runtime", "--data-dir"]).arg(directory);
-        Self::start_command(directory, executable, command, diagnostics, development, Arc::new(CredentialStore::default()), None)
+        Self::start_command(directory, executable, command, development, Arc::new(CredentialStore::default()), None)
     }
 
-    pub fn start_development(directory: &Path, runtime: &DevelopmentRuntime, diagnostics: bool, development: bool)
+    pub fn start_development(directory: &Path, runtime: &DevelopmentRuntime, development: bool)
         -> Result<Self, String> {
-        Self::start_command(directory, &runtime.python, runtime.command(directory), diagnostics, development,
+        Self::start_command(directory, &runtime.python, runtime.command(directory), development,
             Arc::new(CredentialStore::default()), Some(runtime))
     }
 
-    fn start_command(directory: &Path, executable: &Path, mut command: Command, diagnostics: bool,
+    fn start_command(directory: &Path, executable: &Path, mut command: Command,
         development: bool, credentials: Arc<CredentialStore>, runtime: Option<&DevelopmentRuntime>) -> Result<Self, String> {
         std::fs::create_dir_all(directory).map_err(|_| "data_directory_failed")?;
         let lock = host_lock(directory).map_err(|_| "already_running")?;
@@ -317,7 +317,7 @@ impl RuntimeHost {
         // 构造后任何启动失败都会走 Drop，既释放实例锁也终止整个 Job。
         let mut host = Self { _lock: lock, job, child, channel, credentials, notifications, connection, log, stopped: false };
         host.channel.event("startup", json!({"token":token,"data_dir":directory.to_string_lossy(),
-            "allowed_origins":[origin],"desktop_diagnostics":diagnostics}))?;
+            "allowed_origins":[origin],"desktop_diagnostics":false}))?;
         let ready: Ready = serde_json::from_value(receiver.recv_timeout(Duration::from_secs(90))
             .map_err(|_| if host.channel.is_closed() { "runtime_ready_failed" } else { "runtime_ready_timeout" })?)
             .map_err(|_| "invalid_runtime_ready")?;
@@ -368,7 +368,7 @@ pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn start_isolated_development(directory: &Path, runtime: &DevelopmentRuntime, development: bool) -> Result<RuntimeHost, String> {
-        RuntimeHost::start_command(directory, &runtime.python, runtime.command(directory), false, development,
+        RuntimeHost::start_command(directory, &runtime.python, runtime.command(directory), development,
             Arc::new(crate::credentials::tests::store()), Some(runtime))
     }
 
@@ -424,6 +424,7 @@ import json, os, sys
 startup = json.loads(sys.stdin.buffer.readline())
 assert startup['method'] == 'startup'
 assert set(startup['params']) == {'token', 'data_dir', 'allowed_origins', 'desktop_diagnostics'}
+assert startup['params']['desktop_diagnostics'] is False
 assert sys.argv[1:] == ['runtime', '--data-dir', startup['params']['data_dir']]
 assert os.path.samefile(os.getcwd(), os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 assert 'FLOWMATE_TEST_INHERITED' not in os.environ
@@ -439,7 +440,7 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
         let data = directory.join("data");
         let mut command = runtime.command(&data);
         command.env("FLOWMATE_TEST_INHERITED", "public-test-marker");
-        let mut host = RuntimeHost::start_command(&data, &runtime.python, command, false, true,
+        let mut host = RuntimeHost::start_command(&data, &runtime.python, command, true,
             Arc::new(crate::credentials::tests::store()), Some(&runtime)).unwrap();
         assert_eq!(serde_json::to_value(&host.connection).unwrap()["protocol_version"], 3,
             "WebView API and private channel now both declare v2");
@@ -475,7 +476,7 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
         let legacy_database = app_data.join("flowmate.sqlite3");
         std::fs::write(&legacy_database, b"public-legacy-database-marker").unwrap();
         let directory = app_data.join("data-v3");
-        let mut host = start_isolated_development(&directory, &runtime, true).unwrap();
+        let mut host = RuntimeHost::start_development(&directory, &runtime, true).unwrap();
         let address = host.connection.base_url.strip_prefix("http://").unwrap();
         for (authorization, expected) in [
             (format!("Authorization: Bearer {}\r\n", host.connection.token), "HTTP/1.1 200"),
@@ -515,7 +516,7 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
         let directory = root.join(".local/m2/acceptance").join(format!("frozen-host-{}", uuid::Uuid::new_v4())).join("独立 数据");
         println!("frozen runtime: {}; evidence: {}", executable.display(), directory.display());
         // 现有产物只证明CLI接缝，不作为本次修改后的来源同源/最终分发证据。
-        let mut host = RuntimeHost::start(&directory, &executable, false, false).unwrap();
+        let mut host = RuntimeHost::start(&directory, &executable, false).unwrap();
         let logs = std::fs::read_to_string(directory.join("desktop-host.jsonl")).unwrap();
         let ready: Value = logs.lines().map(|line| serde_json::from_str::<Value>(line).unwrap())
             .find(|event| event["event"] == "host_ready").unwrap();
@@ -583,7 +584,7 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
             [Console]::WriteLine((@{protocol_version=3;request_id=$shutdown.request_id;kind='reply';method='shutdown';result=@{stopping=$true}} | ConvertTo-Json -Depth 8 -Compress))
         "#;
         let (directory, executable, command) = fixture(script);
-        let error = RuntimeHost::start_command(&directory, &executable, command, false, true,
+        let error = RuntimeHost::start_command(&directory, &executable, command, true,
             Arc::new(crate::credentials::tests::store()), None).err().unwrap();
         assert_eq!(error, "invalid_runtime_identity");
         std::fs::remove_dir_all(directory).unwrap();
@@ -603,7 +604,7 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
             exit 0
         "#;
         let (directory, executable, command) = fixture(script);
-        let mut host = RuntimeHost::start_command(&directory, &executable, command, false, false,
+        let mut host = RuntimeHost::start_command(&directory, &executable, command, false,
             Arc::new(crate::credentials::tests::store()), None).unwrap();
         assert_eq!(host.connection.base_url, "http://127.0.0.1:31415");
         let pid: u32 = std::fs::read_to_string(directory.join("fixture-descendant.pid")).unwrap().parse().unwrap();
@@ -647,7 +648,7 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
             [IO.File]::WriteAllText((Join-Path $startup.params.data_dir 'shutdown-replied'),'true')
         "#;
         let (directory, executable, command) = fixture(script);
-        let mut host = RuntimeHost::start_command(&directory, &executable, command, false, false,
+        let mut host = RuntimeHost::start_command(&directory, &executable, command, false,
             Arc::new(crate::credentials::tests::store()), None).unwrap();
         host.stop();
         assert_eq!(std::fs::read_to_string(directory.join("shutdown-replied")).unwrap(), "true");
@@ -683,6 +684,7 @@ async def main():
     assert startup.method == 'startup'
     assert startup.protocol_version == 3 and startup.stream_seq == 1
     assert set(startup.params) == {'token','data_dir','allowed_origins','desktop_diagnostics'}
+    assert startup.params['desktop_diagnostics'] is False
     binding = ModelSecretBinding.model_validate_json(binding_json)
     async def register(params):
         assert params == {'scope':{'workspace_id':binding.connection_id,'session_id':None},'kind':'file','paths':[]}
@@ -721,7 +723,7 @@ async def main():
 asyncio.run(main())
 "#);
         let mut command = Command::new(&executable); command.args(["-I", "-c", &script]);
-        let mut host = RuntimeHost::start_command(&directory, &executable, command, false, false, store.clone(), None).unwrap();
+        let mut host = RuntimeHost::start_command(&directory, &executable, command, false, store.clone(), None).unwrap();
         assert_eq!(host.connection.base_url, "http://127.0.0.1:31416");
         store.clear(&binding.secret_ref).unwrap();
         let channel = host.channel();

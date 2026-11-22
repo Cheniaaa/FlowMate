@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
 import Composer from './Composer';
+import ThemeToggle from '../../components/ThemeToggle';
 
 function Input({ sent, disabled = false, initial = '待发送内容' }: { sent: (value: string) => void; disabled?: boolean; initial?: string }) {
   const [value, change] = useState(initial);
@@ -43,5 +44,30 @@ it('长按和其它修饰键不重复提交，按钮仍沿原路径发送', asyn
   expect(sent).not.toHaveBeenCalled();
   await user.click(screen.getByRole('button', { name: '发送' }));
   expect(sent.mock.calls).toEqual([['待发送内容']]);
-  expect(screen.getByText(/Enter 发送.*Shift\+Enter 换行/)).toBeTruthy();
+  expect(input.title).toMatch(/Enter 发送.*Shift\+Enter 换行/);
+});
+
+it('运行中停止是输入区主操作，有补充草稿时并列显示次级补充且停止不清空草稿', () => {
+  const stop = vi.fn();
+  const view = render(<Composer value="" onChange={() => {}} onSubmit={() => {}} disabled steering onStop={stop} />);
+  expect(screen.queryByRole('button', { name: '发送' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '停止当前运行' }));
+  expect(stop).toHaveBeenCalledTimes(1);
+  view.rerender(<Composer value="仍在编辑的补充" onChange={() => {}} onSubmit={() => {}} disabled={false} steering onStop={stop} />);
+  expect(screen.getByRole('button', { name: '补充指令' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '停止当前运行' }));
+  expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('仍在编辑的补充');
+});
+
+it('外观选择应用到共享主题并保存，按钮随选择更新', async () => {
+  localStorage.removeItem('flowmate:theme');
+  const view = render(<ThemeToggle />);
+  try {
+    fireEvent.click(screen.getByRole('button', { name: '切换到深色' }));
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(localStorage.getItem('flowmate:theme')).toBe('dark');
+    expect(await screen.findByRole('button', { name: '切换到浅色' })).toBeTruthy();
+  } finally {
+    view.unmount(); localStorage.removeItem('flowmate:theme'); delete document.documentElement.dataset.theme;
+  }
 });

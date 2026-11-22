@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type EventCallback } from '@tauri-apps/api/event';
 import { afterEach, expect, it, vi } from 'vitest';
-import { checkWorkspaceDirectoryCommand, createWorkspaceFromDirectory, openSettings, retryWorkspaceFromDirectory, showWorkbench, useWindowSettings, type WindowSettings, type WorkbenchTarget, type SettingsSection } from './windows';
+import { checkWorkspaceDirectoryCommand, createWorkspaceFromDirectory, openSettings, retryWorkspaceFromDirectory, selectWorkspaceDirectory, showWorkbench, useWindowSettings, type WindowSettings, type WorkbenchTarget, type SettingsSection } from './windows';
 import { commandMeta } from './client';
 import { id, resource } from '../test/fixtures';
 
@@ -44,12 +44,15 @@ it('原生目录创建只有首次选择；响应丢失后明确核对/原命令
 
 it('原生 picker 取消是 null；冻结选择丢失/冲突如实抛出，不重弹 picker 或伪造项目', async () => {
   const meta = commandMeta(); vi.mocked(invoke).mockResolvedValueOnce(null);
-  expect(await createWorkspaceFromDirectory('取消项目', meta)).toBeNull();
+  expect(await selectWorkspaceDirectory(meta.command_id!)).toBeNull();
   for (const code of ['directory_selection_lost', 'directory_command_conflict', 'busy', 'scope_deleted']) {
     vi.mocked(invoke).mockRejectedValueOnce(code);
     await expect(retryWorkspaceFromDirectory('取消项目', meta)).rejects.toBe(code);
   }
-  expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'create_workspace_from_directory')).toHaveLength(1);
+  expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'select_workspace_directory')).toEqual([
+    ['select_workspace_directory', { commandId: meta.command_id }],
+  ]);
+  expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'create_workspace_from_directory')).toHaveLength(0);
 });
 function deferred<T>() {
   let resolve!: (value: T) => void;

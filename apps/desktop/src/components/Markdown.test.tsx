@@ -7,6 +7,23 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.clearAllMocks(); });
 
 describe('受控 Markdown', () => {
+  it('从所选代码块复制原行和缩进，多个代码块各自对应自己的内容', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      render(<Markdown>{'```toml\nfirst = true\n```\n\n```py\nif ok:\n    save()\n```'}</Markdown>);
+      fireEvent.click(screen.getByRole('button', { name: '复制 py 代码' }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith('if ok:\n    save()\n'));
+      expect(screen.getByRole('button', { name: '复制 toml 代码' })).toBeTruthy();
+      render(<Markdown>{'```js\n```'}</Markdown>);
+      fireEvent.click(screen.getByRole('button', { name: '复制 js 代码' }));
+      expect(writeText).toHaveBeenLastCalledWith('');
+    } finally {
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
   it('呈现中文、代码和 GFM 表格，但不生成原始 HTML、脚本或图片请求节点', () => {
     const { container } = render(<Markdown>{'# 中文说明\n\n```js\nconst value = "中文";\n```\n\n| 项目 | 结果 |\n| --- | --- |\n| 检查 | 完成 |\n\n<script>alert(1)</script>\n\n<iframe src="https://evil.invalid"></iframe>\n\n<img src="https://evil.invalid/raw.png" onerror="alert(1)">\n\n![图片说明](https://evil.invalid/image.png)'}</Markdown>);
     expect(screen.getByRole('heading', { name: '中文说明' })).toBeTruthy();
@@ -38,6 +55,27 @@ describe('受控 Markdown', () => {
 });
 
 describe('静态产物文档', () => {
+  it('为隔离的 JSON 阅读页保留主题变量与原文，长行使用阅读排版', () => {
+    const root = document.documentElement;
+    root.style.setProperty('--color-background', '#181819');
+    root.style.setProperty('--color-foreground', '#f2f2f0');
+    const text = `{"detail":"${'长行'.repeat(120)}"}`;
+    try {
+      const output = artifactDocument(text, 'application/json', 'dark');
+      const page = new DOMParser().parseFromString(output.srcDoc, 'text/html');
+      expect(page.documentElement.dataset.theme).toBe('dark');
+      expect(page.documentElement.style.getPropertyValue('--color-background')).toBe('#181819');
+      expect(page.documentElement.style.getPropertyValue('--color-foreground')).toBe('#f2f2f0');
+      expect(page.body.classList.contains('markdown-body')).toBe(true);
+      expect(page.querySelector('pre')?.textContent).toBe(text);
+      expect(page.querySelector('style')?.textContent).toMatch(/overflow-wrap:\s*anywhere/);
+      expect(page.querySelector('link,script')).toBeNull();
+    } finally {
+      root.style.removeProperty('--color-background');
+      root.style.removeProperty('--color-foreground');
+    }
+  });
+
   it('复用 Markdown 策略，在生成时移除 href，记录合法链接并封闭网络及表单', () => {
     const output = artifactDocument('# 报告\n\n[**官方**资料](https://example.invalid/doc)\n\n[拒绝](javascript:alert%281%29)\n\n![图片说明](https://evil.invalid/image)\n\n<script>alert(1)</script>\n\n<form action="https://evil.invalid"><input></form>', 'text/markdown');
     const document = new DOMParser().parseFromString(output.srcDoc, 'text/html');

@@ -15,7 +15,10 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetAllMocks();
 
 const workspace = { id, version: 1, name: '回焦项目', directory_resource_id: null };
 const session = { id, version: 1, workspace_id: id, kind: 'interaction', archived: false, agent_profile_id: id, title: '回焦会话' };
-const currentRun = { ...run, state: 'completed' };
+const currentRun = { ...run, state: 'completed',
+  output: { summary: '跨窗回焦的合成答复', artifact_ids: [], unresolved: [], handled_failures: [] } };
+const detailEntry = (name: string, root: ParentNode = document) =>
+  within(root.querySelector<HTMLElement>('nav[aria-label="会话详情入口"]')!).getByRole('button', { name });
 function boundary(override: (path: string) => unknown = () => undefined) {
   const callbacks = new Map<string, EventCallback<null>>();
   let request: WorkbenchRequest | null = null;
@@ -65,24 +68,26 @@ it.each(['关闭', 'Escape'])('快捷窗展开用户 Run 后主窗%s任务 Sheet
   // 两个窗口组件只共享 HTTP/Tauri 边界。移除快捷窗的 DOM，模拟来源不在主窗 document。
   const quick = render(<QuickAssistant client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 3 })} />);
   await within(quick.container).findByRole('heading', { name: session.title });
-  await waitFor(() => expect(within(quick.container).getAllByText('已完成').length).toBeGreaterThan(0));
+  await within(quick.container).findByText('跨窗回焦的合成答复');
   await user.click(within(quick.container).getByRole('button', { name: '展开工作台' }));
+  expect(invoke).toHaveBeenCalledWith('show_workbench', { target: { kind: 'run', run_id: id } });
   quick.unmount();
   expect(document.activeElement).toBe(document.body);
   await native.deliver();
   const dialog = await screen.findByRole('dialog', { name: '任务详情' });
-  expect(within(dialog).getByText(id)).toBeTruthy();
+  expect(within(dialog).getByRole('region', { name: '会话任务' })).toBeTruthy();
+  expect(within(dialog).queryByText(id)).toBeNull();
   if (close === 'Escape') await user.keyboard('{Escape}');
   else await user.click(within(dialog).getByRole('button', { name: '关闭详情' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-  await waitFor(() => expect(document.activeElement).toBe(within(main.container).getByRole('button', { name: '任务' })));
+  await waitFor(() => expect(document.activeElement).toBe(detailEntry('任务', main.container)));
   expect(input).toHaveProperty('value', '主窗保留的草稿');
 });
 
 it.each(['任务', '产物'])('本地%s来源在 Sheet 关闭后仍恢复', async name => {
   boundary(); const user = userEvent.setup(); render(<App />);
   await screen.findByRole('heading', { name: session.title });
-  const trigger = screen.getByRole('button', { name });
+  const trigger = detailEntry(name);
   await user.click(trigger);
   await user.keyboard('{Escape}');
   await waitFor(() => expect(document.activeElement).toBe(trigger));
@@ -104,7 +109,7 @@ it('程序化任务 Sheet 保留有效本地主窗输入来源', async () => {
 it('任务 Sheet 被新设置页接管时不把焦点抢回任务来源', async () => {
   boundary(); const user = userEvent.setup(); render(<App />);
   await screen.findByRole('heading', { name: session.title });
-  await user.click(screen.getByRole('button', { name: '任务' }));
+  await user.click(detailEntry('任务'));
   await screen.findByRole('dialog', { name: '任务详情' });
   // 宿主收到公开设置导航后，新页面自己取得焦点；旧 Sheet 延迟回焦不可覆盖它。
   const callback = vi.mocked(listen).mock.calls.find(([name]) => name === 'settings-navigation')![1];
@@ -123,7 +128,7 @@ it('任务 Sheet 被新设置页接管时不把焦点抢回任务来源', async 
 it('关闭任务 Sheet 后输入已接管时，延迟回焦不覆盖新目标', async () => {
   boundary(); const user = userEvent.setup(); render(<App />);
   const input = await screen.findByLabelText('消息');
-  await user.click(screen.getByRole('button', { name: '任务' }));
+  await user.click(detailEntry('任务'));
   const dialog = await screen.findByRole('dialog', { name: '任务详情' });
   vi.useFakeTimers();
   fireEvent.keyDown(dialog, { key: 'Escape' });

@@ -1,7 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import { applyDeletion, emptyProjection, mergeApprovals, mergeGrants, mergeMessages, mergeQuestions, mergeResources, mergeRunDetail, mergeRunFeedback, mergeRunSnapshot, mergeSessions, mergeWorkspaces, orderedMessageIds, readSse, reduceStream, resetWorkspace } from './events';
+import { applyDeletion, emptyProjection, latestContextUsage, mergeApprovals, mergeGrants, mergeMessages, mergeQuestions, mergeResources, mergeRunDetail, mergeRunFeedback, mergeRunSnapshot, mergeSessions, mergeWorkspaces, orderedMessageIds, readSse, reduceStream, resetWorkspace } from './events';
 import type { ModelMessage, StreamEvent, RunDetail, RunSnapshot, WorkspaceSnapshot } from '../generated/contracts';
 import { connection, contextUsage, event as publicEvent, grant, limits, page, resource, run as fullRun, runDetailSummary } from '../test/fixtures';
+
+it('附件按查询和 SSE 的公开投影水位替换，迟到分页不会复活旧授权', () => {
+  const sessionId = fullRun.interaction_session_id!;
+  const session = { id: sessionId, workspace_id: fullRun.workspace_id, title: '历史', version: 1,
+    kind: 'interaction' as const, archived: false, agent_profile_id: fullRun.config.agent_profile.id };
+  const sent: ModelMessage = { id: activityId, run_id: fullRun.id, role: 'user', origin: 'conversation',
+    event_id: '10', event_index: 0, parts: [{ kind: 'text', text: '这个文件' }], source_dependencies: [],
+    activity_id: null, private_ref: null, attachments: [{ resource_id: resource.id, name: 'tmp.txt',
+      resource_lineage: [resource.id], read_grant_ids: [grant.id] }] };
+  const withB = { ...sent, attachments: [{ ...sent.attachments![0], read_grant_ids: [id] }] };
+  let state = mergeSessions(emptyProjection(), [session]);
+  state = mergeMessages(state, sessionId, { items: [sent], watermark: '11', next_cursor: 'next' });
+  state = mergeMessages(state, sessionId, { items: [withB], watermark: '14', next_cursor: null });
+  state = mergeMessages(state, sessionId, { items: [sent], watermark: '12', next_cursor: null });
+  const staleEvent = durable('10', { messages: [sent], message_watermark: '13' }, 'run.started');
+  if (staleEvent.kind === 'durable') {
+    staleEvent.event = { ...staleEvent.event, workspace_id: fullRun.workspace_id, session_id: sessionId };
+  }
+  state = reduceStream(state, staleEvent);
+  expect(state.messages[sent.id].attachments?.[0].read_grant_ids).toEqual([id]);
+  const replay = durable('10', { messages: [{ ...sent, attachments: undefined }], message_watermark: '15' }, 'run.started');
+  if (replay.kind === 'durable') replay.event = { ...replay.event, workspace_id: fullRun.workspace_id, session_id: sessionId };
+  state = reduceStream(state, replay);
+  state = mergeMessages(state, sessionId, { items: [withB], watermark: '14', next_cursor: null });
+  expect(state.messages[sent.id].attachments).toBeUndefined();
+  expect(state.messages[sent.id].event_id).toBe('10');
+  expect(state.cursor).toBe('10');
+});
 
 const id = '00000000-0000-4000-8000-000000000001';
 const activityId = '00000000-0000-4000-8000-000000000002';
@@ -17,7 +45,8 @@ function started() { return reduceStream(emptyProjection(), durable('90071992547
 
 it('消息反馈查询不推进事件游标；较新事件淘汰旧反馈，迟到查询及删除后查询不能复活事实', () => {
   const feedback = { run_id: id, version: 3, workspace_id: fullRun.workspace_id, session_id: fullRun.interaction_session_id!,
-    root_task_id: fullRun.root_task_id, connection_id: connection.id, state: 'interrupted' as const, reason: 'uncertain_activity', model_activity: null };
+    root_task_id: fullRun.root_task_id, connection_id: connection.id, state: 'interrupted' as const, reason: 'uncertain_activity',
+    model_activity: null, context_usage: null };
   const first = { ...page([feedback]), watermark: '9007199254740994' };
   let state = mergeRunFeedback(started(), first);
   expect(state.cursor).toBe('9007199254740993');
@@ -29,6 +58,15 @@ it('消息反馈查询不推进事件游标；较新事件淘汰旧反馈，迟�
   expect(state.runFeedback[id]).toBeTruthy();
   state = applyDeletion(state, { scope: { kind: 'session', workspace_id: fullRun.workspace_id, session_id: fullRun.interaction_session_id }, status: 'deleted', epoch: 2 });
   expect(mergeRunFeedback(state, { ...first, watermark: '9007199254740996' }).runFeedback[id]).toBeUndefined();
+});
+
+it('未进入运行分页的上下文说明仍拒绝迟到的旧轮次版本', () => {
+  const latest = { ...contextUsage, compaction_state: 'invalidated' as const, compaction_reason: 'source_changed' };
+  const feedback = { run_id: id, version: 3, workspace_id: id, session_id: id, root_task_id: fullRun.root_task_id,
+    connection_id: connection.id, state: 'completed' as const, reason: null, model_activity: null, context_usage: latest };
+  const state = mergeRunFeedback(emptyProjection(), page([feedback]));
+  const latePage = { ...page([{ ...feedback, version: 2, context_usage: contextUsage }]), watermark: '9007199254740995' };
+  expect(latestContextUsage(mergeRunFeedback(state, latePage), id)).toEqual(latest);
 });
 
 it('reasoning 与正文预览独立索引，持久消息提交及撤销共用出队围栏', () => {
@@ -265,7 +303,7 @@ describe('删除scope不可复活围栏', () => {
     state = reduceStream(state, late(first));
     state = mergeRunDetail(state, { ...first, watermark: '99' });
     state = mergeRunSnapshot(state, { ...first.run, version: 100 });
-    state = mergeMessages(state, first.run.interaction_session_id!, first.messages.items);
+    state = mergeMessages(state, first.run.interaction_session_id!, first.messages);
     state = reduceStream(state, { kind: 'delta', activity_id: first.activities.items[0].id, index: 1, text: '迟到' });
     expect(state.runs).toEqual({});
     expect(state.messages).toEqual({});
@@ -277,7 +315,7 @@ describe('删除scope不可复活围栏', () => {
     const first = detail(100), other = detail(200);
     let state = reduceStream(installed([first, other]), lifecycle({ workspace_id: id, session_id: first.run.interaction_session_id! }));
     state = resetWorkspace(state, snapshot([first, other], '99'));
-    state = mergeMessages(state, first.run.interaction_session_id!, first.messages.items);
+    state = mergeMessages(state, first.run.interaction_session_id!, first.messages);
     expect(state.sessions[first.run.interaction_session_id!]).toBeUndefined();
     expect(state.runs[first.run.id]).toBeUndefined();
     expect(state.messages).toEqual({});
@@ -293,7 +331,7 @@ describe('删除scope不可复活围栏', () => {
     expect(state.runs[other.run.id]).toBeDefined();
     state = resetWorkspace(state, snapshot([other], '21'));
     state = resetWorkspace(state, snapshot([first], '99'));
-    state = mergeMessages(state, first.run.interaction_session_id!, first.messages.items);
+    state = mergeMessages(state, first.run.interaction_session_id!, first.messages);
     expect(state.runs[other.run.id]).toBeDefined();
     expect(state.workspaces[id]).toBeUndefined();
     expect(state.messages[first.messages.items[0].id]).toBeUndefined();
@@ -304,7 +342,7 @@ describe('删除scope不可复活围栏', () => {
     let state = reduceStream(emptyProjection(), lifecycle(scope, 3));
     state = reduceStream(state, lifecycle(scope, 2));
     state = reduceStream(state, late(first));
-    state = mergeMessages(state, first.run.interaction_session_id!, first.messages.items);
+    state = mergeMessages(state, first.run.interaction_session_id!, first.messages);
     expect(state.deletedSessions[first.run.interaction_session_id!]).toBe(3);
     expect(state.runs).toEqual({});
     expect(state.messages).toEqual({});
@@ -446,21 +484,21 @@ describe('会话消息的服务端顺序', () => {
     expect(orderedMessageIds(state, id)).toEqual([olderUser.id, olderAssistant.id, currentUser.id, currentAssistant.id]);
   });
   it('有序历史分页与实时消息接缝保序，旧 RunDetail/重复查询不能把当前 Run 移到历史前', () => {
-    let state = mergeMessages(historyProjection(), id, [olderUser]);
+    let state = mergeMessages(historyProjection(), id, page([olderUser]));
     state = reduceStream(state, messagesEvent('9007199254740995', 3, [currentAssistant]));
     state = reduceStream(state, messagesEvent('9007199254740994', 2, [currentUser]));
-    state = mergeMessages(state, id, [olderAssistant, currentUser]);
+    state = mergeMessages(state, id, page([olderAssistant, currentUser]));
     state = mergeRunDetail(state, detail([currentUser], '9007199254740994'));
-    state = mergeMessages(state, id, [olderUser]);
+    state = mergeMessages(state, id, page([olderUser]));
     expect(orderedMessageIds(state, id)).toEqual([olderUser.id, olderAssistant.id, currentUser.id, currentAssistant.id]);
   });
   it('同一事件内按 event_index 排序；无交集查询的读水位不能冒充消息创建位置', () => {
     const first = message(7, 'assistant', '9007199254740995', 0);
     const second = message(8, 'tool', '9007199254740995', 1);
-    let state = mergeMessages(historyProjection(), id, [second]);
+    let state = mergeMessages(historyProjection(), id, page([second]));
     state = mergeRunDetail(state, detail([first], '9007199254740999'));
-    state = mergeMessages(state, id, [olderUser, olderAssistant]);
-    state = mergeMessages(state, id, [second]);
+    state = mergeMessages(state, id, page([olderUser, olderAssistant]));
+    state = mergeMessages(state, id, page([second]));
     expect(orderedMessageIds(state, id)).toEqual([olderUser.id, olderAssistant.id, first.id, second.id]);
   });
 });

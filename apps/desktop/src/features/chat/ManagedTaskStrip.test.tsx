@@ -10,7 +10,14 @@ it('只展示真实managed事实；运行中紧凑，停止藏在更多，不占
   expect(screen.queryByLabelText('后台任务条')).toBeNull();
   view.rerender(<ManagedTaskStrip runs={[{ ...run, kind: 'managed' }]} onOpen={onOpen} onStop={onStop} />);
   expect(screen.getByLabelText('后台任务条')).toBeTruthy();
-  expect(screen.getByRole('button', { name: '停止该后台' }).closest('details')?.open).toBe(false);
+  expect(screen.queryByRole('menuitem', { name: '停止该后台' })).toBeNull();
+  const more = screen.getByRole('button', { name: '后台任务更多操作' });
+  more.focus();
+  await userEvent.keyboard('{Enter}');
+  expect(screen.getByRole('menuitem', { name: '停止该后台' })).toBeTruthy();
+  await userEvent.keyboard('{Escape}');
+  expect(document.activeElement).toBe(more);
+  expect(onStop).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole('button', { name: '查看后台任务' }));
   expect(onOpen).toHaveBeenCalledWith(run.id);
 });

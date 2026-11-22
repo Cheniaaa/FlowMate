@@ -20,7 +20,7 @@ const environment = { id: envId, revision: 1, kind: 'python', executable_path: '
   executable_identity: 'identity', version: 'Python 3.13', cwd_mode: 'package_copy', env_keys: [],
   dependency_coverage: 'unverified', manifest_count: 0, status: 'probed', checked_at: null, diagnostic_code: null };
 
-it('明确绑定环境后才能许可固定版本，撤销独立许可不改内容启停', async () => {
+it('绑定环境供本轮运行，显式许可和撤销仍保留独立控制', async () => {
   const writes: { path: string; body: any }[] = [];
   let current: any = settings;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
@@ -41,7 +41,7 @@ it('明确绑定环境后才能许可固定版本，撤销独立许可不改内�
   });
   const user = userEvent.setup();
   render(<SkillExecution client={client()} version={skillView.version} scope={skillScope} onChanged={() => {}} />);
-  await screen.findByText('待执行许可');
+  await screen.findByText('此版本尚未允许本机执行');
   expect(writes).toHaveLength(0);
   await user.click(screen.getByRole('button', { name: '允许此版本在绑定环境执行' }));
   await screen.findByText('此版本已有执行许可');
@@ -49,17 +49,42 @@ it('明确绑定环境后才能许可固定版本，撤销独立许可不改内�
     environment_id: envId, environment_revision: 1, scope: skillScope, status: 'active' });
   expect(writes[0].body.data).not.toHaveProperty('enabled');
   await user.click(screen.getByRole('button', { name: '撤销执行许可' }));
-  await screen.findByText('待执行许可');
+  await screen.findByText('此环境的执行许可已撤销');
   expect(writes[1].path).toContain('/revoke');
   expect(writes[1].body.expected_version).toBe(1);
 });
 
-it('无绑定显示待环境，只有已检测的用户环境可显式绑定', async () => {
+it('首次允许并使用会保存当前环境的许可，已有许可直接用于聊天', async () => {
+  const writes: object[] = [];
+  let current: Omit<typeof settings, 'permissions'> & { permissions: object[] } = settings;
+  const onUse = vi.fn(async () => {});
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    if (init.method === 'PUT') {
+      const { data } = JSON.parse(String(init.body));
+      writes.push(data);
+      current = { ...settings, permissions: [data] };
+      return Response.json(data);
+    }
+    return Response.json(new URL(url).pathname.endsWith('/script-settings') ? current : environment);
+  });
+  const user = userEvent.setup();
+  render(<SkillExecution client={client()} version={skillView.version} scope={skillScope}
+    onChanged={() => {}} onUse={onUse} />);
+  await user.click(await screen.findByRole('button', { name: '允许本机执行并用于新目标' }));
+  await waitFor(() => expect(onUse).toHaveBeenCalledWith(expect.objectContaining({
+    environment_id: envId, environment_revision: 1, content_hash: skillHash,
+  })));
+  await user.click(screen.getByRole('button', { name: '使用此 Skill 和已许可脚本' }));
+  expect(writes).toHaveLength(1);
+  expect(onUse).toHaveBeenCalledTimes(2);
+});
+
+it('无绑定采用项目自动选择，也可显式绑定已检测环境', async () => {
   vi.stubGlobal('fetch', async (url: string) => new URL(url).pathname.endsWith('/script-settings')
     ? Response.json({ ...settings, binding: null })
     : Response.json({ items: [environment], next_cursor: null, watermark: '0' }));
   render(<SkillExecution client={client()} version={skillView.version} scope={skillScope} onChanged={() => {}} />);
-  await screen.findByText('待绑定环境');
+  await screen.findByText(/^按项目自动选择 ·/);
   expect(screen.queryByRole('button', { name: '允许此版本在绑定环境执行' })).toBeNull();
   expect(await screen.findByRole('option', { name: /python/ })).toBeTruthy();
   expect(screen.getByLabelText('用户运行环境')).toHaveProperty('value', envId);
@@ -107,7 +132,7 @@ it.each(['dispatched', 'failed', 'succeeded', 'uncertain'] as const)('Trace 展�
       state, script_execution: state === 'dispatched' || state === 'uncertain' ? null : summary, error: null }] };
   render(<TracePanel events={[event]} />);
   const trace = screen.getByRole('region', { name: '公开事件' });
-  expect(within(trace).getByText(/skills.run_script/)).toBeTruthy();
+  expect(within(trace).getByText('执行 Skill 脚本')).toBeTruthy();
   if (state === 'failed' || state === 'succeeded') {
     expect(within(trace).getByText('result.bin')).toBeTruthy();
     expect(within(trace).getByText(/外部费用未知/)).toBeTruthy();

@@ -49,7 +49,7 @@ it.each(['original', 'needs_restore', 'conflict'] as const)('重开真实%s保�
     return Response.json({ ...skillReceipt, state });
   });
   const user = userEvent.setup(); render(<SkillDetail client={client()} view={skillView} scope={skillScope} workspaceId={id} onChanged={() => {}} onEdit={async () => {}} />);
-  await screen.findByText(new RegExp(`命令 ${id}`));
+  await screen.findByRole('article', { name: '实际保存.zip' });
   expect(screen.queryByText('已保存：实际保存.zip')).toBeNull();
   expect(writes).toHaveLength(0);
   if (state === 'needs_restore') {
@@ -83,10 +83,10 @@ it.each(['rejected', 'lost'] as const)('%s保存结果区别明确失败与未�
   await user.click(screen.getByRole('button', { name: '导出标准包' }));
   await screen.findByRole('alert');
   if (kind === 'rejected') {
-    expect(screen.queryByRole('button', { name: '查询原保存命令' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '查询保存结果' })).toBeNull();
     expect((screen.getByRole('button', { name: '导出标准包' }) as HTMLButtonElement).disabled).toBe(false);
   } else {
-    await user.click(screen.getByRole('button', { name: '查询原保存命令' }));
+    await user.click(screen.getByRole('button', { name: '查询保存结果' }));
     await screen.findByText('已保存：实际保存.zip');
     expect(reads).toEqual([`/v3/capabilities/skill-exports/${commandId}`]);
   }
@@ -113,9 +113,9 @@ it('版本失效重查保留未确认导出命令的原hash和target_ref', async
   const props = { client: runtime, scope: skillScope, workspaceId: id, onChanged: () => {}, onEdit: async () => {} };
   const view = render(<SkillDetail {...props} view={skillView} refreshKey={0} />);
   await user.click(screen.getByRole('button', { name: '导出标准包' }));
-  await screen.findByRole('button', { name: '查询原保存命令' });
+  await screen.findByRole('button', { name: '查询保存结果' });
   view.rerender(<SkillDetail {...props} view={{ ...skillView, version: { ...skillView.version, content_hash: 'c'.repeat(64) } }} refreshKey={1} />);
-  expect(screen.getByRole('button', { name: '查询原保存命令' })).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: '查询原保存命令' }));
+  expect(screen.getByRole('button', { name: '查询保存结果' })).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: '查询保存结果' }));
   await screen.findByText('已保存：实际保存.zip');
 });

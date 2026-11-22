@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { RuntimeClient } from '../api/client';
-import { agent, connection, event, id, model, page, secondId } from '../test/fixtures';
+import { agent, connection, event, id, model, modelResolution, page, secondId } from '../test/fixtures';
 import { maintenanceDetail, maintenanceNotice, maintenancePolicy, maintenanceRun, maintenanceTask, sourceBoundary, sourceItem } from '../test/maintenance-fixtures';
 import WorkbenchWindow from './WorkbenchWindow';
 import type { RunDetail } from '../generated/contracts';
@@ -34,8 +34,7 @@ it('任务中心真实来源进入整理，任务详情/取消和原待办恢复
     if (path === '/memory/records') return Response.json(page([]));
     if (path === '/tasks') return Response.json(page([sourceItem]));
     if (path === '/settings/memory') return Response.json(maintenancePolicy);
-    if (path === `/models/${model.id}/resolved`) return Response.json({ ...sourceItem.run.config.model_profile,
-      model_pricing: null, pricing_unknown_reason: '合成测试价格未知', blockers: [] });
+    if (path === `/models/${model.id}/resolved`) return Response.json(modelResolution);
     if (path === '/memory/maintenance') return Response.json(page([maintenanceNotice]));
     if (path === `/memory/source-boundaries/${sourceItem.run.id}`) return Response.json(sourceBoundary);
     if (path === `/tasks/${maintenanceTask.task_id}`) return Response.json(maintenanceDetail.tasks.items[0]);
@@ -57,9 +56,9 @@ it('任务中心真实来源进入整理，任务详情/取消和原待办恢复
   render(<WorkbenchWindow client={client} />);
   await screen.findByRole('heading', { name: '保持原对话' });
   const input = screen.getByLabelText('消息'); await user.type(input, '整理期间保留的新目标');
-  await user.click(screen.getByTitle('任务'));
+  await user.click(within(screen.getByRole('complementary', { name: '项目导航' })).getByTitle('任务'));
   await user.click(await screen.findByRole('button', { name: '整理此运行的记忆' }));
-  await screen.findByRole('heading', { name: '记忆与成长' });
+  await screen.findByRole('dialog', { name: '整理记忆' });
   expect((screen.getByLabelText('整理来源运行') as HTMLSelectElement).value).toBe(sourceItem.run.id);
   await user.click(screen.getByRole('button', { name: '整理记忆' }));
   await user.click(await screen.findByRole('button', { name: '确认提交整理任务' }));
@@ -70,6 +69,7 @@ it('任务中心真实来源进入整理，任务详情/取消和原待办恢复
   await user.click(await screen.findByRole('button', { name: '恢复本任务中的条件等待' }));
   await waitFor(() => expect(writes.some(request => request.path === `/runs/${maintenanceRun.id}/resume`)).toBe(true));
   expect(writes.find(request => request.path.endsWith('/resume'))?.body.expected_version).toBe(7);
+  await user.keyboard('{Escape}');
   await user.click(within(task).getByRole('button', { name: '刷新详情' }));
   await user.click(within(task).getByRole('button', { name: '停止记忆整理' }));
   await waitFor(() => expect(writes.some(request => request.path === `/runs/${maintenanceRun.id}/cancel`)).toBe(true));

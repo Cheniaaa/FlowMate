@@ -4,14 +4,15 @@ import { validate } from '../api/validation';
 import { memoryQuery } from '../api/memory';
 import type { CommandMeta, ResourceRef, TaskHandle } from '../generated/contracts';
 
-type CommandName = 'startRun' | 'enqueueUser' | 'steer' | 'cancel' | 'resume' | 'answer' | 'decide' | 'grant' | 'revoke' | 'exportArtifact' | 'restoreExport' | 'releaseExport' | 'setWorkspaceDirectory' | 'deleteSession' | 'deleteWorkspace' | 'viewResult' | 'retryDelivery' | 'archiveSession' | 'stopSession' | 'stopWorkspace'
+type CommandName = 'createSession' | 'startRun' | 'continueVision' | 'enqueueUser' | 'steer' | 'cancel' | 'resume' | 'answer' | 'decide' | 'grant' | 'revoke' | 'exportArtifact' | 'restoreExport' | 'releaseExport' | 'setWorkspaceDirectory' | 'deleteSession' | 'deleteWorkspace' | 'viewResult' | 'retryDelivery' | 'archiveSession' | 'stopSession' | 'stopWorkspace'
   | 'createMemory' | 'decideMemory' | 'saveMemoryPolicy' | 'grantMemory' | 'submitMemoryMaintenance';
 export type UiCommand = { [K in CommandName]: { type: K; args: Parameters<RuntimeClient[K]> } }[CommandName];
 export function uiCommandId(command: UiCommand): string {
-  const body = (command.type === 'decideMemory' ? command.args[1] : command.args[command.args.length - 1]) as CommandMeta | { meta: CommandMeta };
+  const body = (command.type === 'decideMemory' || command.type === 'startRun' || command.type === 'enqueueUser' || command.type === 'resume'
+    ? command.args[1] : command.args[command.args.length - 1]) as CommandMeta | { meta: CommandMeta };
   return ('meta' in body ? body.meta : body).command_id!;
 }
-export interface CommandOutcome { status: 'confirmed' | 'unconfirmed'; sync: 'ready' | 'pending'; commandId: string; task?: TaskHandle; runId?: string }
+export interface CommandOutcome { status: 'confirmed' | 'unconfirmed'; sync: 'ready' | 'pending'; commandId: string; task?: TaskHandle; runId?: string; sessionId?: string }
 export interface PendingCommand extends CommandOutcome { type: CommandName; busy: boolean; error: string; runId?: string; targetId?: string; scope?: ResourceRef['scope'] }
 interface CommandEntry {
   command: UiCommand; encoded: string; outcome: CommandOutcome; error: string;
@@ -124,12 +125,14 @@ export function createRuntimeStore(client: RuntimeClient) {
   }
   function send(command: UiCommand): Promise<unknown> {
     switch (command.type) {
+      case 'createSession': return client.createSession(...command.args);
       case 'submitMemoryMaintenance': return client.submitMemoryMaintenance(...command.args);
       case 'createMemory': return client.createMemory(...command.args);
       case 'decideMemory': return client.decideMemory(...command.args);
       case 'saveMemoryPolicy': return client.saveMemoryPolicy(...command.args);
       case 'grantMemory': return client.grantMemory(...command.args);
       case 'startRun': return client.startRun(...command.args);
+      case 'continueVision': return client.continueVision(...command.args);
       case 'enqueueUser': return client.enqueueUser(...command.args);
       case 'cancel': return client.cancel(...command.args);
       case 'resume': return client.resume(...command.args);
@@ -154,6 +157,12 @@ export function createRuntimeStore(client: RuntimeClient) {
   function accept(entry: CommandEntry, raw: unknown): () => Promise<void> {
     const command = entry.command;
     switch (command.type) {
+      case 'createSession': {
+        const session = validate('Session', raw);
+        entry.outcome = { ...entry.outcome, sessionId: session.id };
+        update(state => mergeSessions(state, [session]));
+        return async () => {};
+      }
       case 'submitMemoryMaintenance': {
         const task = validate('TaskHandle', raw);
         entry.runId = task.run_id; entry.outcome = { ...entry.outcome, task };
@@ -209,7 +218,7 @@ export function createRuntimeStore(client: RuntimeClient) {
           update(state => mergeAdmissions(state, [fence]));
         };
       }
-      case 'startRun': case 'cancel': case 'resume': case 'answer': case 'exportArtifact': {
+      case 'startRun': case 'continueVision': case 'cancel': case 'resume': case 'answer': case 'exportArtifact': {
         const run = validate('RunSnapshot', raw);
         entry.runId = run.id;
         update(state => mergeRunSnapshot(state, run));
@@ -266,7 +275,7 @@ export function createRuntimeStore(client: RuntimeClient) {
       case 'submitMemoryMaintenance': update(state => ({ ...state, memoryRevision: state.memoryRevision + 1, maintenanceRevision: state.maintenanceRevision + 1 })); break;
       case 'decideMemory': update(state => ({ ...state, memoryRevision: state.memoryRevision + 1 })); break;
       case 'saveMemoryPolicy': update(state => ({ ...state, memoryRevision: state.memoryRevision + 1 })); break;
-      case 'cancel': case 'resume': case 'steer': await refreshRun(command.args[0]); break;
+      case 'cancel': case 'resume': case 'steer': case 'continueVision': await refreshRun(command.args[0]); break;
       case 'answer': await refreshRun(snapshot.questions[command.args[0]].run_id, undefined, command.args[0]); break;
       case 'decide': await refreshRun(snapshot.approvals[command.args[0]].run_id); break;
       case 'exportArtifact': {
@@ -311,7 +320,8 @@ export function createRuntimeStore(client: RuntimeClient) {
     catch (error) {
       if (error instanceof ApiError) {
         pending.delete(entry.outcome.commandId);
-        if (error.code === 'version_conflict') {
+        if (error.code === 'version_conflict'
+            || (entry.command.type === 'decideMemory' && error.code === 'memory_source_invalid')) {
           try { await refreshConflict(entry.command); }
           catch { error.message += '；当前状态未同步，请刷新后重新决定'; }
         }
@@ -396,7 +406,7 @@ export function createRuntimeStore(client: RuntimeClient) {
       return operate(entry, async () => {
         if (entry.outcome.status === 'confirmed') return synchronize(entry);
         // workspace命令无Session核对入口；原样重发取得持久去重回执。
-        if (['stopWorkspace', 'createMemory', 'decideMemory', 'saveMemoryPolicy', 'grantMemory', 'submitMemoryMaintenance'].includes(entry.command.type)) return submit(entry);
+        if (['createSession', 'stopWorkspace', 'createMemory', 'decideMemory', 'saveMemoryPolicy', 'grantMemory', 'submitMemoryMaintenance'].includes(entry.command.type)) return submit(entry);
         const result = await client.commandStatus(sessionId, commandId);
         if (result.status === 'not_found') { entry.error = '未查到记录，不证明未提交；可使用原命令重试'; return entry.outcome; }
         entry.refresh = accept(entry, result.result);

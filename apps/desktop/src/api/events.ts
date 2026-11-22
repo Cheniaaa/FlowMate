@@ -1,6 +1,6 @@
 import type {
   ActivityView, AgentProfile, Approval, ArtifactRef, BudgetSnapshot, DataUseGrant,
-  ModelConnection, ModelMessage, ModelProfile, PublicEvent, Question, ResourceRef, RunDetail, RunSnapshot,
+  MessagePage, ModelConnection, ModelMessage, ModelProfile, PublicEvent, Question, ResourceRef, RunDetail, RunSnapshot,
   ScopeState, Session, StreamEvent, TaskSnapshot, Workspace, WorkspaceSnapshot, MemoryRecord,
   WaitRecord, ResultConsumption, JoinFact, DeletionReceipt, PublicationView, SessionInboxEntry, SessionResultPage, AdmissionFence, PendingUserCommand, FollowUpIntent, RunFeedback, RunFeedbackPage,
 } from '../generated/contracts';
@@ -33,6 +33,7 @@ export interface Projection {
   activities: Entities<ActivityView>;
   budgets: Entities<BudgetSnapshot>;
   messages: Entities<ModelMessage>;
+  messageWatermarks: Record<string, string>;
   messageSessions: Record<string, string>;
   artifacts: Entities<ArtifactRef>;
   questions: Entities<Question>;
@@ -65,7 +66,7 @@ export const laterCursor = (a: string, b: string) => BigInt(a) > BigInt(b) ? a :
 
 export function emptyProjection(): Projection {
   return { mcpRevision: 0, mcpWatermark: '0', skillsRevision: 0, skillsWatermark: '0', environmentsRevision: 0, environmentsWatermark: '0', memoryRevision: 0, maintenanceRevision: 0, memoryNotices: {}, cursor: '0', snapshotWatermark: '0', workspaces: {}, sessions: {}, profiles: {}, models: {}, connections: {}, runs: {}, runSummaries: {}, runFeedback: {}, runFeedbackWatermarks: {}, tasks: {},
-    activities: {}, budgets: {}, messages: {}, messageSessions: {}, artifacts: {}, questions: {}, approvals: {},
+    activities: {}, budgets: {}, messages: {}, messageWatermarks: {}, messageSessions: {}, artifacts: {}, questions: {}, approvals: {},
     resources: {}, grants: {}, publications: {}, previews: {}, reasoningPreviews: {}, fencedActivities: {}, scopes: {},
     deletedWorkspaces: {}, deletedSessions: {}, entityScopes: {}, waits: {}, consumptions: {}, joins: {},
     deliveries: {}, resultPages: {}, deliveryWatermarks: {}, admissions: {},
@@ -236,6 +237,28 @@ function ownership(state: Projection, scope: Scope, entities: readonly { id: str
   return { ...state.entityScopes, ...Object.fromEntries(entities.map(entity => [entity.id, owner])) };
 }
 
+export function messageSourceInvalid(message: ModelMessage, state?: Projection): boolean {
+  if (message.role === 'user' && ['conversation', 'steering', 'answer'].includes(message.origin)) return false;
+  return message.source_valid === false || !!state && message.source_dependencies.some(({ scope_id, epoch }) =>
+    [state.scopes[scope_id], state.grants[scope_id]]
+      .some(scope => scope && (scope.epoch > epoch || scope.status !== 'active'))
+    || state.resources[scope_id]?.version > epoch);
+}
+
+function mergeMessageViews(state: Projection, incoming: readonly ModelMessage[], watermark: string) {
+  const messages = { ...state.messages };
+  const messageWatermarks = { ...state.messageWatermarks };
+  for (const message of incoming) {
+    const previous = messages[message.id];
+    const previousWatermark = messageWatermarks[message.id];
+    if (previousWatermark && BigInt(watermark) < BigInt(previousWatermark)) continue;
+    if (previous?.source_valid === false && message.source_valid !== false) continue;
+    messages[message.id] = message;
+    messageWatermarks[message.id] = watermark;
+  }
+  return { messages, messageWatermarks };
+}
+
 function eraseScope(state: Projection, scope: Scope, epoch: number): Projection {
   if (scope.workspace_id === null) return state;
   const deletedSessions = { ...state.deletedSessions };
@@ -258,6 +281,7 @@ function eraseScope(state: Projection, scope: Scope, epoch: number): Projection 
       workspace_id: session.workspace_id, session_id: session.id }))),
     runs: retain(state.runs), runFeedback: retain(state.runFeedback), runFeedbackWatermarks: retain(state.runFeedbackWatermarks),
     tasks: retain(state.tasks), activities, budgets: retain(state.budgets), messages,
+    messageWatermarks: Object.fromEntries(Object.entries(state.messageWatermarks).filter(([id]) => Object.hasOwn(messages, id))),
     runSummaries: Object.fromEntries(Object.entries(state.runSummaries).filter(([, summary]) => !contains(scope, summary))),
     messageSessions: Object.fromEntries(Object.entries(state.messageSessions).filter(([id]) => Object.hasOwn(messages, id))),
     artifacts: retain(state.artifacts), questions: retain(state.questions),
@@ -337,27 +361,32 @@ export function mergeScopeStates(state: Projection, scopes: readonly ScopeState[
     return fence(next);
 }
 
+function invalidateRunFeedback(state: Projection, ids: Iterable<string | null>, watermark: string): Projection {
+  const runFeedback = { ...state.runFeedback }, runFeedbackWatermarks = { ...state.runFeedbackWatermarks };
+  for (const id of ids) {
+    if (!id) continue;
+    runFeedbackWatermarks[id] = laterCursor(runFeedbackWatermarks[id] ?? '0', watermark);
+    if (runFeedback[id] && BigInt(runFeedback[id].watermark) < BigInt(watermark)) delete runFeedback[id];
+  }
+  return { ...state, runFeedback, runFeedbackWatermarks };
+}
+
 function mergeEvent(state: Projection, event: PublicEvent): Projection {
   const payload = event.payload;
   if ('scopes' in payload) return mergeScopeStates(state, payload.scopes, payload.deletions);
   if (event.workspace_id && scopeDeleted(state, { workspace_id: event.workspace_id, session_id: event.session_id })) return state;
   if ('runs' in payload) {
     const scope = { workspace_id: event.workspace_id!, session_id: event.session_id };
-    const runFeedback = { ...state.runFeedback }, runFeedbackWatermarks = { ...state.runFeedbackWatermarks };
-    for (const id of new Set([event.run_id, ...payload.runs.map(run => run.id), ...payload.activities.map(activity => activity.run_id)])) {
-      if (!id) continue;
-      runFeedbackWatermarks[id] = laterCursor(runFeedbackWatermarks[id] ?? '0', event.event_id);
-      if (runFeedback[id] && BigInt(runFeedback[id].watermark) < BigInt(event.event_id)) delete runFeedback[id];
-    }
-    const next = fence({ ...state,
-      runFeedback, runFeedbackWatermarks,
+    const invalidated = invalidateRunFeedback(state, new Set([event.run_id, ...payload.runs.map(run => run.id),
+      ...payload.tasks.map(task => task.run_id), ...payload.activities.map(activity => activity.run_id)]), event.event_id);
+    const next = fence({ ...invalidated,
       entityScopes: ownership(state, scope, [...payload.runs, ...payload.tasks, ...payload.activities,
          ...payload.budgets, ...payload.messages, ...payload.artifacts, ...payload.questions,
          ...payload.waits, ...payload.consumptions, ...payload.joins, ...payload.follow_up_intents,
          ...payload.pending_commands.map(command => ({ id: command.command_id }))]),
       runs: mergeVersioned(state.runs, payload.runs), tasks: mergeVersioned(state.tasks, payload.tasks),
       activities: mergeVersioned(state.activities, payload.activities), budgets: mergeVersioned(state.budgets, payload.budgets),
-      messages: { ...Object.fromEntries(payload.messages.map(message => [message.id, message])), ...state.messages },
+      ...mergeMessageViews(state, payload.messages, payload.message_watermark ?? event.event_id),
       messageSessions: { ...state.messageSessions, ...Object.fromEntries(payload.messages.map(message => [message.id, event.session_id!])) },
       artifacts: mergeVersioned(state.artifacts, payload.artifacts), questions: mergeVersioned(state.questions, payload.questions),
       waits: mergeVersioned(state.waits, payload.waits),
@@ -380,11 +409,12 @@ function mergeEvent(state: Projection, event: PublicEvent): Projection {
     case 'memory.changed': case 'memory.policy_changed': return mergeMemoryNotices(state, event.payload.records);
     case 'delivery.changed': return mergeDeliveries(state, event.payload.deliveries, event.event_id);
     case 'admission.stopped': return mergeAdmissions(state, event.payload.admission_fences);
-    case 'workspace.created': case 'workspace.default_created': case 'workspace.directory_changed': return mergeWorkspaces(state, [event.payload]);
+    case 'workspace.created': case 'workspace.default_created': case 'workspace.directory_changed': case 'workspace.renamed': return mergeWorkspaces(state, [event.payload]);
     case 'session.created': case 'session.updated': return mergeSessions(state, [event.payload]);
     case 'agent.saved': return { ...state, profiles: mergeVersioned(state.profiles, [event.payload.profile]) };
     case 'model.saved': return { ...state, models: mergeVersioned(state.models, [event.payload]) };
     case 'connection.saved': return { ...state, connections: mergeVersioned(state.connections, [event.payload]) };
+    case 'naming.policy_saved': return state;
     default: throw new Error('Runtime 事件类别与公开载荷不一致');
   }
 }
@@ -394,6 +424,16 @@ export function reduceStream(state: Projection, event: StreamEvent): Projection 
     // 删除是永久围栏；跨工作区快照的全局水位不能使迟到删除事实失效。
     if (BigInt(event.event_id) <= BigInt(state.snapshotWatermark) && event.event.kind !== 'scope.deleted') return state;
     let next = mergeEvent(state, event.event);
+    const workspaceId = event.event.workspace_id;
+    if (workspaceId && ['scope.revoked', 'grant.revoked', 'resource.updated'].includes(event.event.kind)) {
+      // 已完成轮次的版本不因来源变更递增。消息已加载但Run尚未分页到的读请求也需要围栏。
+      const affected = new Set([
+        ...Object.values(next.runs).filter(run => run.workspace_id === workspaceId).map(run => run.id),
+        ...Object.values(next.messages).filter(message => next.entityScopes[message.id]?.workspace_id === workspaceId)
+          .map(message => message.run_id),
+      ]);
+      next = invalidateRunFeedback(next, affected, event.event_id);
+    }
     if (['scope.deleted', 'scope.revoked', 'grant.revoked', 'grant.created'].includes(event.event.kind)) next = { ...next, memoryRevision: next.memoryRevision + 1 };
     const cursor = laterCursor(next.cursor, event.event_id);
     return cursor === next.cursor ? next : { ...next, cursor };
@@ -463,7 +503,7 @@ export function mergeRunDetail(state: Projection, detail: RunDetail): Projection
     runSummaries: acceptSummary ? { ...state.runSummaries, [detail.run.id]: { cost_summary: detail.cost_summary, context_usage: detail.context_usage,
       watermark: detail.watermark, version: detail.run.version, workspace_id: detail.run.workspace_id, session_id: detail.run.interaction_session_id } } : state.runSummaries,
     activities: mergeVersioned(state.activities, detail.activities.items), budgets: mergeVersioned(state.budgets, [detail.budget]),
-    messages: { ...Object.fromEntries(detail.messages.items.map(message => [message.id, message])), ...state.messages },
+    ...mergeMessageViews(state, detail.messages.items, detail.messages.watermark),
     messageSessions: { ...state.messageSessions, ...Object.fromEntries(detail.messages.items.map(message => [message.id, detail.run.interaction_session_id!])) },
     artifacts: mergeVersioned(state.artifacts, detail.artifacts.items), questions: mergeVersioned(state.questions, detail.questions.items),
     approvals: mergeVersioned(state.approvals, detail.approvals.items), waits: mergeVersioned(state.waits, detail.waits.items),
@@ -501,6 +541,7 @@ export function mergeRunFeedback(state: Projection, page: RunFeedbackPage): Proj
     if (scopeDeleted(state, { workspace_id: item.workspace_id, session_id: item.session_id })
       || BigInt(page.watermark) < BigInt(state.runFeedbackWatermarks[item.run_id] ?? '0')
       || BigInt(page.watermark) < BigInt(runFeedback[item.run_id]?.watermark ?? '0')
+      || item.version < (runFeedback[item.run_id]?.version ?? 0)
       || item.version < (state.runs[item.run_id]?.version ?? 0)) continue;
     runFeedback[item.run_id] = { ...item, watermark: page.watermark };
     entityScopes[item.run_id] = { workspace_id: item.workspace_id, session_id: item.session_id };
@@ -508,11 +549,23 @@ export function mergeRunFeedback(state: Projection, page: RunFeedbackPage): Proj
   return { ...state, runFeedback, entityScopes };
 }
 
-export function mergeMessages(state: Projection, session_id: string, messages: readonly ModelMessage[]): Projection {
+export function latestContextUsage(state: Projection, runId: string) {
+  const detail = state.runSummaries[runId], feedback = state.runFeedback[runId];
+  const watermark = BigInt(laterCursor(state.snapshotWatermark, state.runFeedbackWatermarks[runId] ?? '0'));
+  const version = state.runs[runId]?.version ?? 0;
+  if (feedback && feedback.version >= version && BigInt(feedback.watermark) >= watermark
+    && (!detail || feedback.version > detail.version || feedback.version === detail.version && BigInt(feedback.watermark) >= BigInt(detail.watermark))) {
+    return feedback.context_usage;
+  }
+  return detail && detail.version >= version && BigInt(detail.watermark) >= watermark ? detail.context_usage : null;
+}
+
+export function mergeMessages(state: Projection, session_id: string, { items: messages, watermark }: MessagePage): Projection {
   const session = state.sessions[session_id];
-  if (!session || scopeDeleted(state, { workspace_id: session.workspace_id, session_id })) return state;
+  if (!session || BigInt(watermark) < BigInt(state.snapshotWatermark)
+    || scopeDeleted(state, { workspace_id: session.workspace_id, session_id })) return state;
   return fence({ ...state, entityScopes: ownership(state, { workspace_id: session.workspace_id, session_id }, messages),
-    messages: { ...Object.fromEntries(messages.map(message => [message.id, message])), ...state.messages },
+    ...mergeMessageViews(state, messages, watermark),
     messageSessions: { ...state.messageSessions, ...Object.fromEntries(messages.map(message => [message.id, session_id])) } });
 }
 

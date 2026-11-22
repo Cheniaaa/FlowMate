@@ -20,12 +20,35 @@ it('只按真实成员Task/Activity和交接画顺序；模型取固定binding�
   expect(screen.getByText('固定研究成员')).toBeTruthy();
   expect(screen.getByText(/fixed-member-model/)).toBeTruthy();
   expect(screen.getByText(/https:\/\/member.invalid/)).toBeTruthy();
-  expect(screen.getByText('context_authorization_required')).toBeTruthy();
+  expect(screen.getByText('需要核对资料及发送授权。')).toBeTruthy();
   expect(screen.queryByText(/耗时/)).toBeNull();
   const activity = screen.getByRole('button', { name: /工具调用/ });
   expect(activity.closest('article')).toBe(screen.getByRole('article'));
   await userEvent.click(activity); expect(select).toHaveBeenCalledWith(id, 'activity');
   await userEvent.click(screen.getByRole('button', { name: '查看后台交接' }));
   expect(open).toHaveBeenCalledWith(secondId);
-  expect(within(screen.getByRole('article')).getByText(/不是取消从属关系/)).toBeTruthy();
+  expect(within(screen.getByRole('article')).getByText(/独立执行.*原会话/)).toBeTruthy();
+});
+
+it('直属交付显示派活人、接手人及当前进度，打开的是该成员任务', async () => {
+  const select = vi.fn(), open = vi.fn();
+  const parent: MemberLane = { ...lane, profile: { ...agent, display_name: '协调员' },
+    task: { ...lane.task, id, parent_task_id: null }, activities: [],
+    handoffs: [{ run_id: id, task_id: secondId, lifetime: 'run_bound', submitted_state: 'queued' }] };
+  const child: MemberLane = { ...lane, task: { ...lane.task, state: 'completed', reason: null }, handoffs: [] };
+  render(<MemberLanes lanes={[parent, child]} onSelect={select} onOpen={open} />);
+  const handoff = screen.getByRole('button', { name: '查看委派给固定研究成员的任务' });
+  expect(handoff.parentElement?.textContent).toContain('已完成');
+  expect(handoff.parentElement?.textContent).not.toMatch(/排队中|queued/);
+  expect(screen.getByText('结果交给协调员')).toBeTruthy();
+  await userEvent.click(handoff);
+  expect(select).toHaveBeenCalledWith(secondId, 'task');
+  expect(open).not.toHaveBeenCalled();
+});
+
+it('成员固定快照的未知价格给出说明，不向用户回显价格码', () => {
+  render(<MemberLanes lanes={[{ ...lane, task: { ...lane.task, binding: { ...lane.task.binding,
+    config: { ...lane.task.binding.config, model_pricing: null, pricing_unknown_reason: 'price_incomplete' } } } }]} onSelect={vi.fn()} onOpen={vi.fn()} />);
+  expect(screen.queryByText(/price_incomplete/)).toBeNull();
+  expect(screen.getByText(/请同时填写输入和输出单价/)).toBeTruthy();
 });

@@ -151,6 +151,8 @@ def _dependent_runs(tx, grant_id):
                 "WHERE json_extract(dep.value,'$.scope_id')=?", (path, grant_id)))
     affected.update(row[0] for row in tx.execute("SELECT DISTINCT r.id FROM runs r,"
         "json_each(r.document,'$.sources.skill_versions') pin WHERE pin.key=?", (grant_id,)))
+    affected.update(row[0] for row in tx.execute("SELECT run_id FROM activities WHERE id=? "
+        "AND json_extract(document,'$.mcp_source') IS NOT NULL", (grant_id,)))
     return affected
 
 
@@ -159,12 +161,33 @@ def invalidate_skill(tx, skill_id):
     _interrupt_dependents(tx, skill_id)
 
 
+def invalidate_mcp_sources(tx, server_id, *, retained_names=(), causation_id=None):
+    """管理变更与实际调用来源同事务撤销；重新选择只对新调用生效。"""
+    rows = tx.execute("SELECT s.id,s.epoch,s.workspace_id,s.session_id,a.state,"
+        "json_extract(a.document,'$.mcp_source.binding.original_name') AS tool_name "
+        "FROM scopes s JOIN activities a ON a.id=s.id WHERE s.kind='mcp' AND s.status='active' "
+        "AND json_extract(a.document,'$.mcp_source.binding.server_id')=?", (server_id,)).fetchall()
+    for row in rows:
+        if row["tool_name"] in retained_names:
+            continue
+        scope = ScopeRef(kind="session" if row["session_id"] is not None else "workspace",
+            workspace_id=row["workspace_id"], session_id=row["session_id"])
+        state = ScopeState(id=row["id"], scope=scope, epoch=row["epoch"] + 1, status="revoked")
+        _policy_event(tx, "scope.revoked", LifecycleChange(scopes=[state]), scope, causation_id=causation_id)
+        # 未确认的回执没有提交外部内容。停用工具不应覆盖待处理的查询状态。
+        if row["state"] != "uncertain":
+            _interrupt_dependents(tx, state.id, causation_id)
+
+
 def _interrupt_dependents(tx, source_id, causation_id=None):
+    from flowmate.runtime.followups import revoked_managed_follow_up_before_dispatch
+
     for run_id in sorted(_dependent_runs(tx, source_id)):
         run = _document(tx, "runs", RunSnapshot, run_id)
         if run.state in TERMINAL:
             continue
-        stopped = stop_run(tx, run, "interrupted", "scope_revoked")
+        state = "failed" if revoked_managed_follow_up_before_dispatch(tx, run, source_id) else "interrupted"
+        stopped = stop_run(tx, run, state, "scope_revoked")
         approvals = [bump(Approval.model_validate_json(row[0]), status="superseded")
             for row in tx.execute("SELECT document FROM approvals WHERE run_id=? "
                 "AND status IN ('pending','approved')", (run_id,))]
@@ -207,6 +230,8 @@ class ScopeLifecycle:
                 saved = bump(saved, epoch=saved.epoch + 1, status="revoked")
                 _policy_event(tx, "grant.revoked", PolicyChange(grants=[saved]), saved.scope,
                               causation_id=meta.command_id)
+                from flowmate.memory.lifecycle import notify_personal_source_revocation
+                notify_personal_source_revocation(tx, self.policy.memory_provider.using(tx), saved)
             from flowmate.skills.service import SkillService
             SkillService.invalidate_sources(tx)
             _interrupt_dependents(tx, grant_id, meta.command_id)

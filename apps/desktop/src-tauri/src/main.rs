@@ -11,6 +11,7 @@ use std::{sync::{Arc, Mutex}, thread, time::Duration};
 use credentials::{CredentialStore, SecretBinding, SecretStatus};
 use tauri::{menu::{Menu, MenuEvent, MenuItem}, path::BaseDirectory, tray::TrayIconBuilder, Emitter, EventTarget, Manager};
 use tauri_plugin_opener::OpenerExt;
+use windows::ChatWindow;
 
 trait TrayTarget {
     fn restore_main_window(&self) -> Result<(), String>;
@@ -32,7 +33,7 @@ fn dispatch_tray_action(target: &impl TrayTarget, id: &str) -> Result<(), String
 
 impl TrayTarget for tauri::AppHandle {
     fn restore_main_window(&self) -> Result<(), String> {
-        windows::show(self, "main")?;
+        windows::show(self, ChatWindow::Workbench)?;
         let window = self.get_webview_window("main").ok_or("main_window_missing")?;
         let state = self.state::<Mutex<RuntimeHost>>();
         let host = state.lock().map_err(|_| "host_unavailable")?;
@@ -42,7 +43,7 @@ impl TrayTarget for tauri::AppHandle {
             "focused": window.is_focused().unwrap_or(false)}));
         Ok(())
     }
-    fn restore_quick_window(&self) -> Result<(), String> { windows::show(self, "quick") }
+    fn restore_quick_window(&self) -> Result<(), String> { windows::show(self, ChatWindow::Quick) }
     fn open_model_settings(&self) -> Result<(), String> { windows::open_settings(self, windows::SettingsSection::Models, false) }
     fn stop_owned_runtime(&self) -> Result<(), String> {
         self.state::<Mutex<RuntimeHost>>().lock().map_err(|_| "host_unavailable")?.stop();
@@ -128,7 +129,7 @@ fn take_settings_navigation<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, 
 #[tauri::command]
 fn return_to_quick<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>) -> Result<(), String> {
     checked_window(&window, &["main"])?;
-    windows::show(&app, "quick")
+    windows::show(&app, ChatWindow::Quick)
 }
 
 #[tauri::command]
@@ -179,7 +180,7 @@ fn show_workbench<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri
     if window.label() == "ball" && target.is_some() { return Err("forbidden_navigation".into()); }
     if let Some(target) = &target { target.validate()?; }
     app.state::<Mutex<windows::Windows>>().lock().map_err(|_| "window_state_unavailable")?.navigate(target, window.label() == "quick");
-    windows::show(&app, "main")?;
+    windows::show(&app, ChatWindow::Workbench)?;
     app.emit_to(EventTarget::webview_window("main"), "workbench-navigation", ()).map_err(|_| "window_event_failed".into())
 }
 
@@ -304,20 +305,23 @@ async fn choose_skill_export_target<R: tauri::Runtime>(window: tauri::WebviewWin
 }
 
 #[tauri::command]
-async fn create_workspace_from_directory<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>,
-    name: String, meta: native_resources::CommandMeta) -> Result<Option<native_resources::WorkspaceDirectoryResult>, String> {
+async fn select_workspace_directory<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>,
+    command_id: String) -> Result<Option<String>, String> {
     checked_window(&window, &["main"])?;
-    let channel = {
-        let host = app.try_state::<Mutex<RuntimeHost>>().ok_or("host_unavailable")?;
-        let host = host.lock().map_err(|_| "host_unavailable")?;
-        host.channel()
-    };
+    let _dialog = NativeDialog::begin(&window, &app)?;
     let commands = app.state::<Arc<native_resources::WorkspaceDirectories>>().inner().clone();
-    commands.create(&window, &channel, name, meta).await
+    commands.select(&window, command_id).await
 }
 
 #[tauri::command]
-async fn retry_workspace_from_directory<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>,
+fn discard_workspace_directory_selection<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>,
+    command_id: String) -> Result<(), String> {
+    checked_window(&window, &["main"])?;
+    app.state::<Arc<native_resources::WorkspaceDirectories>>().discard(&command_id)
+}
+
+#[tauri::command]
+async fn create_workspace_from_directory<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>,
     name: String, meta: native_resources::CommandMeta) -> Result<native_resources::WorkspaceDirectoryResult, String> {
     checked_window(&window, &["main"])?;
     let channel = {
@@ -327,6 +331,12 @@ async fn retry_workspace_from_directory<R: tauri::Runtime>(window: tauri::Webvie
     };
     let commands = app.state::<Arc<native_resources::WorkspaceDirectories>>().inner().clone();
     commands.retry(&channel, name, meta, Duration::from_secs(60)).await
+}
+
+#[tauri::command]
+async fn retry_workspace_from_directory<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>,
+    name: String, meta: native_resources::CommandMeta) -> Result<native_resources::WorkspaceDirectoryResult, String> {
+    create_workspace_from_directory(window, app, name, meta).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -357,6 +367,7 @@ fn main() {
             clear_credential, credential_status, select_resources, choose_export_target, select_skill_package, choose_skill_export_target, open_external,
             window_settings, set_quick_pinned, set_shortcut, set_ball_enabled, toggle_quick, show_workbench,
             take_workbench_navigation, set_quick_form_active, pending_counts, start_ball_drag,
+            select_workspace_directory, discard_workspace_directory_selection,
             create_workspace_from_directory, retry_workspace_from_directory, check_workspace_directory_command])
         .setup(|app| {
             let directory = app.path().app_data_dir()?.join("data-v3");
@@ -365,10 +376,10 @@ fn main() {
                 let root = std::env::var_os("FLOWMATE_DEV_ROOT").ok_or("development_root_required")?;
                 let runtime = runtime_host::DevelopmentRuntime::new(python.into(), root.into())
                     .map_err(std::io::Error::other)?;
-                RuntimeHost::start_development(&directory, &runtime, false, cfg!(dev))
+                RuntimeHost::start_development(&directory, &runtime, cfg!(dev))
             } else {
                 let executable = app.path().resolve("runtime/flowmate-runtime.exe", BaseDirectory::Resource)?;
-                RuntimeHost::start(&directory, &executable, false, cfg!(dev))
+                RuntimeHost::start(&directory, &executable, cfg!(dev))
             }.map_err(std::io::Error::other)?;
             app.manage(host.credentials());
             app.manage(host.notifications());
@@ -382,10 +393,14 @@ fn main() {
                     window.set_size(tauri::LogicalSize::new(config.width, config.height))?;
                 }
             }
-            {
+            let ball_enabled = {
                 let state = app.state::<Mutex<windows::Windows>>();
                 let mut state = state.lock().map_err(|_| "window_state_unavailable")?;
                 state.restore(app.handle()).map_err(std::io::Error::other)?;
+                state.ball_enabled()
+            };
+            if !ball_enabled {
+                windows::show(app.handle(), ChatWindow::Workbench).map_err(std::io::Error::other)?;
             }
             windows::publish_settings(app.handle()).map_err(std::io::Error::other)?;
             let show = MenuItem::with_id(app, "tray-show", "显示主窗口", true, None::<&str>)?;
@@ -476,6 +491,7 @@ mod tests {
                 clear_credential, credential_status, select_resources, choose_export_target, select_skill_package, choose_skill_export_target, open_external,
                 window_settings, set_quick_pinned, set_shortcut, set_ball_enabled, toggle_quick, show_workbench,
                 take_workbench_navigation, set_quick_form_active, pending_counts, start_ball_drag,
+                select_workspace_directory, discard_workspace_directory_selection,
                 create_workspace_from_directory, retry_workspace_from_directory, check_workspace_directory_command])
             .build(context).unwrap();
         (app, store)
@@ -641,10 +657,10 @@ mod tests {
             "WebView加载前须由setup完成Runtime装配，否则首个runtime_connection必然存在竞争");
         let (app, _) = ipc_app();
         let main = window(&app, "main");
+        let quick = window(&app, "quick");
         main.hide().unwrap();
         ipc(&main, "open_settings", serde_json::json!({"section":"models"})).unwrap();
         assert!(main.is_visible().unwrap());
-        let quick = window(&app, "quick");
         ipc(&quick, "open_settings", serde_json::json!({"section":"assistant"})).unwrap();
         assert_eq!(ipc(&main, "take_settings_navigation", serde_json::json!({})).unwrap(), serde_json::json!({"section":"assistant","from_quick":true}));
         assert_eq!(app.webview_windows().len(), 2);
@@ -797,6 +813,15 @@ mod tests {
                 if label == "main" { assert_eq!(error, "host_unavailable", "{command}"); }
                 else { assert!(error.as_str().unwrap().contains("not allowed"), "{label} {command}: {error}"); }
             }
+            for command in ["select_workspace_directory", "discard_workspace_directory_selection"] {
+                let body = serde_json::json!({"commandId":"00000000-0000-4000-8000-000000000003"});
+                if label != "main" {
+                    let error = ipc(&candidate, command, body).unwrap_err();
+                    assert!(error.as_str().unwrap().contains("not allowed"), "{label} {command}: {error}");
+                } else if command == "discard_workspace_directory_selection" {
+                    assert!(ipc(&candidate, command, body).is_ok());
+                }
+            }
         }
     }
 
@@ -807,9 +832,12 @@ mod tests {
         app.add_capability(r#"{"identifier":"test-directory-origin","windows":["main"],"remote":{"urls":["https://example.invalid"]},"permissions":["host-workspace-directory"]}"#).unwrap();
         let quick = window(&app, "quick"); let ball = window(&app, "ball");
         let remote = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::External("https://example.invalid".parse().unwrap())).build().unwrap();
-        for command in ["create_workspace_from_directory", "retry_workspace_from_directory", "check_workspace_directory_command"] {
+        for command in [
+            "select_workspace_directory", "discard_workspace_directory_selection",
+            "create_workspace_from_directory", "retry_workspace_from_directory", "check_workspace_directory_command",
+        ] {
             let body = serde_json::json!({"name":"目录项目","meta":{"command_id":"00000000-0000-4000-8000-000000000003","expected_version":null},
-                "command_id":"00000000-0000-4000-8000-000000000003"});
+                "command_id":"00000000-0000-4000-8000-000000000003", "commandId":"00000000-0000-4000-8000-000000000003"});
             assert_eq!(ipc(&quick, command, body.clone()).unwrap_err(), "forbidden_window");
             assert_eq!(ipc(&ball, command, body.clone()).unwrap_err(), "forbidden_window");
             assert_eq!(ipc_at(&remote, command, body, "https://example.invalid").unwrap_err(), "forbidden_window");

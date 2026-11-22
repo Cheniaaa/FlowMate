@@ -18,6 +18,7 @@ class ModelRequest(Contract):
     instructions: str = ""
     max_output_tokens: Count
     projection_digest: str | None = None
+    output_schema: dict[str, JsonValue] | None = None
 
 
 class ProjectionEstimate(Contract):

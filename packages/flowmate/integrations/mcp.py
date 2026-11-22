@@ -62,6 +62,9 @@ class _Connection:
     accepting: bool = True
     client: object = None
     catalog: McpCatalog | None = None
+    catalog_notifications: bool = False
+    catalog_generation: int = 0
+    verified_generation: int = -1
     failure: DomainError | None = None
     incompatible: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -83,10 +86,11 @@ class McpManager:
     本模块进入并关闭 client，不接收明文 token 配置。
     """
 
-    def __init__(self, configs, *, limits, environment=None, http_client=None):
+    def __init__(self, configs, *, limits, environment=None, http_client=None, catalog_for=None):
         self.limits = limits
         self._environment = environment
         self._http_client = http_client
+        self.catalog_for = catalog_for
         self._connections = {
             config.id: _Connection(config.model_copy(deep=True)) for config in configs
         }
@@ -101,7 +105,19 @@ class McpManager:
         http = None
         try:
             async with AsyncExitStack() as stack:
+                from mcp import types
                 from mcp.client import Client
+                from mcp.client.subscriptions import SubscriptionLost
+                from mcp.shared.exceptions import MCPError
+                from mcp_types.version import MODERN_PROTOCOL_VERSIONS
+
+                async def message_handler(message):
+                    if isinstance(message, types.ToolListChangedNotification):
+                        connection.catalog_generation += 1
+                    elif isinstance(message, Exception):
+                        # 传输失去可靠信号后，旧目录只能用于固定定义比对。
+                        connection.catalog_notifications = False
+                        connection.catalog_generation += 1
 
                 config = connection.config
                 if config.transport == "stdio":
@@ -135,11 +151,41 @@ class McpManager:
                 async with asyncio.timeout(self.limits.request_timeout_seconds):
                     connection.client = await stack.enter_async_context(Client(
                         transport, read_timeout_seconds=self.limits.request_timeout_seconds,
+                        message_handler=message_handler,
                     ))
+                tools = connection.client.server_capabilities.tools
+                subscription = None
+                if tools is not None and tools.list_changed:
+                    if connection.client.protocol_version in MODERN_PROTOCOL_VERSIONS:
+                        try:
+                            subscription = await stack.enter_async_context(
+                                connection.client.listen(tools_list_changed=True),
+                            )
+                        except (MCPError, SubscriptionLost, TimeoutError):
+                            # 未获确认的通知通道仍需按无通知服务逐次复核。
+                            connection.catalog_notifications = False
+                        else:
+                            connection.catalog_notifications = (
+                                subscription.honored.tools_list_changed is True
+                            )
+                    else:
+                        connection.catalog_notifications = True
                 connection.state = "connected"
                 connected = True
                 connection.ready.set()
-                await connection.close.wait()
+                watcher = (
+                    asyncio.create_task(self._watch_catalog(connection, subscription))
+                    if subscription is not None else None
+                )
+                try:
+                    await connection.close.wait()
+                finally:
+                    if watcher is not None:
+                        watcher.cancel()
+                        try:
+                            await watcher
+                        except asyncio.CancelledError:
+                            pass
         except Exception as exc:
             # 连接失败是集成边界的可观察状态；不向公开错误传递 SDK 异常正文。
             connection_error = False
@@ -161,8 +207,23 @@ class McpManager:
             )
             connection.state = "failed"
         finally:
+            connection.catalog_notifications = False
+            connection.verified_generation = -1
             connection.client = None
             connection.ready.set()
+
+    async def _watch_catalog(self, connection, subscription):
+        from mcp.client.subscriptions import SubscriptionLost
+
+        try:
+            # message_handler 接收同一通知并标记代次；迭代消费并观察通道结束。
+            async for _ in subscription:
+                pass
+        except SubscriptionLost:
+            connection.catalog_generation += 1
+        finally:
+            connection.catalog_notifications = False
+            connection.verified_generation = -1
 
     async def _activate(self, connection):
         if not connection.config.enabled:
@@ -228,6 +289,7 @@ class McpManager:
                 connection.idle.set()
 
     async def _discover(self, connection):
+        generation = connection.catalog_generation
         tools = []
         names = set()
         cursors = set()
@@ -278,6 +340,7 @@ class McpManager:
                 tools=tuple(tools), content_hash=hashlib.sha256(_json_bytes(payload)).hexdigest(),
             )
             connection.catalog = catalog
+            connection.verified_generation = generation
             return catalog
         except DomainError:
             # 无法复核时旧快照也不可再派发。
@@ -286,6 +349,18 @@ class McpManager:
         except Exception:
             connection.catalog = None
             raise DomainError("mcp_discovery_failed", "MCP 目录发现失败") from None
+
+    async def _current_catalog(self, connection, cancel=None):
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise DomainError("mcp_call_cancelled", "调用尚未发送即已取消")
+            if (connection.catalog_notifications and connection.catalog is not None
+                    and connection.verified_generation == connection.catalog_generation):
+                return connection.catalog
+            catalog = await self._discover(connection)
+            if (not connection.catalog_notifications
+                    or connection.verified_generation == connection.catalog_generation):
+                return catalog
 
     async def discover(self, server_id):
         async with self._operation(server_id) as connection:
@@ -314,21 +389,30 @@ class McpManager:
                 raise DomainError("blocked_incompatible", "固定目录已不兼容，须显式重新发现")
             if cancel is not None and cancel.is_set():
                 raise DomainError("mcp_call_cancelled", "调用尚未发送即已取消")
-            catalog = await self._discover(connection)
-            if catalog.content_hash != catalog_hash:
-                raise DomainError("blocked_incompatible", "固定目录或连接版本已变化")
-            tool = next((tool for tool in catalog.tools if tool.name == tool_name), None)
+            fixed = connection.catalog
+            if fixed is None or fixed.content_hash != catalog_hash:
+                if self.catalog_for is None:
+                    raise DomainError("blocked_incompatible", "须由宿主提供任务固定的 MCP 目录")
+                fixed = self.catalog_for(server_id, catalog_hash)
+            if (fixed.server_id != server_id or fixed.config_revision != connection.config.revision
+                    or fixed.content_hash != catalog_hash):
+                raise DomainError("blocked_incompatible", "固定目录不属于当前 MCP 连接")
+            tool = next((tool for tool in fixed.tools if tool.name == tool_name), None)
             if tool is None:
                 raise DomainError("mcp_tool_unavailable", "固定目录中不存在该工具")
             if tool.unavailable_reason is not None:
                 raise DomainError(tool.unavailable_reason, "该工具的 Schema 尚不受支持")
+            catalog = await self._current_catalog(connection, cancel)
+            current = next((item for item in catalog.tools if item.name == tool_name), None)
+            if current != tool:
+                raise DomainError("blocked_incompatible", "固定工具定义或连接版本已变化")
             try:
                 _validator(tool.input_schema).validate(arguments)
             except (ValidationError, Unresolvable, ValueError, TypeError):
                 raise DomainError("tool_arguments_invalid", "工具参数不符合声明 Schema") from None
             if cancel is not None and cancel.is_set():
                 raise DomainError("mcp_call_cancelled", "调用尚未发送即已取消")
-            return await self._call_once(connection, catalog, tool, arguments, cancel, before_send)
+            return await self._call_once(connection, fixed, tool, arguments, cancel, before_send)
 
     async def _call_once(self, connection, catalog, tool, arguments, cancel, before_send=None):
         from mcp import types
@@ -336,12 +420,21 @@ class McpManager:
         from mcp.shared.exceptions import MCPError
         from pydantic import ValidationError as ModelValidationError
 
+        sent = False
+
         async def send():
+            nonlocal sent
+            # 创建发送任务会让出调度权；期间到达的变化也必须先复核。
+            if connection.verified_generation != connection.catalog_generation:
+                current = await self._current_catalog(connection, cancel)
+                if next((item for item in current.tools if item.name == tool.name), None) != tool:
+                    raise DomainError("blocked_incompatible", "固定工具定义或连接版本已变化")
             # 目录刷新和任务排队均已结束，紧贴协议发送再次授权。
             if cancel is not None and cancel.is_set():
                 raise DomainError("mcp_call_cancelled", "调用尚未发送即已取消")
             if before_send is not None:
                 before_send()
+            sent = True
             return await connection.client.session.call_tool(tool.name, arguments, allow_input_required=True)
 
         call = asyncio.create_task(send())
@@ -352,7 +445,9 @@ class McpManager:
                 if not call.done():
                     call.cancel()
                     await asyncio.gather(call, return_exceptions=True)
-                    raise McpCallFailure("mcp_call_uncertain", "调用已发送，取消后结果未知", confirmed=False)
+                    if not sent:
+                        raise DomainError("mcp_call_cancelled", "调用尚未发送即已取消")
+                    raise McpCallFailure("mcp_call_cancelled_uncertain", "调用已发送，取消后结果未知", confirmed=False)
             result = await call
         except MCPError as exc:
             if exc.code == types.HEADER_MISMATCH:
@@ -361,6 +456,9 @@ class McpManager:
                     "blocked_incompatible", "服务器拒绝固定目录，须新目录及新 Run", confirmed=True,
                 ) from None
             uncertain = exc.code in {types.CONNECTION_CLOSED, types.REQUEST_TIMEOUT}
+            if exc.code == types.CONNECTION_CLOSED:
+                connection.state = "failed"
+                connection.failure = DomainError("mcp_connection_failed", "MCP 连接已关闭，需要重新连接")
             raise McpCallFailure(
                 "mcp_call_uncertain" if uncertain else "mcp_protocol_error",
                 "MCP 调用结果未知" if uncertain else "MCP 协议调用失败",
@@ -391,13 +489,16 @@ class McpManager:
             raise McpCallFailure("mcp_result_unsupported", "尚不支持该协议结果", confirmed=True)
         if len(_json_bytes(result.model_dump(mode="json", by_alias=True))) > self.limits.max_result_bytes:
             raise McpCallFailure("mcp_result_too_large", "工具结果超过接收上限", confirmed=True)
-        if any(not isinstance(item, types.TextContent) for item in result.content):
-            raise McpCallFailure("mcp_result_unsupported", "尚不支持二进制或资源内容", confirmed=True)
+        from flowmate.integrations.media import normalize_content
+
+        content = normalize_content(result.content, max_bytes=self.limits.max_image_bytes,
+            max_pixels=self.limits.max_image_pixels)
         return McpCallResult(
             server_id=catalog.server_id, config_revision=catalog.config_revision,
             catalog_hash=catalog.content_hash, tool_name=tool.name,
-            texts=tuple(item.text for item in result.content),
+            texts=tuple(item["text"] for item in content if item["type"] in {"text", "notice"}),
             structured_content=result.structured_content, is_error=result.is_error,
+            content=content,
         )
 
     async def reconfigure(self, config):

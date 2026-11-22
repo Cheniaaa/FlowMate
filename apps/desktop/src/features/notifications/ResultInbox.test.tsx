@@ -1,17 +1,127 @@
 import { useLayoutEffect } from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
-import { RuntimeClient } from '../../api/client';
+import { ApiError, RuntimeClient } from '../../api/client';
 import { createRuntimeStore } from '../../state/runtime-store';
 import { id, page, run, secondId } from '../../test/fixtures';
-import type { SessionInboxEntry } from '../../generated/contracts';
+import type { ActivityView, ArtifactRef, SessionInboxEntry } from '../../generated/contracts';
 import ResultInbox from './ResultInbox';
 
 afterEach(() => vi.restoreAllMocks());
 const entry: SessionInboxEntry = { id, version: 3, source_event_id: '9007199254740993', target_session_id: id,
   result: { run_id: run.id, task_id: secondId, lifetime: 'managed', submitted_state: 'completed' }, result_version: 1,
   delivery_state: 'delivered', viewed_at: null, dependencies: [], attempts: 1, last_error: null, source_valid: true, consumers: [] };
+
+const reportArtifact: ArtifactRef = { id, version: 1, task_id: secondId, activity_id: secondId,
+  content_hash: 'a'.repeat(64), dependencies: [], media_type: 'text/markdown' };
+const genericArtifact = { ...reportArtifact, id: secondId };
+function reportActivity(artifact: ArtifactRef, filename: string): ActivityView {
+  return { id: artifact.activity_id, run_id: run.id, task_id: artifact.task_id, version: 1,
+    kind: 'tool', operation: 'skills.run_script', state: 'succeeded', dependencies: [], error: null, usage: null, actual_units: null,
+    script_execution: { skill_id: id, content_hash: 'a'.repeat(64), script_relative_path: 'scripts/report.py',
+      environment_id: id, environment_revision: 1, attempt_id: id, exit_code: 0, termination_reason: 'exited',
+      truncated: false, collection_error: null, external_costs: 'unknown', outputs: [{ artifact, relative_path: filename }] } };
+}
+function reportResult(delivery: SessionInboxEntry, artifacts: ArtifactRef[]) {
+  return { handle: delivery.result, result_version: 1, state: 'completed' as const,
+    result: { summary: delivery.task_name ?? '会议记录来源已完成' }, artifacts, error: null, dependencies: [] };
+}
+
+it('重开合并回告后仅按所选结果补读文件名，通用 Markdown 单独编号', async () => {
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const meeting = { ...entry, task_name: '会议记录整理', viewed_at: '2026-11-19T03:10:00Z' };
+  const other = { ...meeting, id: secondId, task_name: '图书馆资料核对', result: { ...meeting.result, task_id: id } };
+  vi.spyOn(client, 'sessionResults').mockResolvedValue(page([meeting, other]));
+  const results = vi.spyOn(client, 'taskResult').mockResolvedValue(reportResult(meeting, [reportArtifact, genericArtifact]));
+  const activity = reportActivity(reportArtifact, '阅读报告.md');
+  const reads = vi.spyOn(client, 'activities').mockResolvedValue(page([activity]));
+  const open = vi.fn();
+  render(<ResultInbox client={client} store={createRuntimeStore(client)} sessionId={id} deliveryIds={[id, secondId]}
+    onCommand={vi.fn()} onOpen={vi.fn()} onArtifact={open} />);
+  const meetingRow = within(await screen.findByRole('article', { name: '会议记录整理' }));
+  expect(reads).not.toHaveBeenCalled();
+  await userEvent.click(meetingRow.getByRole('button', { name: '查看结果' }));
+  await userEvent.click(await meetingRow.findByRole('button', { name: '阅读报告.md' }));
+  expect(open.mock.calls[0].slice(0, 2)).toEqual([reportArtifact, meeting]);
+  await userEvent.click(meetingRow.getByRole('button', { name: 'Markdown 文档 1' }));
+  expect(open.mock.calls[1][0].id).toBe(genericArtifact.id);
+  expect(results.mock.calls).toEqual([[meeting.result.task_id]]);
+  expect(reads.mock.calls).toEqual([[run.id, { activity_id: reportArtifact.activity_id }]]);
+  expect(within(screen.getByRole('article', { name: '图书馆资料核对' })).queryByRole('region', { name: '结果预览' })).toBeNull();
+});
+
+it('切换到同名文件的另一条交付后，迟到的活动不能覆盖所选预览', async () => {
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const meeting = { ...entry, task_name: '会议记录整理', viewed_at: '2026-11-19T03:10:00Z' };
+  const other = { ...meeting, id: secondId, task_name: '图书馆资料核对', result: { ...meeting.result, task_id: id } };
+  const otherFile = { ...genericArtifact, task_id: id, activity_id: id };
+  vi.spyOn(client, 'sessionResults').mockResolvedValue(page([meeting, other]));
+  vi.spyOn(client, 'taskResult').mockImplementation(async taskId =>
+    taskId === secondId ? reportResult(meeting, [reportArtifact]) : reportResult(other, [otherFile]));
+  let respond!: (value: Awaited<ReturnType<RuntimeClient['activities']>>) => void;
+  vi.spyOn(client, 'activities').mockImplementationOnce(() => new Promise(resolve => { respond = resolve; }))
+    .mockResolvedValueOnce(page([reportActivity(otherFile, '阅读报告.md')]));
+  const open = vi.fn(), user = userEvent.setup();
+  render(<ResultInbox client={client} store={createRuntimeStore(client)} sessionId={id} deliveryIds={[id, secondId]}
+    onCommand={vi.fn()} onOpen={vi.fn()} onArtifact={open} />);
+  const meetingRow = within(await screen.findByRole('article', { name: '会议记录整理' }));
+  const otherRow = within(screen.getByRole('article', { name: '图书馆资料核对' }));
+  await user.click(meetingRow.getByRole('button', { name: '查看结果' }));
+  await waitFor(() => expect(respond).toBeTypeOf('function'));
+  await user.click(otherRow.getByRole('button', { name: '查看结果' }));
+  const file = await otherRow.findByRole('button', { name: '阅读报告.md' });
+  await act(async () => { respond(page([reportActivity(reportArtifact, '阅读报告.md')])); });
+  expect(meetingRow.queryByRole('region', { name: '结果预览' })).toBeNull();
+  await user.click(file);
+  expect(open.mock.calls[0].slice(0, 2)).toEqual([otherFile, other]);
+});
+
+it.each([
+  [new ApiError(409, 'scope_revoked', '内部路径'), '产物名称不可用'],
+  [new Error('内部路径'), '产物名称读取失败'],
+])('活动读取失败时保留已授权结果和文件入口，并显示 %s 对应的状态', async (failure, hint) => {
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const meeting = { ...entry, viewed_at: '2026-11-19T03:10:00Z' };
+  vi.spyOn(client, 'sessionResults').mockResolvedValue(page([meeting]));
+  vi.spyOn(client, 'taskResult').mockResolvedValue(reportResult(meeting, [reportArtifact]));
+  vi.spyOn(client, 'activities').mockRejectedValue(failure);
+  const open = vi.fn();
+  render(<ResultInbox client={client} store={createRuntimeStore(client)} sessionId={id} deliveryIds={[id]}
+    onCommand={vi.fn()} onOpen={vi.fn()} onArtifact={open} />);
+  expect(await screen.findByText(hint)).toBeTruthy();
+  expect(screen.getByText(/会议记录来源已完成/)).toBeTruthy();
+  expect(screen.queryByText('内部路径')).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Markdown 文档 1' }));
+  expect(open.mock.calls[0][0].id).toBe(reportArtifact.id);
+});
+
+it('同名交付可区分，重开已读项只读取其固定任务，其他投递仍未读', async () => {
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const unread = { ...entry, task_name: '核对周报' };
+  const read = { ...entry, id: secondId, source_event_id: '9007199254740994', task_name: '核对周报',
+    result: { ...entry.result, task_id: id }, viewed_at: '2026-11-19T03:10:00Z' };
+  vi.spyOn(client, 'sessionResults').mockResolvedValue(page([unread, read]));
+  const lookup = vi.spyOn(client, 'taskResult').mockResolvedValue({ handle: read.result, result_version: 1,
+    state: 'completed', result: { status: 'completed', summary: '第二份周报已核对', structured_result: null,
+      artifact_ids: [secondId], evidence_refs: [id], unresolved: [], verification: [], handled_failures: [] },
+    artifacts: [], dependencies: [], error: null });
+  const store = createRuntimeStore(client);
+  const command = vi.fn();
+  render(<ResultInbox client={client} store={store} sessionId={id} onCommand={command} onOpen={vi.fn()} />);
+  const first = await screen.findByRole('article', { name: /核对周报.*第 1 项/ });
+  const second = screen.getByRole('article', { name: /核对周报.*第 2 项/ });
+  expect(within(first).getByText(/尚未查看/)).toBeTruthy();
+  expect(within(second).getByText(/你已查看/)).toBeTruthy();
+  await userEvent.click(within(second).getByRole('button', { name: '查看结果' }));
+  expect(await within(second).findByText(/第二份周报已核对/)).toBeTruthy();
+  expect(within(second).getByText('交付产物 1 项')).toBeTruthy();
+  expect(second.textContent).not.toContain(secondId);
+  expect(within(first).queryByRole('region', { name: '结果预览' })).toBeNull();
+  expect(lookup.mock.calls).toEqual([[id]]);
+  expect(command).not.toHaveBeenCalled();
+  expect(store.getSnapshot().deliveries[unread.id].viewed_at).toBeNull();
+});
 
 it('查看不冒充消费，来源失效立即清正文；重投只在failed且有效时开放', async () => {
   const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });

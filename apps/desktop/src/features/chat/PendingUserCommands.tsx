@@ -1,5 +1,6 @@
 import type { PendingUserCommand, RunSnapshot } from '../../generated/contracts';
 import Status from '../../components/Status';
+import { Button } from '../../components/ui/button';
 
 export default function PendingUserCommands({ commands, runs, onOpen }: {
   commands: PendingUserCommand[]; runs: Record<string, RunSnapshot>; onOpen: (id: string) => void;
@@ -11,7 +12,7 @@ export default function PendingUserCommands({ commands, runs, onOpen }: {
       <p>{command.state === 'queued' ? '已排队，输入已保存，尚未开始执行'
         : command.state === 'applied' ? '输入已应用，已创建独立用户任务' : `输入已取消：${command.reason}`}</p>
       {command.run_id && <div className="button-row">{runs[command.run_id] && <Status state={runs[command.run_id].state} />}
-        <button onClick={() => onOpen(command.run_id!)}>查看输入任务</button></div>}
+        <Button type="button" size="sm" variant="ghost" onClick={() => onOpen(command.run_id!)}>查看输入任务</Button></div>}
       <details><summary>查看本次输入配置</summary>
         <p>模型：{command.config.model_profile.model_id} · 截止：{command.deadline_at}</p>
         <p>后台许可：{command.start.allow_managed ? '允许' : '未允许'} · 自动总结许可：{command.start.allow_follow_up ? '允许' : '未允许'}</p>

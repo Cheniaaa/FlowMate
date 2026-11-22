@@ -30,7 +30,6 @@ from flowmate.contracts.execution import (
     StepDecision,
     TaskHandle,
     TaskSnapshot,
-    TextPart,
     ToolResultPart,
     WaitRecord,
 )
@@ -60,7 +59,7 @@ def _result_digest(receipt):
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def _merge_receipt(activity, incoming):
+def _merge_receipt(activity, incoming, *, model_protocol=None):
     previous = activity.receipt
     if previous is None:
         return incoming
@@ -72,12 +71,38 @@ def _merge_receipt(activity, incoming):
     for name in ("input_tokens", "output_tokens", "cached_input_tokens", "cache_write_tokens",
                  "cache_write_1h_tokens", "source"):
         old, new = usage[name], getattr(incoming.usage, name)
+        if name == "cached_input_tokens":
+            # 旧 wire 回执也用零表示缺失。重放这种回执不能覆盖后来收到的计数。
+            if old == 0 and previous.usage.source == "provider_wire" and not previous.usage.cache_read_reported:
+                old = None
+            if new == 0 and incoming.usage.source == "provider_wire" and not incoming.usage.cache_read_reported:
+                new = None
         if old is not None and new is not None and old != new:
+            if name == "input_tokens" and model_protocol == "anthropic":
+                legacy, reported = ((incoming, previous) if previous.usage.cache_read_reported
+                                    else (previous, incoming))
+                legacy_usage, reported_usage = legacy.usage, reported.usage
+                cached = reported_usage.cached_input_tokens
+                # 旧 Messages 总量少加了默认成零的缓存读数。只接受普通输入、写入和输出都能对上的补正。
+                if (legacy.confirmed and reported.confirmed and legacy.actual_units is None
+                        and legacy_usage.source == reported_usage.source == "provider_wire"
+                        and legacy_usage.cache_read_reported is None and legacy_usage.cached_input_tokens == 0
+                        and reported_usage.cache_read_reported is True and cached is not None and cached > 0
+                        and legacy_usage.output_tokens is not None
+                        and legacy_usage.output_tokens == reported_usage.output_tokens
+                        and legacy_usage.cache_write_tokens is not None
+                        and legacy_usage.cache_write_tokens == reported_usage.cache_write_tokens
+                        and legacy_usage.input_tokens >= legacy_usage.cache_write_tokens
+                        and reported_usage.input_tokens - legacy_usage.input_tokens == cached):
+                    usage[name] = reported_usage.input_tokens
+                    continue
             raise DomainError("receipt_conflict", "确定用量不一致")
         if new is not None:
             usage[name] = new
     if incoming.usage.status == "known":
         usage["status"] = "known"
+    if incoming.usage.cache_read_reported:
+        usage["cache_read_reported"] = True
     if previous.confirmed and incoming.confirmed and activity.result_digest != _result_digest(incoming):
         raise DomainError("receipt_conflict", "确定执行结果不一致")
     return incoming.model_copy(update={
@@ -100,6 +125,7 @@ class Scheduler:
         self._drivers = {}
         self._wake = asyncio.Event()
         self._pump_task = None
+        self._maintenance_task = None
         self._failure = None
         self._running = {}
         self._unsubscribe = None
@@ -116,6 +142,7 @@ class Scheduler:
         self.followups = None
         self.maintenance = None
         self.compaction = None
+        self.naming_model = None
 
     def configure_tasks(self, catalog):
         from flowmate.runtime.delivery import DeliveryService
@@ -125,7 +152,8 @@ class Scheduler:
         if self._pump_task is not None or self.tasks is not None:
             raise DomainError("runtime_configuration_frozen", "任务服务须在调度启动前装配一次")
         self.delivery = DeliveryService(self.store,config=self.limits,clock=self.clock)
-        self.tasks = TaskService(self.store, catalog, clock=self.clock, delivery=self.delivery, artifacts=self.artifacts)
+        self.tasks = TaskService(self.store, catalog, policy=self.policy, clock=self.clock,
+            delivery=self.delivery, artifacts=self.artifacts, scheduler=self)
         self.waits = WaitService(self.store, clock=self.clock)
 
     def configure_models(self, private_state):
@@ -174,8 +202,10 @@ class Scheduler:
         loop = asyncio.get_running_loop()
         self._failure = loop.create_future()
         self._slots = {"step": asyncio.Semaphore(self.limits.model_concurrency),
-                       "model": asyncio.Semaphore(self.limits.model_concurrency),
-                       "tool": asyncio.Semaphore(self.limits.file_concurrency)}
+                        "model": asyncio.Semaphore(self.limits.model_concurrency),
+                        "tool": asyncio.Semaphore(self.limits.file_concurrency)}
+        if self.naming_model is not None:
+            self._slots["naming"] = asyncio.Semaphore(1)
         self._active_slots = dict.fromkeys(self._slots, 0)
         self._interactive_batch = dict.fromkeys(self._slots, 0)
         self._background_cursor = dict.fromkeys(self._slots, "")
@@ -199,6 +229,10 @@ class Scheduler:
         self._unsubscribe()
         self._pump_task.cancel()
         await asyncio.gather(self._pump_task, return_exceptions=True)
+        if self._maintenance_task is not None:
+            self._maintenance_task.cancel()
+            await asyncio.gather(self._maintenance_task, return_exceptions=True)
+            self._maintenance_task = None
         handles = list(self._running.values())
         for task, cancel, _ in handles:
             cancel.set()
@@ -211,6 +245,8 @@ class Scheduler:
             recover(self.store)
 
     async def _pump(self):
+        from flowmate.runtime.naming import OPERATION
+
         delay = None
         while True:
             try:
@@ -224,8 +260,11 @@ class Scheduler:
                 self.delivery.deliver_pending()
             if self.followups is not None:
                 self.followups.activate_ready()
-            if self.maintenance is not None:
-                self.maintenance.activate_ready()
+            if self.maintenance is not None and (
+                    self._maintenance_task is None or self._maintenance_task.done()):
+                # 凭据读取可等待宿主；仅保留一个准备任务，不阻塞前台步骤和运行期限处理。
+                self._maintenance_task = asyncio.create_task(self.maintenance.activate_ready())
+                self._maintenance_task.add_done_callback(self._observe_failure)
             delay = self._expire_runs()
             with self.store.transaction(write=False) as tx:
                 for key, (_, cancel, run_id) in self._running.items():
@@ -251,10 +290,25 @@ class Scheduler:
                         continue
                 key = item.activity_id or item.task_id
                 if key not in self._running:
-                    slot = "step" if item.operation == "step" else ActivitySnapshot.model_validate_json(row[2]).intent.kind
+                    slot = "step"
+                    if item.operation != "step":
+                        intent = ActivitySnapshot.model_validate_json(row[2]).intent
+                        slot = intent.kind
+                        if intent.operation == OPERATION:
+                            if self.naming_model is None:
+                                continue
+                            after = intent.arguments["after_run_id"]
+                            if after is not None:
+                                with self.store.transaction(write=False) as tx:
+                                    source = tx.execute("SELECT state FROM runs WHERE id=?", (after,)).fetchone()
+                                if source is not None and source[0] not in TERMINAL:
+                                    continue
+                            slot = "naming"
                     ready[slot].append((item, row[1] != "user"))
             for slot, candidates in ready.items():
                 capacity = self.limits.file_concurrency if slot == "tool" else self.limits.model_concurrency
+                if slot == "naming":
+                    capacity = 1
                 while candidates and self._active_slots[slot] < capacity:
                     interactive = [entry for entry in candidates if not entry[1]]
                     background = [entry for entry in candidates if entry[1]]
@@ -327,6 +381,8 @@ class Scheduler:
         self._wake.set()
 
     async def _drive(self, item, cancel):
+        from flowmate.runtime.naming import OPERATION, drive_title
+
         receipt = None
         try:
             if self.is_deleted(item.run_id):
@@ -346,14 +402,16 @@ class Scheduler:
                     self.commit_step(task.id, task.version, decision)
             else:
                 activity = self.activity(item.activity_id)
-                async with self._slots[activity.intent.kind]:
-                    driver = self._drivers.get(activity.intent.kind)
-                    if driver is None:
-                        raise DomainError("blocked_incompatible", "所需活动执行器未装配")
-                    result = await driver(
-                        self.context(item.task_id).model_copy(update={"activity_id": activity.id}),
-                        activity, cancel, self.dispatch,
-                    )
+                ctx = self.context(item.task_id).model_copy(update={"activity_id": activity.id})
+                naming = activity.intent.operation == OPERATION
+                async with self._slots["naming" if naming else activity.intent.kind]:
+                    if naming:
+                        result = await drive_title(self.store, self.naming_model, ctx, activity, cancel, self.dispatch)
+                    else:
+                        driver = self._drivers.get(activity.intent.kind)
+                        if driver is None:
+                            raise DomainError("blocked_incompatible", "所需活动执行器未装配")
+                        result = await driver(ctx, activity, cancel, self.dispatch)
                     if result is None:
                         return
                     receipt, proposal = result
@@ -480,9 +538,19 @@ class Scheduler:
             check_scopes(tx, dependencies)
             if authorize is not None:
                 authorize(tx)
+            if request.mcp_source is not None and (
+                    activity.intent.kind != "tool"
+                    or task.binding.config.catalog.mcp_tools.get(activity.intent.operation) != request.mcp_source.binding
+                    or task.binding.config.model_profile.endpoint != request.mcp_source.model_destination):
+                raise DomainError("tool_binding", "MCP 来源不属于当前实际调用")
+            if request.mcp_source is not None and activity.intent.origin == "user":
+                from flowmate.runtime.recovery import requery_authorization
+                if requery_authorization(tx, run.id, activity.id):
+                    self.budgets.check_mcp_continuation(tx, run)
             reservation_id = self.budgets.reserve(tx, activity.id, request.estimate,
                                                   activity.intent.kind)
             changed = bump(activity, state="dispatched", request_digest=request.request_digest,
+                            mcp_source=request.mcp_source,
                            pricing_snapshot=request.pricing_snapshot,
                             lease_generation=(tx.execute(
                                 "SELECT generation FROM session_leases WHERE session_id=? AND run_id=?",
@@ -502,28 +570,29 @@ class Scheduler:
         if run.state in TERMINAL or task.state in TERMINAL:
             return task
         check_dispatch(tx, run, task, self.clock())
+        checkpoint = load(tx, Checkpoint, task.id)
+        if (self.tasks is not None and checkpoint.phase in {"ready_model", "preparing_output", "preparing_structured_output"}
+                and not checkpoint.pending_call_ids and not checkpoint.pending_activity_ids):
+            entries = self.delivery.pending_owned_tx(tx, run, task)
+            if entries:
+                self._queue_model(tx, run, task, checkpoint)
+                self.delivery.consume_owned_tx(tx, run, task, entries)
+                return load(tx, TaskSnapshot, task.id)
         if count_step:
             self.budgets.count(tx, run.id, "steps")
         budget = load(tx, BudgetSnapshot, run.budget_id)
         if decision.kind == "task_control":
             return self._task_control(tx, task, decision, budget)
-        checkpoint = load(tx, Checkpoint, task.id)
         if (self.tasks is not None and task.kind == "agent" and not checkpoint.pending_call_ids
-                and not checkpoint.pending_activity_ids and checkpoint.phase != "preparing_output"):
-            row = tx.execute("SELECT t.id FROM tasks t WHERE t.run_id=? AND t.parent_task_id=? "
-                "AND t.state IN ('completed','failed','cancelled') AND NOT EXISTS "
-                "(SELECT 1 FROM consumptions c WHERE c.consumer_task_id=? AND c.target_task_id=t.id) ORDER BY t.rowid LIMIT 1",
-                (run.id, task.id, task.id)).fetchone()
-            if row is not None:
-                result, _ = self.tasks._consume(tx, context_for(tx, task.id),
-                    TaskHandle(run_id=run.id, task_id=row[0]), ConsumerRef(run_id=run.id,
-                        task_id=task.id, message_boundary=checkpoint.message_boundary))
-                message = ModelMessage(role="user", origin="task_result", parts=[TextPart(text=result.model_dump_json())],
-                                       source_dependencies=result.dependencies)
-                emit(tx, run, task.id, "task.consumed", RuntimeChange(messages=[message],
-                    checkpoints=[bump(checkpoint, message_boundary=checkpoint.message_boundary + 1)],
-                    tasks=[bump(task)], outbox=[*pending_outbox(tx, task.id, operation="step"),
-                        OutboxItem(run_id=run.id, task_id=task.id, operation="step")]))
+                and not checkpoint.pending_activity_ids and decision.kind == "activity"
+                and decision.intent is not None and decision.intent.kind == "model"):
+            ctx = context_for(tx, task.id)
+            finalizing = checkpoint.phase == "preparing_structured_output"
+            boundary = checkpoint.context_manifest.get("model_message_boundary") if finalizing else None
+            ids = self.tasks._pending_direct_results(tx, ctx, model_boundary=boundary)
+            if ids:
+                self._queue_model(tx, run, task, checkpoint)
+                self.tasks._receive_direct_results(tx, ctx, ids)
                 return load(tx, TaskSnapshot, task.id)
         if decision.checkpoint is not None:
             current = load(tx, Checkpoint, task.id)
@@ -566,8 +635,8 @@ class Scheduler:
                 if self.artifacts is None:
                     raise DomainError("invalid_artifact", "产物服务未装配")
                 self.artifacts.validate_output(tx, context_for(tx, task.id), output.artifact_ids)
-            if tx.execute("SELECT 1 FROM activities WHERE task_id=? AND state IN "
-                          "('prepared','dispatched','uncertain') LIMIT 1", (task.id,)).fetchone():
+            from flowmate.runtime.recovery import has_pending_activities
+            if has_pending_activities(tx, task.id):
                 raise DomainError("pending_obligations", "仍有未结算外部操作")
             if task.id == run.root_task_id or task.kind == "agent":
                 self._validate_failures(tx, task, output)
@@ -715,28 +784,54 @@ class Scheduler:
         steering = {row[0] for row in tx.execute("SELECT id FROM messages WHERE task_id=? "
             "AND json_extract(document,'$.origin')='steering'", (root.id,))}
         if not steering <= set(checkpoint.consumed_steering_ids):
-            emit(tx, run, root.id, "task.stepped", RuntimeChange(
-                runs=[bump(run, state="running", reason=None)] if root.id == run.root_task_id else [],
-                tasks=[bump(root, state="running", reason=None)],
-                checkpoints=[bump(checkpoint, phase="ready_model", output=None, output_dependencies=[])],
-                outbox=[*pending_outbox(tx, root.id, operation="step"),
-                        OutboxItem(run_id=run.id, task_id=root.id, operation="step")]))
+            self._queue_model(tx, run, root, checkpoint)
             return
         children = [TaskSnapshot.model_validate_json(row[0]) for row in tx.execute(
             "SELECT document FROM tasks WHERE run_id=? AND parent_task_id=? ORDER BY rowid", (run.id, root.id))]
+        children_pending = any(task.state not in TERMINAL for task in children)
+        if self.tasks is not None and root.kind == "agent":
+            # 代理可收到失败交付并重新综合，等直属交付齐备后再判断候选。
+            if children_pending:
+                return
+            entries = self.delivery.pending_owned_tx(tx, run, root)
+            if entries:
+                self._queue_model(tx, run, root, checkpoint)
+                self.delivery.consume_owned_tx(tx, run, root, entries)
+                return
+            if children:
+                ctx = context_for(tx, root.id)
+                boundary = checkpoint.context_manifest.get("model_message_boundary")
+                ids = self.tasks._pending_direct_results(tx, ctx, model_boundary=boundary)
+                if ids:
+                    self._queue_model(tx, run, root, checkpoint)
+                    self.tasks._receive_direct_results(tx, ctx, ids)
+                    return
         handled = {item.task_id for item in checkpoint.output.handled_failures}
         if any(task.state in {"failed", "cancelled"} and task.id not in handled for task in children):
+            if self.tasks is not None and root.kind == "agent" and "candidate_answer" in checkpoint.context_manifest:
+                from flowmate.runtime.tasks import child_failure_feedback
+
+                feedback = child_failure_feedback(tx, root, checkpoint, checkpoint.output)
+                if feedback is not None and feedback[0] is not None:
+                    fresh, notice = feedback
+                    manifest = {**checkpoint.context_manifest, "child_failure_feedback": fresh,
+                                "child_failure_notice": notice}
+                    self._queue_model(tx, run, root, checkpoint.model_copy(update={"context_manifest": manifest}))
+                    return
             if root.id == run.root_task_id:
                 stop_run(tx, run, "failed", "unhandled_child_failure")
             else:
                 stop_task(tx, run, root, "failed", "unhandled_child_failure")
             return
-        if any(task.state not in TERMINAL for task in children):
+        if children_pending:
             return
         subtree = ("WITH RECURSIVE tree(id) AS (VALUES(?) UNION ALL "
                    "SELECT t.id FROM tasks t JOIN tree p ON t.parent_task_id=p.id) ")
-        if tx.execute(subtree + "SELECT 1 FROM activities WHERE task_id IN (SELECT id FROM tree) "
-                      "AND state IN ('prepared','dispatched','uncertain')",
+        from flowmate.runtime.recovery import MCP_QUERY_HANDLED
+        if tx.execute(subtree + "SELECT 1 FROM activities a WHERE a.task_id IN (SELECT id FROM tree) "
+                      f"AND (a.state='dispatched' OR (a.state='uncertain' AND ({MCP_QUERY_HANDLED}) IS NOT TRUE) "
+                      "OR (a.state='prepared' AND EXISTS "
+                      "(SELECT 1 FROM outbox o WHERE o.activity_id=a.id AND o.state='pending')))",
                       (root.id,)).fetchone():
             return
         if tx.execute(subtree + "SELECT 1 FROM approvals WHERE task_id IN (SELECT id FROM tree) AND status='pending'",
@@ -746,11 +841,32 @@ class Scheduler:
             self.artifacts.validate_output(tx, context_for(tx, root.id), checkpoint.output.artifact_ids)
         joins = [JoinDecision(run_id=run.id, root_task_id=root.id, child_task_id=task.id,
                               child_result_version=task.result_version) for task in children]
+        if root.id == run.root_task_id and run.kind == "user" and self.maintenance is not None:
+            from flowmate.memory.intent import commit
+            with self.maintenance.memory.provider.atomic():
+                commit(self.maintenance.memory, tx, root)
+        manifest = dict(checkpoint.context_manifest)
+        candidate = manifest.pop("candidate_answer", None)
+        messages = [ModelMessage.model_validate(candidate)] if candidate is not None else []
+        refs = [message.private_ref for message in messages if message.private_ref is not None]
         emit(tx, run, root.id, "task.joined", RuntimeChange(
             runs=[bump(run, state="completed", reason=None, output=checkpoint.output)] if root.id == run.root_task_id else [],
             tasks=[bump(root, state="completed", reason=None, result_version=1)],
-            checkpoints=[bump(checkpoint, phase="done")], joins=joins,
+            checkpoints=[bump(checkpoint, phase="done", context_manifest=manifest,
+                              message_boundary=checkpoint.message_boundary + len(messages),
+                              private_refs=[*checkpoint.private_refs, *refs])], joins=joins, messages=messages,
             outbox=pending_outbox(tx, root.id)))
+
+    def _queue_model(self, tx, run, task, checkpoint):
+        manifest = dict(checkpoint.context_manifest)
+        manifest.pop("candidate_answer", None)
+        emit(tx, run, task.id, "task.stepped", RuntimeChange(
+            runs=[bump(run, state="running", reason=None)] if task.id == run.root_task_id else [],
+            tasks=[bump(task, state="running", reason=None)],
+            checkpoints=[bump(checkpoint, phase="ready_model", output=None,
+                              output_dependencies=[], context_manifest=manifest)],
+            outbox=[*pending_outbox(tx, task.id, operation="step"),
+                    OutboxItem(run_id=run.id, task_id=task.id, operation="step")]))
 
     def commit_step(self, task_id, expected_version, decision):
         with self.store.transaction() as tx:
@@ -778,6 +894,8 @@ class Scheduler:
                 raise DomainError("export_finalize_failed", "导出已确认，恢复记录维护失败") from error
 
     def _record_receipt(self, receipt, propose, *, reason=None):
+        from flowmate.runtime.naming import OPERATION, commit_title
+
         with self.store.transaction() as tx:
             retired = tx.execute("SELECT document FROM accounting_activities WHERE id=?", (receipt.activity_id,)).fetchone()
             if retired is not None:
@@ -792,9 +910,15 @@ class Scheduler:
                 raise DomainError("attempt_mismatch", "回执不对应已派发活动")
             run = load(tx, RunSnapshot, activity.run_id)
             task = load(tx, TaskSnapshot, activity.task_id)
+            if activity.state == "uncertain":
+                from flowmate.runtime.recovery import is_uncertain_query
+                if is_uncertain_query(tx, run, task, activity, activity.receipt):
+                    # 原查询的未知状态是不再消费的边界。MCP 没有可补记的本机模型用量。
+                    return task
             run_expired = self.clock() >= run.deadline_at
             expired = run_expired or (task.deadline_at is not None and self.clock() >= task.deadline_at)
-            merged = _merge_receipt(activity, receipt)
+            protocol = task.binding.config.model_profile.protocol if activity.intent.kind == "model" else None
+            merged = _merge_receipt(activity, receipt, model_protocol=protocol)
             dependencies = [*activity.intent.dependencies, *receipt.source_dependencies]
             lease_current = (run.execution_session_id != run.interaction_session_id
                 or owns_session(tx, run.interaction_session_id, run.id, generation=activity.lease_generation))
@@ -895,6 +1019,18 @@ class Scheduler:
                     if self.private_state is None:
                         raise DomainError("private_state_unavailable", "私有续接服务未装配")
                     self.private_state.publish(tx, ctx, proposal.private_states, proposal.messages)
+                if (self.tasks is not None and task.id == run.root_task_id
+                        and activity.intent.operation == "model.generate"
+                        and proposal.checkpoint.phase == "preparing_output" and proposal.messages
+                        and tx.execute("SELECT 1 FROM tasks WHERE parent_task_id=? OR origin_task_id=? LIMIT 1",
+                            (task.id, task.id)).fetchone()):
+                    # 有从属工作时先保存自然文本候选，通过 joining 才成为会话消息。
+                    candidate, = proposal.messages
+                    proposed = proposal.checkpoint
+                    proposal = proposal.model_copy(update={"messages": [], "checkpoint": proposed.model_copy(update={
+                        "context_manifest": {**proposed.context_manifest,
+                                             "candidate_answer": candidate.model_dump(mode="json")},
+                        "message_boundary": checkpoint.message_boundary, "private_refs": checkpoint.private_refs})})
                 checkpoint = proposal.checkpoint.model_copy(update={
                     "version": checkpoint.version + 1,
                     "pending_activity_ids": [id for id in proposal.checkpoint.pending_activity_ids
@@ -903,16 +1039,26 @@ class Scheduler:
                 change = change.model_copy(update={"checkpoints": [checkpoint],
                                                    "messages": proposal.messages})
                 decision = proposal.next_decision
-            elif lease_current and not run.yield_requested and (not merged.confirmed or (activity.receipt is None and not expired
+                if (activity.intent.operation == OPERATION and decision is not None
+                        and decision.kind == "complete"
+                        and not commit_title(tx, run, activity.intent.arguments, decision.output.summary)):
+                    decision = StepDecision(kind="fail", reason="title_authorization_changed")
+            elif activity.intent.operation != OPERATION and lease_current and not run.yield_requested and (not merged.confirmed or (activity.receipt is None and not expired
                                           and run.state in {"queued", "running"}
                                            and task.state in {"queued", "running"})) and (
                                                run.state not in TERMINAL and task.state not in TERMINAL):
-                reason = reason or ("uncertain_activity" if not merged.confirmed else "source_scope_changed")
+                if reason is None:
+                    from flowmate.runtime.recovery import is_uncertain_query
+                    reason = ("mcp_query_uncertain" if not expired and is_uncertain_query(tx, run, task, activity, merged)
+                              else "uncertain_activity" if not merged.confirmed else "source_scope_changed")
                 change = change.model_copy(update={
                     "runs": [bump(run, state="interrupted", reason=reason)],
                     "tasks": [bump(task, state="interrupted", reason=reason)],
                 })
             emit(tx, run, task.id, "activity.received", change)
+            if activity.intent.operation == OPERATION and not merged.confirmed and run.state not in TERMINAL:
+                stop_run(tx, run, "failed", "uncertain_activity")
+                return load(tx, TaskSnapshot, task.id)
             if run.yield_requested:
                 from flowmate.runtime.followups import finish_yield
                 finish_yield(tx, run.id)
@@ -950,6 +1096,7 @@ class Scheduler:
     def _record_accounting(self, tx, activity, receipt):
         if activity.attempt_id != receipt.attempt_id:
             raise DomainError("attempt_mismatch", "回执不对应已删除活动的原尝试")
+        # 删除归档已去掉任务的固定模型协议，不能验证 Anthropic 输入总量补正。
         merged = _merge_receipt(activity, receipt)
         normalized = merged.model_copy(update={"result": None, "error": None,
                                                "source_dependencies": [], "source_observations": []})

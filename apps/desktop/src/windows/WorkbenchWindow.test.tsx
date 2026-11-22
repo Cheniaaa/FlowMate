@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type EventCallback, type UnlistenFn } from '@tauri-apps/api/event';
@@ -39,9 +39,22 @@ it('settings 先订阅再领取；打开/关闭保持 Conversation DOM 与草稿
   const user = userEvent.setup(); render(<WorkbenchWindow client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
   await screen.findByRole('heading', { name: '聊天' });
   const input = screen.getByLabelText('消息'); await user.type(input, '保持草稿');
-  const entry = screen.getByRole('button', { name: '模型设置' }); await user.click(entry);
+  const runConfiguration = screen.getByRole('button', { name: '运行配置' });
+  expect(runConfiguration.textContent).toBe('运行配置');
+  await user.click(runConfiguration);
+  await screen.findByRole('dialog', { name: '运行配置' });
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(document.activeElement).toBe(runConfiguration));
+  const entry = screen.getByRole('button', { name: '设置' }); await user.click(entry);
   await screen.findByRole('dialog', { name: '设置' });
   expect(screen.getByLabelText('消息')).toBe(input);
+  await user.click(screen.getByRole('button', { name: '外观与主题' }));
+  await screen.findByRole('button', { name: /切换到/ });
+  const size = screen.getByRole('combobox', { name: '文字大小' }) as HTMLSelectElement;
+  expect(size.selectedOptions[0].textContent).toBe('标准');
+  await user.selectOptions(size, 'large');
+  expect(localStorage.getItem('flowmate:text-size')).toBe('large');
+  await user.selectOptions(size, 'standard');
   await user.click(screen.getByRole('button', { name: '关闭设置' }));
   expect((input as HTMLTextAreaElement).value).toBe('保持草稿'); expect(document.activeElement).toBe(entry);
   expect(order.indexOf('settings-navigation')).toBeLessThan(order.indexOf('take_settings_navigation'));
@@ -53,7 +66,41 @@ it('settings 先订阅再领取；打开/关闭保持 Conversation DOM 与草稿
   expect((input as HTMLTextAreaElement).value).toBe('保持草稿');
 });
 
-it('消息连接入口及重复快捷窗导航均定位目标，取消及在途保存继续保护原密钥绑定', async () => {
+it('能力、助理和记忆共享可操作的侧栏，返回原会话保留草稿及同一输入框', async () => {
+  vi.mocked(listen).mockResolvedValue(() => {});
+  vi.mocked(invoke).mockResolvedValue(null);
+  const workspace = { id, version: 1, name: '项目', directory_resource_id: null };
+  const session = { id, version: 1, workspace_id: id, title: '原会话', agent_profile_id: id, kind: 'interaction', archived: false };
+  vi.stubGlobal('fetch', async (url: string) => {
+    const path = new URL(url).pathname.replace('/v3', '');
+    if (path.endsWith('/events')) return new Response(new ReadableStream());
+    const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([agent]),
+      '/navigation': { default_workspace_id: id, workspaces: page([{ workspace, sessions: page([session]), pending_count: 0 }]),
+        recent_sessions: page([]), pending_count: 0, watermark: event.event_id },
+      [`/workspaces/${id}/snapshot`]: { workspace, sessions: page([session]), active_runs: page([]), pending_questions: page([]),
+        pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id },
+      [`/sessions/${id}`]: session };
+    return json(values[path] ?? page([]));
+  });
+  const user = userEvent.setup();
+  render(<WorkbenchWindow client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  await screen.findByRole('heading', { name: '原会话' });
+  const input = screen.getByLabelText('消息');
+  await user.type(input, '保留这份草稿');
+  for (const name of ['任务', '能力库', '我的助理', '记忆与成长']) {
+    await user.click(within(screen.getByRole('complementary', { name: '项目导航' })).getByRole('button', { name }));
+    const title = name === '任务' ? '任务中心' : name;
+    await screen.findByRole('heading', { name: title });
+    expect(screen.queryByRole('dialog', { name: title })).toBeNull();
+    expect(screen.getByRole('button', { name: '原会话' }).closest('[inert]')).toBeNull();
+  }
+  await user.click(screen.getByRole('button', { name: '原会话' }));
+  await screen.findByRole('heading', { name: '原会话' });
+  expect(screen.getByLabelText('消息')).toBe(input);
+  expect((input as HTMLTextAreaElement).value).toBe('保留这份草稿');
+});
+
+it('任务连接入口及重复快捷窗导航均定位目标，取消及在途保存继续保护原密钥绑定', async () => {
   const callbacks = new Map<string, EventCallback<null>>();
   vi.mocked(listen).mockImplementation(async (name, callback) => { callbacks.set(name, callback); return () => {}; });
   let request: { target: { kind: 'connection'; connection_id: string }; from_quick: boolean } | null = null;
@@ -88,7 +135,7 @@ it('消息连接入口及重复快捷窗导航均定位目标，取消及在途�
       [`/sessions/${id}/messages`]: page([{ id, run_id: run.id, role: 'user', origin: 'conversation', parts: [{ kind: 'text', text: '失败输入' }],
         activity_id: null, private_ref: null, source_dependencies: [], event_id: '1', event_index: 0 }]),
       [`/sessions/${id}/run-feedback`]: page([{ run_id: run.id, version: 1, workspace_id: id, session_id: id,
-        root_task_id: run.root_task_id, connection_id: connection.id, state: failed.state, reason: failed.reason, model_activity: null }]),
+        root_task_id: run.root_task_id, connection_id: connection.id, state: failed.state, reason: failed.reason, model_activity: null, context_usage: null }]),
       [`/runs/${id}`]: { ...runDetailSummary, run: failed, tasks: page([]), activities: page([]), messages: page([]), artifacts: page([]),
         questions: page([]), approvals: page([]), waits: page([]), consumptions: page([]), joins: page([]),
         budget: { id: run.budget_id, run_id: id, version: 1, limits, spent_units: '0', reserved_units: '0', model_requests: 1,
@@ -96,6 +143,9 @@ it('消息连接入口及重复快捷窗导航均定位目标，取消及在途�
     return json(values[path]);
   });
   render(<WorkbenchWindow client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  await screen.findByText('失败输入');
+  expect(screen.queryByRole('button', { name: '检查连接' })).toBeNull();
+  fireEvent.click(document.querySelector('[data-conversation-panel="tasks"]')!);
   fireEvent.click(await screen.findByRole('button', { name: '检查连接' }));
   await screen.findByDisplayValue(connection.display_name);
   fireEvent.change(screen.getByLabelText('编辑连接'), { target: { value: other.id } });

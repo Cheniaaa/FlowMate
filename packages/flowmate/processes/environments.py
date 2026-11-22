@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -35,13 +36,16 @@ MINIMUM_HOST_ENV = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP")
 VERSION_ARGUMENTS = {
     "python": ("--version",),
     "node": ("--version",),
-    "powershell": ("-NoLogo", "-NoProfile", "-NonInteractive", "-Version"),
+    "powershell": (
+        "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+        "$PSVersionTable.PSVersion.ToString()",
+    ),
     "bash": ("--version",),
 }
 VERSION_PATTERNS = {
     "python": re.compile(r"Python ([0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*)"),
     "node": re.compile(r"v([0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*)"),
-    "powershell": re.compile(r"PowerShell ([0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*)"),
+    "powershell": re.compile(r"(?:PowerShell )?([0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*)"),
     "bash": re.compile(r"GNU bash, version ([0-9][0-9A-Za-z.()+-]*) \([^)]+\)"),
 }
 SECRET_VARIABLE = re.compile(
@@ -51,6 +55,10 @@ SECRET_VARIABLE = re.compile(
 
 def _minimum_env() -> dict[str, str]:
     return {key: os.environ[key] for key in MINIMUM_HOST_ENV if key in os.environ}
+
+def discovered_environment_id(workspace_id, kind, executable):
+    return str(uuid5(NAMESPACE_URL,
+        f"flowmate:environment:{workspace_id}:{kind}:{os.path.normcase(str(executable))}"))
 
 
 def _file_evidence(path: Path) -> FileEvidence:
@@ -287,8 +295,123 @@ class EnvironmentService:
             rows = tx.execute("SELECT document FROM execution_environments ORDER BY id").fetchall()
         return [self._view(ExecutionEnvironment.model_validate_json(row["document"])) for row in rows]
 
-    async def discover(self):
-        """探测可信 Runtime；系统安装登记只产生待确认候选，不执行项目脚本。"""
+    def project_directory(self, workspace_id):
+        """只访问用户已关联的项目目录，并在发现环境前核对其真实身份。"""
+        from flowmate.contracts.execution import ScopeDependency
+        from flowmate.contracts.scopes import ScopeRef
+        from flowmate.policy.contracts import ResourceRecord
+        from flowmate.policy.service import _scope
+        from flowmate.runtime.transitions import check_scopes
+        from flowmate.tools.files import NativeTextFiles
+
+        with self.store.transaction(write=False) as tx:
+            _scope(tx, ScopeRef(kind="workspace", workspace_id=workspace_id))
+            row = tx.execute("SELECT directory_resource_id FROM workspaces WHERE id=?",
+                (workspace_id,)).fetchone()
+            if row[0] is None:
+                return None
+            resource = ResourceRecord.model_validate_json(tx.execute(
+                "SELECT document FROM resources WHERE id=?", (row[0],)).fetchone()[0])
+            check_scopes(tx, [ScopeDependency(scope_id=resource.id, epoch=resource.version)])
+        anchor = NativeTextFiles().capture(Path(resource.canonical_path))
+        if anchor.kind != "directory" or anchor.identity != resource.file_identity:
+            raise DomainError("file_identity_changed", "项目目录已改变，请重新选择项目目录")
+        return Path(resource.canonical_path)
+
+    async def discover(self, *, workspace_id=None, kinds=None):
+        """从明确项目和入口类型发现已有运行时；不加载脚本，不安装依赖。"""
+        if kinds is not None:
+            requested = list(dict.fromkeys(kinds))
+            if any(kind not in VERSION_ARGUMENTS for kind in requested):
+                raise DomainError("environment_kind_invalid", "不支持此解释器类型")
+            root = self.project_directory(workspace_id) if workspace_id is not None else None
+            paths = []
+            names = {
+                "python": ("python.exe",),
+                "node": ("node.exe",),
+                "powershell": ("pwsh.exe", "powershell.exe"),
+                "bash": ("bash.exe",),
+            }
+            for kind in requested:
+                if root is not None:
+                    relative_paths = {
+                        "python": (".venv/Scripts/python.exe", "venv/Scripts/python.exe",
+                            "env/Scripts/python.exe"),
+                        "node": (".node/node.exe", ".node/bin/node.exe",
+                            "node_modules/node/bin/node.exe"),
+                        "powershell": (),
+                        "bash": (),
+                    }[kind]
+                    paths.extend((kind, root / relative) for relative in relative_paths
+                        if (root / relative).is_file())
+                if kind == "bash":
+                    # Git for Windows 的原生 Bash 可直接使用本机路径；WSL 启动器不是本机解释器。
+                    for directory in os.get_exec_path():
+                        directory = Path(directory)
+                        if not directory.is_absolute():
+                            continue
+                        git = shutil.which(str(directory / "git.exe"))
+                        if git is not None:
+                            installed = Path(git).parent.parent / "usr/bin/bash.exe"
+                            if installed.is_file():
+                                paths.append((kind, installed))
+                                break
+                # 使用 PATH 中的绝对目录，避免 Windows 的隐式当前目录搜索。
+                for name in names[kind]:
+                    for directory in os.get_exec_path():
+                        directory = Path(directory)
+                        if not directory.is_absolute():
+                            continue
+                        candidate = shutil.which(str(directory / name))
+                        if candidate is not None:
+                            if kind == "bash" and "SYSTEMROOT" in os.environ and os.path.normcase(candidate) in {
+                                    os.path.normcase(str(Path(os.environ["SYSTEMROOT"])
+                                        / folder / "bash.exe")) for folder in ("System32", "Sysnative")}:
+                                continue
+                            paths.append((kind, Path(candidate)))
+                            break
+                if kind == "python":
+                    if not getattr(sys, "frozen", False):
+                        paths.append((kind, Path(sys.executable).absolute()))
+                    paths.extend((kind, Path(path)) for path in _system_python_paths())
+            discovered, seen = [], set()
+            for kind, executable in paths:
+                key = (kind, os.path.normcase(str(executable)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                id = discovered_environment_id(workspace_id, kind, executable)
+                with self.store.transaction(write=False) as tx:
+                    exists = tx.execute("SELECT 1 FROM execution_environments WHERE id=?",
+                        (id,)).fetchone()
+                if exists is None:
+                    manifests, env = [], {}
+                    if root is not None:
+                        manifest_names = {
+                            "python": ("pyproject.toml", "uv.lock", "requirements.txt"),
+                            "node": ("package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"),
+                            "powershell": (), "bash": (),
+                        }[kind]
+                        manifests = [str(root / name) for name in manifest_names
+                            if (root / name).is_file()]
+                        if kind == "node" and (root / "node_modules").is_dir():
+                            env["NODE_PATH"] = str(root / "node_modules")
+                    self.save(SaveExecutionEnvironment(id=id, kind=kind,
+                        executable_path=str(executable), env=env,
+                        dependency_manifest_paths=manifests), CommandMeta())
+                environment = self.get(id)
+                if environment.status == "unprobed":
+                    await self.probe(id)
+                elif environment.status == "probed":
+                    try:
+                        self.resolve(id, environment.revision)
+                    except DomainError as error:
+                        if error.code not in {"environment_identity_changed",
+                                "environment_dependency_changed", "environment_executable_missing"}:
+                            raise
+                discovered.append(self.get_view(id))
+            return discovered
+        # 全局设置发现仍只自动检测宿主，系统安装登记保留为用户可检测的候选。
         trusted = None if getattr(sys, "frozen", False) else str(Path(sys.executable).absolute())
         candidates = list(dict.fromkeys([*([trusted] if trusted else []), *_system_python_paths()]))
         for executable in candidates:
@@ -312,6 +435,26 @@ class EnvironmentService:
         # 已变更的环境必须由用户重新确认；发现不覆盖修订或清除变更状态。
         return self.list_views()
 
+    async def select(self, workspace_id, kind):
+        candidates = await self.discover(workspace_id=workspace_id, kinds=[kind])
+        root = self.project_directory(workspace_id)
+        project = [item for item in candidates
+            if root is not None and Path(item.executable_path).is_relative_to(root)]
+        preferred = project if project else candidates
+        ready = [item for item in preferred if item.status == "probed"]
+        if not ready:
+            changed = next((item for item in preferred
+                if item.status in {"identity_changed", "dependency_changed"}), None)
+            if changed is not None:
+                self.resolve(changed.id, changed.revision)
+            raise DomainError("environment_interpreter_missing",
+                f"此入口需要 {kind} 解释器；请重新检测或选择已安装环境")
+        if len(ready) > 1 and project:
+            raise DomainError("environment_selection_required",
+                f"项目有多个可用 {kind} 环境，请选择本次使用的环境",
+                related_ids=tuple(item.id for item in ready))
+        return self.resolve(ready[0].id, ready[0].revision)
+
     def resolve(self, id: str, revision: int) -> ExecutionEnvironment:
         """T11 派发前复核固定修订；不存在历史修订时阻塞，绝不切换环境。"""
         environment = self.get(id, revision)
@@ -326,7 +469,9 @@ class EnvironmentService:
                     "version": current.version if status == "missing_executable" else None,
                 }))
         if status is not None:
-            raise DomainError(f"environment_{diagnostic}", "运行环境已改变，请重新检测并确认")
+            message = ("解释器不存在，请重新检测或选择已安装环境"
+                if status == "missing_executable" else "运行环境已改变，请重新检测并确认")
+            raise DomainError(f"environment_{diagnostic}", message)
         if current.status != "probed":
             raise DomainError("environment_not_probed", "请先检测并确认此环境")
         return current.model_copy(update={"env": {**_minimum_env(), **current.env}})

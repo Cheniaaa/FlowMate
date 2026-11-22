@@ -27,6 +27,8 @@ class McpLimits(Contract):
     max_catalog_bytes: int = Field(gt=0)
     max_result_bytes: int = Field(gt=0)
     max_pages: int = Field(gt=0)
+    max_image_bytes: int = Field(default=4 * 1024 * 1024, gt=0)
+    max_image_pixels: int = Field(default=16_000_000, gt=0)
 
 
 class McpToolDefinition(Contract):
@@ -53,6 +55,7 @@ class McpCallResult(Contract):
     texts: tuple[str, ...]
     structured_content: JsonValue
     is_error: bool
+    content: tuple[dict, ...] = Field(default_factory=tuple, exclude=True)
 
 
 class McpCallFailure(DomainError):

@@ -24,7 +24,7 @@ it('管理真实Profile/目录工具，保留未装配允许名与Skill；脏表
   render(<AssistantsPage client={client} onClose={close} />);
   await screen.findByLabelText('显示名称');
   expect(screen.getByLabelText(/unmounted.old/)).toBeTruthy();
-  expect((screen.getByLabelText(/unmounted.old/) as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByRole('checkbox', { name: /unmounted.old/, checked: true })).toBeTruthy();
   await userEvent.click(screen.getByLabelText(/dynamic.real_tool/));
   await userEvent.click(screen.getByLabelText('允许作为委派成员'));
   await userEvent.selectOptions(screen.getByLabelText('默认模型'), model.id);

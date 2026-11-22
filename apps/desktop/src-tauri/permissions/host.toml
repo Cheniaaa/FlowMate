@@ -61,4 +61,4 @@ commands.allow = ["start_ball_drag"]
 [[permission]]
 identifier = "host-workspace-directory"
 description = "仅本地主窗口可原生选择目录创建项目、重试冻结命令或核对原命令；不开放任意路径或文件读取。"
-commands.allow = ["create_workspace_from_directory", "retry_workspace_from_directory", "check_workspace_directory_command"]
+commands.allow = ["select_workspace_directory", "discard_workspace_directory_selection", "create_workspace_from_directory", "retry_workspace_from_directory", "check_workspace_directory_command"]

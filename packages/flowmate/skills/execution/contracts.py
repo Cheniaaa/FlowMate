@@ -21,6 +21,15 @@ class RunSkillScript(Contract):
     input_refs: list[Id] = Field(default_factory=list, max_length=200)
 
 
+class SkillScriptRequest(Contract):
+    """模型只选择已发布入口；包版本和解释器由宿主绑定。"""
+
+    skill_id: Id
+    script_relative_path: str
+    arguments: list[str] = Field(default_factory=list, max_length=200)
+    input_refs: list[Id] = Field(default_factory=list, max_length=200)
+
+
 class SkillExecutionPermission(Contract):
     id: Id = Field(default_factory=identifier)
     skill_id: Id

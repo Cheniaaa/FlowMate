@@ -1,4 +1,4 @@
-import type { AgentProfile, ContextUsageSummary, DataUseGrant, FollowUpIntent, ModelConnection, ModelProfile, PendingUserCommand, PublicationView, ResourceRef, RunDetail, RunSnapshot, PublicEvent, SessionInboxEntry } from '../generated/contracts';
+import type { AgentProfile, ContextUsageSummary, DataUseGrant, FollowUpIntent, ModelConnection, ModelDiscoveryResult, ModelProfile, ModelResolution, PendingUserCommand, PublicationView, ResourceRef, RunDetail, RunSnapshot, PublicEvent, SessionInboxEntry } from '../generated/contracts';
 
 export const id = '00000000-0000-4000-8000-000000000001';
 export const secondId = '00000000-0000-4000-8000-000000000002';
@@ -10,30 +10,48 @@ export const connection: ModelConnection = {
 };
 export const model: ModelProfile = {
   id: secondId, version: 1, connection_id: connection.id, model_id: 'explicit-model', display_name: null, openai_max_tokens_field: null,
-  capabilities: { tools: true, thinking: false, structured_output: false }, context_window_tokens: 8192, max_output_tokens: 2048, request_timeout_seconds: 60,
+  capabilities: { tools: true, thinking: false, structured_output: false, vision: null }, context_window_tokens: 8192, max_output_tokens: 2048, request_timeout_seconds: 60,
   pricing: { provider_id: null, model_id: null, multiplier: null, input_per_million: '1.25', output_per_million: '2.5', cache_read_per_million: null, cache_write_per_million: null, currency: 'USD' },
+};
+export const modelDiscovery: ModelDiscoveryResult = {
+  connection_id: connection.id, connection_version: connection.version, status: 'unavailable',
+  items: [], cached: false, fetched_at: null, message: '此服务未提供型号列表，可手动填写 Model ID',
+};
+export const modelResolution: ModelResolution = {
+  ...model, connection_version: connection.version, protocol: connection.protocol, endpoint: connection.endpoint,
+  secret_ref: connection.secret_ref, provider_preset_id: connection.provider_preset_id,
+  context_window_tokens: null, max_input_tokens: null, max_supported_output_tokens: null, local_context_budget_tokens: 8192,
+  metadata_sources: {
+    context_window_tokens: { kind: 'unknown', source: null, version: null, verified_at: null, note: null },
+    max_input_tokens: { kind: 'unknown', source: null, version: null, verified_at: null, note: null },
+    max_supported_output_tokens: { kind: 'unknown', source: null, version: null, verified_at: null, note: null },
+    local_context_budget_tokens: { kind: 'user', source: 'saved_model', version: null, verified_at: null, note: null },
+  },
+  model_pricing: null, pricing_unknown_reason: 'price_unknown', blockers: [],
 };
 export const limits = { max_steps: 64, max_model_requests: 24, max_tasks: 64, deadline_seconds: 900, max_cost_units: null,
   max_total_tokens: null, max_delegation_depth: 4, max_parallel_agents: 3 };
 export const run: RunSnapshot = {
   allow_managed: false, allow_follow_up: false, yield_requested: false, follow_up_closed: false,
+  vision_source_run_id: null,
   admission_generations: { [id]: 1 },
   id, version: 1, workspace_id: id, interaction_session_id: id, execution_session_id: id,
   root_task_id: secondId, budget_id: secondId, budget_group_id: id, kind: 'user', state: 'running',
   config: { members: {}, agent_profile: agent, model_profile: { ...model, context_window_tokens: 8192,
+    canonical_model_id: null, max_input_tokens: null, max_supported_output_tokens: null,
     connection_version: connection.version, protocol: connection.protocol, endpoint: connection.endpoint,
     secret_ref: connection.secret_ref, provider_preset_id: connection.provider_preset_id, metadata_sources: {} },
     model_pricing: null, pricing_unknown_reason: '合成测试未解析价格',
     catalog: { tools: {}, plugins: {}, agent_executor_id: 'builtin.agent', mcp_tools: {} } },
   scope_dependencies: [], deadline_at: '2026-11-07T12:00:00Z', output: null, reason: null,
-  sources: { resource_ids: [], memory_scopes: [], skill_versions: {}, excluded_source_ids: [] },
+  sources: { resource_ids: [], memory_scopes: [], skill_versions: {}, excluded_source_ids: [] }, file_inputs: {},
 };
 export const event = {
   kind: 'run.started', event_id: '9007199254740993', seq: 1, event_version: 1, workspace_id: id, session_id: id,
   run_id: id, task_id: null, activity_id: null, causation_id: null, created_at: '2026-11-07T12:00:00Z',
   payload: { runs: [run], tasks: [], activities: [], budgets: [], messages: [], artifacts: [], questions: [], waits: [], consumptions: [], joins: [], pending_commands: [], follow_up_intents: [] },
 } satisfies PublicEvent;
-export const binding = { agent_work: null, input_artifacts: [], input_result: null, execution_session_id: run.execution_session_id,
+export const binding = { agent_work: null, input_artifacts: [], input_result: null, additional_result_inputs: [], file_inputs: {}, execution_session_id: run.execution_session_id,
   interaction_session_id: run.interaction_session_id, config: run.config, sources: run.sources, delegation_depth: 0 };
 export const page = <T,>(items: T[]) => ({ items, next_cursor: null, watermark: '9007199254740993' });
 export const resource: ResourceRef = { id: '00000000-0000-4000-8000-000000000010', version: 1,
@@ -60,7 +78,7 @@ export const pendingUserCommand: PendingUserCommand = {
   start: { session_id: id, agent_profile_id: id, model_profile_id: secondId, text: '新的用户目标', allow_managed: false,
     allow_follow_up: false, sources: run.sources, limits, source_result: null },
   config: run.config, scope_dependencies: [], admission_generations: run.admission_generations, deadline_at: run.deadline_at,
-  input_result: null, run_id: null, reason: null,
+  input_result: null, file_inputs: {}, run_id: null, reason: null,
 };
 export const followUpIntent: FollowUpIntent = { id: '00000000-0000-4000-8000-000000000032', source_result: resultEntry.id,
   target_session_id: id, budget_group_id: id, policy_version: 1, status: 'active', origin_run_id: secondId, run_id: id,

@@ -70,7 +70,7 @@ def read_excerpt(memory, tx, id, evidence_index, expected_revision, *, offset, r
         if not public:
             return MemoryEvidenceExcerpt(record_id=record.id, record_revision=record.revision,
                 evidence=evidence, source_label=label, excerpt=None, reason="source_not_public")
-        _, quote = memory._evidence(tx, evidence, include_quote=True)
+        _, quote = memory._evidence(tx, evidence, include_quote=True, record_id=record.id)
     except DomainError as error:
         if error.code not in {"invalid_evidence", "scope_revoked", "scope_mismatch", "not_found",
                 "source_version_conflict", "grant_required", "artifact_missing", "artifact_corrupt",

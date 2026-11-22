@@ -10,11 +10,13 @@ from flowmate.contracts.execution import (
     ActivitySnapshot,
     Checkpoint,
     DispatchRequest,
+    McpResultSource,
     ModelMessage,
     ReceiptCommit,
     ReservationEstimate,
     RunOutput,
     RunSnapshot,
+    ScopeDependency,
     StepDecision,
     TaskSnapshot,
     ToolResultPart,
@@ -79,15 +81,33 @@ class ToolGateway:
             activity.intent.dependencies)]
         remote = tool.spec.mcp
         destination = remote.destination if remote is not None else None
+        permitted = False
+        if tool.call_permission is not None:
+            permission = tool.call_permission(tx, ctx, args)
+            permitted = permission.allowed
+            dependencies.extend(permission.dependencies)
         if remote is not None:
+            from flowmate.runtime.recovery import (
+                check_requery_grant,
+                mcp_query_degraded,
+                requery_authorization,
+            )
+
+            requery = requery_authorization(tx, ctx.run_id, activity.id) if activity.intent.origin == "user" else None
+            if requery is None and mcp_query_degraded(tx, run_id=ctx.run_id):
+                raise DomainError("mcp_query_skipped", "已选择按已有材料继续，本次运行不再调用 MCP")
             if task.binding.config.catalog.mcp_tools.get(call.name) != remote:
                 raise DomainError("blocked_incompatible", "MCP 原名或目录身份不属于任务快照")
+            permission = self.policy.mcp_call_permission(tx, ctx, remote)
+            permitted = permission.allowed
+            if requery is not None:
+                granted = check_requery_grant(tx, ctx, remote, task.binding.config.model_profile.endpoint)
+                if granted != ScopeDependency.model_validate(requery["grant"]):
+                    raise DomainError("grant_required", "原查询的派发授权已失效")
+                dependencies.append(granted)
+                permitted = True
+            dependencies.extend(permission.dependencies)
             uses["tool_send"] = [*dependencies, *uses["tool_send"]]
-            from flowmate.integrations.permissions import query_grant
-            permission = query_grant(tx, ctx, remote, task.binding.config.model_profile.endpoint)
-            if permission is not None:
-                from flowmate.contracts.execution import ScopeDependency
-                dependencies.append(ScopeDependency(scope_id=permission.id, epoch=permission.epoch))
         if call.name == "skills.run_script":
             from flowmate.skills.execution.contracts import process_destination
             destination = process_destination(args["skill_id"], args["content_hash"],
@@ -113,11 +133,11 @@ class ToolGateway:
         normalized = call.model_copy(update={"arguments": args,
             "dependencies": dependencies,
             "target": destination if destination is not None else args.get("target_ref")})
-        return tool, args, normalized, provenance
+        return tool, args, normalized, provenance, permitted
 
     def prepare(self, ctx, call):
         with self.scheduler.store.transaction(write=False) as tx:
-            tool, args, normalized, provenance = self._bound(tx, ctx, call)
+            tool, args, normalized, provenance, permitted = self._bound(tx, ctx, call)
             preview = None
             if normalized.name == "artifacts.export":
                 from flowmate.contracts.execution import ArtifactRef
@@ -129,7 +149,7 @@ class ToolGateway:
                     target_exists=resource.export_target.target_identity is not None,
                     artifact_id=artifact.id, artifact_version=artifact.version)
         approval_id = None
-        if tool.spec.requires_approval and not self._query_permitted(ctx, tool):
+        if tool.spec.requires_approval and not permitted:
             approval = self.approvals.propose(normalized, ctx, export_preview=preview, mcp=tool.spec.mcp)
             if approval.status == "pending":
                 return ApprovalNeeded(approval=approval)
@@ -139,44 +159,38 @@ class ToolGateway:
         return PreparedCall(invocation=normalized, source_dependencies=provenance, approval_id=approval_id,
                               grant_epochs=normalized.dependencies)
 
-    def _query_permitted(self, ctx, tool):
-        if tool.spec.mcp is None:
-            return False
-        from flowmate.integrations.permissions import query_grant
-        with self.scheduler.store.transaction(write=False) as tx:
-            task = load(tx, TaskSnapshot, ctx.task_id)
-            return query_grant(tx, ctx, tool.spec.mcp, task.binding.config.model_profile.endpoint) is not None
-
     async def execute(self, ctx, prepared, cancel, *, before_send=None):
         task_kind = self.scheduler.task(ctx.task_id).kind
         with self.scheduler.store.transaction(write=False) as tx:
-            tool, args, normalized, provenance = self._bound(tx, ctx, prepared.invocation)
+            tool, args, normalized, provenance, permitted = self._bound(tx, ctx, prepared.invocation)
         if (normalized != prepared.invocation or normalized.dependencies != prepared.grant_epochs
                 or provenance != prepared.source_dependencies):
             raise DomainError("tool_binding", "准备后的参数或授权已改变")
+        if tool.spec.requires_approval and prepared.approval_id is None and not permitted:
+            raise DomainError("approval_required", "工具连接或调用许可已失效，需要明确工具审批")
 
         def authorize(tx):
             if cancel.is_set():
                 raise DomainError("tool_cancelled", "工具调用已取消")
-            _, _, latest, _ = self._bound(tx, ctx, prepared.invocation)
+            _, _, latest, _, permitted = self._bound(tx, ctx, prepared.invocation)
             if latest != normalized:
                 raise DomainError("tool_binding", "派发前工具依赖已改变")
             if tool.spec.requires_approval and prepared.approval_id is not None:
                 self.approvals.validate(tx, ctx, normalized, prepared.approval_id)
-            elif tool.spec.requires_approval:
-                from flowmate.integrations.permissions import query_grant
-                task = load(tx, TaskSnapshot, ctx.task_id)
-                if tool.spec.mcp is None or query_grant(tx, ctx, tool.spec.mcp,
-                        task.binding.config.model_profile.endpoint) is None:
-                    raise DomainError("approval_required", "公共查询许可已撤销，需要明确工具审批")
+            elif tool.spec.requires_approval and not permitted:
+                raise DomainError("approval_required", "工具连接或调用许可已失效，需要明确工具审批")
 
         dispatch = before_send or self.scheduler.dispatch
 
         def send():
+            remote = tool.spec.mcp
+            source = (McpResultSource(binding=remote,
+                model_destination=self.scheduler.task(ctx.task_id).binding.config.model_profile.endpoint)
+                if remote is not None else None)
             dispatch(DispatchRequest(activity_id=ctx.activity_id,
                 attempt_id=self.scheduler.activity(ctx.activity_id).attempt_id,
                 request_digest=invocation_hash(normalized), estimate=ReservationEstimate(estimated_units=0),
-                source_dependencies=prepared.source_dependencies), authorize=authorize)
+                source_dependencies=prepared.source_dependencies, mcp_source=source), authorize=authorize)
 
         if not tool.deferred_dispatch:
             send()
@@ -195,11 +209,10 @@ class ToolGateway:
                 confirmed=getattr(error, "confirmed", not getattr(error, "uncertain", False)))
         observed = {observation.resource_id for observation in outcome.source_observations}
         outcome_dependencies = outcome.dependencies
-        if tool.spec.mcp is not None and prepared.approval_id is None:
-            # 公共查询结果以本次具体许可为来源。普通 MCP 回执保留 server 来源，
-            # 避免同一服务器的私有/写入工具借另一个查询许可回到模型。
-            outcome_dependencies = [item for item in outcome_dependencies
-                if item.scope_id != tool.spec.mcp.server_id]
+        if tool.spec.mcp is not None and self.scheduler.activity(ctx.activity_id).mcp_source is not None:
+            # 来源在真正派发时绑定；文本、产物、摘要及后继工具沿同一具体来源传播。
+            outcome_dependencies = [item for item in outcome_dependencies if item.scope_id != tool.spec.mcp.server_id]
+            outcome_dependencies.append(ScopeDependency(scope_id=ctx.activity_id, epoch=1))
         dependencies = _merge_dependencies(
             [item for item in prepared.source_dependencies if item.scope_id not in observed], outcome_dependencies)
         return outcome.model_copy(update={"dependencies": dependencies, "call_id": normalized.call_id,
@@ -253,6 +266,11 @@ class ToolExecutor:
             observed = {item.resource_id for item in outcome.source_observations}
             dependencies = _merge_dependencies(dependencies,
                 [item for item in outcome.dependencies if item.scope_id not in observed])
+            if (call.name in {"files.read_text", "files.inspect_batch"}
+                    and outcome.error in {"file_source_changed", "file_identity_changed"}
+                    and execution_result is not None):
+                # 失败事实留给持久回执；模型只接收不含文件正文的错误码。
+                outcome = outcome.model_copy(update={"result": None, "dependencies": ctx.scope_dependencies})
         except DomainError as error:
             if self.gateway.scheduler.is_deleted(ctx.run_id):
                 raise

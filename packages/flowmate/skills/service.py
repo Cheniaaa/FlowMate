@@ -474,7 +474,7 @@ class SkillService:
             raise DomainError("owner_inactive", "任务已结束")
         version = self._version(tx, skill_id, content_hash,
             ScopeRef(kind="workspace", workspace_id=ctx.workspace_id))[1]
-        PolicyService.check_run_sources(tx, ctx, [*version.dependencies, ScopeDependency(
+        PolicyService._check_run_sources(tx, ctx, [*version.dependencies, ScopeDependency(
             scope_id=skill_id, epoch=tx.execute("SELECT epoch FROM scopes WHERE id=?", (skill_id,)).fetchone()[0])])
         return version
 

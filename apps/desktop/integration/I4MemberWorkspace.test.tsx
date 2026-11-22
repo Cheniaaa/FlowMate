@@ -39,7 +39,7 @@ it('普通页面真实保存项目成员、跨项目保留ID，Run和委派固�
   const client = new RuntimeClient(fixture.connection), user = userEvent.setup();
   render(<AssistantsPage client={client} onClose={() => {}} />);
   const { a, b, personal, overridden, unselected } = fixture.versions;
-  const label = (value: SkillVersion) => `${value.name} · ${value.content_hash.slice(0, 12)}`;
+  const label = (value: SkillVersion) => `${value.name} · ${value.scope.kind === 'workspace' ? '项目' : '个人'}`;
   await screen.findByRole('option', { name: fixture.workspace_b.name });
   await user.selectOptions(await screen.findByLabelText('能力所属项目'), fixture.workspace_b.id);
   await screen.findByLabelText(label(b));

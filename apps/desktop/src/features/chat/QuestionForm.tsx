@@ -1,5 +1,12 @@
 import { useId, useState, type FormEvent } from 'react';
 import type { AnswerCommand, Question } from '../../generated/contracts';
+import { Button } from '../../components/ui/button';
+import { Checkbox } from '../../components/ui/checkbox';
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from '../../components/ui/field';
+import { Input } from '../../components/ui/input';
+import { NativeSelect } from '../../components/ui/native-select';
+import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group';
+import { Textarea } from '../../components/ui/textarea';
 
 type Answer = AnswerCommand['data']['answer'];
 interface FieldSchema {
@@ -59,21 +66,57 @@ function supported(schema: FieldSchema, depth = 0): boolean {
   else if (type[0] !== 'boolean') return false;
   return Object.keys(schema).every(key => keywords.includes(key));
 }
-function Field({ schema, value, onChange, label }: { schema: FieldSchema; value: Answer | undefined; onChange: (value: Answer | undefined) => void; label: string }) {
-  const name = useId();
+function AnswerField({ schema, value, onChange, label, invalid, errorId }: {
+  schema: FieldSchema; value: Answer | undefined; onChange: (value: Answer | undefined) => void;
+  label: string; invalid?: boolean; errorId: string;
+}) {
+  const id = useId();
   const types = fieldTypes(schema);
   const type = types.find(type => type !== 'null');
   const choices = schema.enum && schema.enum.length <= 4 ? schema.enum : !schema.enum && type === 'boolean' ? [true, false] : undefined;
-  return <div className="question-field">
-    {types.includes('null') && <label className="inline-choice"><input type="checkbox" aria-label={`${label}：设为 null`} checked={value === null} onChange={event => onChange(event.target.checked ? null : undefined)} />设为 null</label>}
-    {value !== null && (choices ? <fieldset className="question-choices"><legend>{label}</legend>{choices.map((item, index) => <label className="inline-choice" key={index}><input type="radio" name={name} checked={value === item} onChange={() => onChange(item)} />{typeof item === 'boolean' ? item ? '是' : '否' : String(item)}</label>)}</fieldset>
-      : schema.enum ? <label>{label}<select value={value === undefined ? '' : String(schema.enum.indexOf(value as string))} onChange={event => onChange(event.target.value === '' ? undefined : schema.enum![Number(event.target.value)])}>
-      <option value="">请选择</option>{schema.enum.map((item, index) => <option key={index} value={index}>{String(item)}</option>)}</select></label>
-        : type === 'array' ? <fieldset className="question-choices"><legend>{label}</legend>{schema.items!.enum!.map((item, index) => <label className="inline-choice" key={index}><input type="checkbox" checked={Array.isArray(value) && value.includes(item)} onChange={event => onChange(event.target.checked ? [...(Array.isArray(value) ? value : []), item] : (value as Answer[]).filter(value => value !== item))} />{String(item)}</label>)}</fieldset>
-          : type === 'string' ? <label>{label}<textarea rows={2} value={typeof value === 'string' ? value : ''} onChange={event => onChange(event.target.value)} /></label>
-            : <label>{label}<input type="number" step={type === 'integer' ? '1' : 'any'} value={typeof value === 'number' ? value : ''} onChange={event => onChange(event.target.value === '' ? undefined : Number(event.target.value))} /></label>)}
-    {schema.description && <p className="muted">{schema.description}</p>}
-  </div>;
+  const helpId = schema.description ? `${id}-help` : undefined;
+  const control = {
+    'aria-invalid': invalid || undefined,
+    'aria-describedby': [helpId, invalid ? errorId : undefined].filter(Boolean).join(' ') || undefined,
+  };
+  return <Field data-invalid={invalid || undefined}>
+    {types.includes('null') && <Field orientation="horizontal">
+      <Checkbox id={`${id}-null`} aria-label={`${label}：设为 null`} checked={value === null}
+        onCheckedChange={checked => onChange(checked === true ? null : undefined)} {...(value === null ? control : {})} />
+      <FieldLabel htmlFor={`${id}-null`}>设为 null</FieldLabel>
+    </Field>}
+    {value !== null && (choices ? <FieldSet>
+      <FieldLegend id={`${id}-label`}>{label}</FieldLegend>
+      <RadioGroup name={id} aria-labelledby={`${id}-label`} value={String(choices.findIndex(item => value === item))}
+        onValueChange={next => onChange(choices[Number(next)])} className="flex flex-wrap gap-x-4 gap-y-1">
+        {choices.map((item, index) => <Field orientation="horizontal" key={index}>
+          <RadioGroupItem id={`${id}-${index}`} value={String(index)} {...control} />
+          <FieldLabel htmlFor={`${id}-${index}`}>{typeof item === 'boolean' ? item ? '是' : '否' : String(item)}</FieldLabel>
+        </Field>)}
+      </RadioGroup>
+    </FieldSet> : type === 'array' ? <FieldSet>
+      <FieldLegend>{label}</FieldLegend>
+      <FieldGroup className="flex-row flex-wrap gap-x-4 gap-y-1">
+        {schema.items!.enum!.map((item, index) => <Field orientation="horizontal" key={index}>
+          <Checkbox id={`${id}-${index}`} checked={Array.isArray(value) && value.includes(item)} {...control}
+            onCheckedChange={checked => onChange(checked === true ? [...(Array.isArray(value) ? value : []), item] : (value as Answer[]).filter(value => value !== item))} />
+          <FieldLabel htmlFor={`${id}-${index}`}>{String(item)}</FieldLabel>
+        </Field>)}
+      </FieldGroup>
+    </FieldSet> : <>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      {schema.enum ? <NativeSelect id={id} {...control}
+        value={value === undefined ? '' : String(schema.enum.indexOf(value as string))}
+        onChange={event => onChange(event.target.value === '' ? undefined : schema.enum![Number(event.target.value)])}>
+        <option value="">请选择</option>
+        {schema.enum.map((item, index) => <option key={index} value={index}>{String(item)}</option>)}
+      </NativeSelect> : type === 'string' ? <Textarea id={id} rows={2} {...control}
+        value={typeof value === 'string' ? value : ''} onChange={event => onChange(event.target.value)} />
+        : <Input id={id} type="number" step={type === 'integer' ? '1' : 'any'} {...control}
+          value={typeof value === 'number' ? value : ''} onChange={event => onChange(event.target.value === '' ? undefined : Number(event.target.value))} />}
+    </>)}
+    {schema.description && <FieldDescription id={helpId}>{schema.description}</FieldDescription>}
+  </Field>;
 }
 export default function QuestionForm({ question, value, onChange, onSubmit, busy, onCancel }: {
   question: Question; value: Answer | undefined; onChange: (value: Answer | undefined) => void; onSubmit: (value: Answer) => void; busy: boolean;
@@ -81,7 +124,9 @@ export default function QuestionForm({ question, value, onChange, onSubmit, busy
 }) {
   const schema = question.answer_schema as unknown as FieldSchema;
   const [error, setError] = useState('');
-  if (!supported(schema)) return <div className="interaction-body"><p role="alert">此问题的表单结构不受支持，无法处理。可取消当前运行，再在新会话重新提出有效问题。</p>{onCancel && <button disabled={busy} onClick={onCancel}>取消当前运行</button>}</div>;
+  const errorId = useId();
+  const nullId = useId();
+  if (!supported(schema)) return <div className="interaction-body"><p role="alert">此问题的表单结构不受支持，无法处理。可取消当前运行，再在新会话重新提出有效问题。</p>{onCancel && <Button type="button" variant="destructive" disabled={busy} onClick={onCancel}>取消当前运行</Button>}</div>;
   function submit(event: FormEvent) {
     event.preventDefault();
     const type = fieldTypes(schema).find(type => type !== 'null');
@@ -90,11 +135,22 @@ export default function QuestionForm({ question, value, onChange, onSubmit, busy
     const error = bytes(answer) > 8192 ? '回答文本总量不能超过 8KiB' : problem(schema, answer);
     setError(error ?? ''); if (!error && !busy) onSubmit(answer!);
   }
-  const fields = Object.entries(schema.properties ?? {}).map(([key, field]) => ({ required: !!schema.required?.includes(key), label: field.title ?? key,
-    element: <div className="question-property" key={key}><Field schema={field} label={field.title ?? key} value={value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, Answer>)[key] : undefined} onChange={next => {
-      const fields: Record<string, Answer> = { ...(value && typeof value === 'object' && !Array.isArray(value) ? value : {}) }; if (next === undefined) delete fields[key]; else fields[key] = next; onChange(fields);
-    }} />{!schema.required?.includes(key) && <button className="question-clear" type="button" onClick={() => { const fields = { ...(value as Record<string, Answer>) }; delete fields[key]; onChange(fields); }}>不填写{field.title ?? key}</button>}</div>,
-  }));
+  const objectValue = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, Answer> : {};
+  const fields = Object.entries(schema.properties ?? {}).map(([key, field]) => {
+    const required = !!schema.required?.includes(key);
+    const label = field.title ?? key;
+    const fieldValue = objectValue[key];
+    function update(next: Answer | undefined) {
+      const fields = { ...objectValue };
+      if (next === undefined) delete fields[key]; else fields[key] = next;
+      onChange(fields);
+    }
+    return { required, label, element: <div className="grid min-w-0 gap-1" key={key}>
+      <AnswerField schema={field} label={label} value={fieldValue} onChange={update} errorId={errorId}
+        invalid={!!error && (fieldValue === undefined ? required : !!problem(field, fieldValue))} />
+      {!required && <Button size="xs" variant="link" className="justify-self-start" type="button" onClick={() => update(undefined)}>不填写{label}</Button>}
+    </div> };
+  });
   const optional = fields.filter(field => !field.required);
   return <form className="question-form" onSubmit={submit} noValidate onKeyDown={event => {
     if (event.key === 'Enter' && event.target instanceof HTMLInputElement && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) event.preventDefault();
@@ -102,11 +158,17 @@ export default function QuestionForm({ question, value, onChange, onSubmit, busy
     <div className="interaction-body"><h3>{question.question}</h3>
       {fieldTypes(schema).includes('object') && schema.description && <p>{schema.description}</p>}
       {fieldTypes(schema).includes('object') && schema.title && <h4>{schema.title}</h4>}
-      {fieldTypes(schema).includes('object') && fieldTypes(schema).includes('null') && <label className="inline-choice"><input type="checkbox" checked={value === null} onChange={event => onChange(event.target.checked ? null : undefined)} />整个回答设为 null</label>}
-      {fieldTypes(schema).includes('object') ? value !== null && <>{fields.filter(field => field.required).map(field => field.element)}
-        {optional.length > 0 && <details className="question-optional"><summary>{optional.length === 1 ? `${optional[0].label}（可选）` : `补充信息（可选，${optional.length}项）`}</summary>{optional.map(field => field.element)}</details>}
-      </> : <Field schema={schema} label={schema.title ?? '回答'} value={value} onChange={onChange} />}
-      {error && <p role="alert">{error}</p>}
-    </div><footer className="interaction-footer"><button disabled={busy} className="button--primary">提交回答</button></footer>
+      <FieldGroup>
+        {fieldTypes(schema).includes('object') && fieldTypes(schema).includes('null') && <Field orientation="horizontal">
+          <Checkbox id={nullId} checked={value === null} onCheckedChange={checked => onChange(checked === true ? null : undefined)} />
+          <FieldLabel htmlFor={nullId}>整个回答设为 null</FieldLabel>
+        </Field>}
+        {fieldTypes(schema).includes('object') ? value !== null && <>{fields.filter(field => field.required).map(field => field.element)}
+          {optional.length > 0 && <details className="text-sm"><summary className="ui-control-focus cursor-pointer text-muted-foreground">{optional.length === 1 ? `${optional[0].label}（可选）` : `补充信息（可选，${optional.length}项）`}</summary>
+            <FieldGroup className="mt-2">{optional.map(field => field.element)}</FieldGroup></details>}
+        </> : <AnswerField schema={schema} label={schema.title ?? '回答'} value={value} onChange={onChange} errorId={errorId} invalid={!!error} />}
+        {error && <FieldError id={errorId}>{error}</FieldError>}
+      </FieldGroup>
+    </div><footer className="interaction-footer"><Button type="submit" variant="default" disabled={busy}>提交回答</Button></footer>
   </form>;
 }

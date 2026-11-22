@@ -13,7 +13,7 @@ use windows_sys::Win32::{
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum ModelProtocol { OpenaiCompatible, Anthropic }
+pub enum ModelProtocol { OpenaiCompatible, OpenaiResponses, Anthropic }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

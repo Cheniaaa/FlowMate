@@ -4,8 +4,21 @@ from collections import defaultdict, deque
 
 from flowmate.contracts.base import DomainError
 from flowmate.contracts.events import NewEvent
+from flowmate.contracts.scopes import ScopeRef
 from flowmate.memory.contracts import MemoryChange, MemoryNotice, MemoryRecord
 from flowmate.runtime.transitions import check_scopes
+
+
+def notify_personal_source_revocation(tx, provider, grant):
+    if grant.scope.workspace_id is None:
+        return
+    records = provider.list_records(ScopeRef(kind="user_global"))
+    if any(record.status in {"candidate", "confirmed"}
+           and any(dependency.scope_id == grant.id and dependency.epoch < grant.epoch
+                   for dependency in record.dependencies)
+           for record in records):
+        # 各工作区只重读已获准的个人记忆，不广播项目来源或其授权。
+        tx.append_event(NewEvent(kind="memory.changed", payload=MemoryChange()))
 
 
 def invalidate_sources(tx, provider):

@@ -1,37 +1,41 @@
 import { useEffect, useLayoutEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ApiError, commandMeta, RuntimeClient } from '../../api/client';
-import { mergeApprovals, mergeGrants, mergeMessages, mergePublications, mergeQuestions, mergeResources, mergeRunDetail, mergeRunFeedback, mergeRunPage, mergeRunSnapshot, mergeSessions, mergeVersioned, mergeWorkspaces, orderedMessageIds, scopeDeleted, terminal, type RunPageInput } from '../../api/events';
+import { mergeApprovals, mergeGrants, mergeMessages, mergePublications, mergeQuestions, mergeResources, mergeRunDetail, mergeRunFeedback, mergeRunPage, mergeRunSnapshot, mergeSessions, mergeVersioned, mergeWorkspaces, messageSourceInvalid, orderedMessageIds, scopeDeleted, terminal, type RunPageInput } from '../../api/events';
 import { validate } from '../../api/validation';
 import { openSettings, showWorkbench, type WorkbenchTarget } from '../../api/windows';
-import type { AgentProfilePage, AnswerCommand, ArtifactRef, InboxPage, ModelConnectionPage, ModelProfilePage, PendingAction, ResourceCoverage, ResourceRef, RunSnapshot, ScopeRef, Session, WorkspaceSnapshot } from '../../generated/contracts';
+import type { AgentProfile, AgentProfilePage, AnswerCommand, ArtifactRef, InboxPage, ModelResolution, PendingAction, ProviderPresetList, ResourceCoverage, ResourceRef, RunDetail, RunSnapshot, ScopeRef, Session, Workspace, WorkspaceSnapshot } from '../../generated/contracts';
 import { createRuntimeStore, uiCommandId, type CommandOutcome, type UiCommand, type RuntimeStore } from '../../state/runtime-store';
 import { createDraftStore, type Draft, type DraftKey } from '../../state/draft-store';
-import Button from '../../components/Button';
+import { Button } from '../../components/ui/button';
 import Dialog from '../../components/Dialog';
 import Status from '../../components/Status';
 import { assistantIcons } from '../../components/assistant-icons';
-import Markdown from '../../components/Markdown';
 import ArtifactPanel from '../artifacts/ArtifactPanel';
+import { describeArtifacts } from '../artifacts/artifact-presentation';
 import { TaskGraph } from '../tasks/TaskGraph';
 import { TaskList } from '../tasks/TaskList';
 import { TracePanel } from '../trace/TracePanel';
 import Composer from './Composer';
+import ComposerModelPicker from './ComposerModelPicker';
 import ApprovalCard from './ApprovalCard';
 import QuestionForm from './QuestionForm';
 import InteractionPanel from './InteractionPanel';
 import ResourcePanel from './ResourcePanel';
-import MessageList, { modelFailures } from './MessageList';
+import MessageList from './MessageList';
+import McpQueryRecovery, { queryUncertain } from './McpQueryRecovery';
 import RecoveryPanel from './RecoveryPanel';
-import RunCostSummary from './RunCostSummary';
-import ContextNotice from './ContextNotice';
+import ContextPanel from './ContextPanel';
 import ProjectSidebar, { type ProjectNavigation } from '../navigation/ProjectSidebar';
 import ProjectDirectory from '../navigation/ProjectDirectory';
-import TaskCenter from '../tasks/TaskCenter';
+import ScopeNameDialog from '../navigation/ScopeNameDialog';
+import TaskCenter, { runKinds } from '../tasks/TaskCenter';
 import TaskDetail from '../tasks/TaskDetail';
+import SelectedStep from '../tasks/SelectedStep';
 import ManagedTaskStrip from './ManagedTaskStrip';
 import ResultInbox from '../notifications/ResultInbox';
-import SessionActions from './SessionActions';
+import ScopeActions from './SessionActions';
+import IconButton, { UiIcon } from '../../components/IconButton';
 import CommandStatus from '../notifications/CommandStatus';
 import PendingUserCommands from './PendingUserCommands';
 import { useMemorySources } from './useMemorySources';
@@ -39,28 +43,59 @@ import CapabilityLibrary from '../capabilities/CapabilityLibrary';
 import { personalScope } from '../../api/memory';
 import { Sheet, SheetContent, SheetTitle } from '../../components/ui/sheet';
 import { toast } from 'sonner';
+import AssistantsPage from '../assistants/AssistantsPage';
+import MemoryPage from '../memory/MemoryPage';
+import type { MemoryScope } from '../../api/memory';
+import { Checkbox } from '../../components/ui/checkbox';
+import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet } from '../../components/ui/field';
+import { Input } from '../../components/ui/input';
+import { NativeSelect, NativeSelectOption } from '../../components/ui/native-select';
+import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group';
+import RunFeedbackNotice, { modelFailures } from '../tasks/RunFeedbackNotice';
+import { useMcpAdmission } from './useMcpAdmission';
+import McpAdmission from './McpAdmission';
+import './conversation-details.css';
 
-type Confirmation = { kind: 'session' | 'workspace'; id: string; version: number; name: string };
+type Confirmation = { kind: 'session' | 'workspace'; id: string; workspaceId: string; version: number; name: string };
+const detailSections = { results: '结果', tasks: '任务', artifacts: '产物', context: '上下文' } as const;
+type DetailSection = keyof typeof detailSections;
+type DetailPanel = DetailSection | 'trace' | 'resources';
+const detailTitles = { results: '后台交付结果', tasks: '任务详情', artifacts: '产物', context: '上下文', trace: 'Trace', resources: '管理授权' };
+const wideConversation = '(min-width: 1200px)';
+const wideContext = '(min-width: 1000px)';
+type ModelUse = NonNullable<WorkspaceSnapshot['recent_model_uses']>[number];
+type ProjectModelUse = {
+  workspaceId: string;
+  sessions: Record<string, ModelUse>;
+  recent: ModelUse[];
+};
+type FileIssue = { kind: 'recipient' | 'version'; resourceIds: readonly string[]; observedRunId?: string };
+function classifyFileIssue(error: unknown): FileIssue | undefined {
+  if (!(error instanceof ApiError)) return;
+  if (error.code === 'session_file_recipient_changed') return { kind: 'recipient', resourceIds: error.relatedIds };
+  if (error.code === 'file_source_changed' || error.code === 'file_identity_changed') return { kind: 'version', resourceIds: error.relatedIds };
+}
+function newerModelUse(use: ModelUse, previous: ModelUse | undefined) {
+  return BigInt(use.event_id) > BigInt(previous?.event_id ?? '0');
+}
 
-export interface WorkbenchNavigation { target: Exclude<WorkbenchTarget, { kind: 'memory' | 'connection' }>; sequence: number }
+export interface WorkbenchNavigation { target: Exclude<WorkbenchTarget, { kind: 'connection' }>; sequence: number }
 interface ConversationProps {
   client: RuntimeClient;
   compact?: boolean;
   navigation?: WorkbenchNavigation;
   onSelectedRunChange?: (id: string | null) => void;
   onFormActiveChange?: (active: boolean) => Promise<void>;
-  onSettings?: (section: 'models' | 'resources' | 'memory') => void;
+  onSettings?: (section: 'models' | 'resources' | 'memory', connectionId?: string, memoryScope?: MemoryScope) => void;
   headerActions?: ReactNode;
   onReturnToQuick?: () => Promise<void>;
-  onAssistants?: () => void;
   onProfilesChange?: (revision: string) => void;
   runtimeStore?: RuntimeStore;
   draftStore?: ReturnType<typeof createDraftStore>;
-  onMemory?: (source?: RunSnapshot) => void;
   obscured?: boolean;
 }
 
-export function Conversation({ client, compact = false, navigation, onSelectedRunChange, onFormActiveChange, onSettings, headerActions, onReturnToQuick, onAssistants, onProfilesChange, runtimeStore, draftStore, onMemory, obscured = false }: ConversationProps) {
+export function Conversation({ client, compact = false, navigation, onSelectedRunChange, onFormActiveChange, onSettings, headerActions, onReturnToQuick, onProfilesChange, runtimeStore, draftStore, obscured = false }: ConversationProps) {
   const summaryDisclosureName = useId();
   const store = useMemo(() => runtimeStore ?? createRuntimeStore(client), [client, runtimeStore]);
   const drafts = useMemo(() => draftStore ?? createDraftStore(), [client, draftStore]);
@@ -76,21 +111,36 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   const projectNavigationSequence = useRef(0);
   const [initialized, setInitialized] = useState(false);
   const [workspaceGeneration, setWorkspaceGeneration] = useState(0);
+  const [readyWorkspace, setReadyWorkspace] = useState('');
   const [nativeSelecting, setNativeSelecting] = useState(false);
   const [profilePage, setProfilePage] = useState<AgentProfilePage>();
-  const [modelPage, setModelPage] = useState<ModelProfilePage>();
-  const [modelLookup, setModelLookup] = useState<{ id: string; state: 'loading' | 'failed'; message?: string }>();
+  const [providerPresets, setProviderPresets] = useState<ProviderPresetList>([]);
+  const [catalog, setCatalog] = useState<{ models: string | null; connections: string | null }>();
+  const loadingCatalog = useRef<{ revision: number; promise: Promise<void> }>(undefined);
+  const [modelLookup, setModelLookup] = useState<{ id: string; message: string }>();
   const [modelLookupRevision, retryModelLookup] = useState(0);
-  const [connectionPage, setConnectionPage] = useState<ModelConnectionPage>();
   const [todoCursors, setTodoCursors] = useState<Record<'active_runs' | 'pending_approvals' | 'pending_questions', string | null>>();
   const [resourceCursors, setResourceCursors] = useState<Record<'resources' | 'grants', string | null>>();
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState('');
+  const [runConfigurationOpen, setRunConfigurationOpen] = useState(false);
+  const runConfigurationTrigger = useRef<HTMLButtonElement>(null);
+  const [assistantsOpen, setAssistantsOpen] = useState(false);
+  const [memoryPage, setMemoryPage] = useState<{ source?: RunSnapshot }>();
+  const pageGuard = useRef<((action: () => void) => void) | null>(null);
+  const navTrigger = useRef<HTMLButtonElement>(null);
+  const pageOrigin = useRef<HTMLElement | null>(null);
+  const returnPageFocus = useRef(false);
+  const [directoryTarget, setDirectoryTarget] = useState<{ workspace: Workspace; origin: HTMLElement }>();
+  const [renameTarget, setRenameTarget] = useState<{ target: Session | Workspace; origin: HTMLElement; suggest?: boolean }>();
   const [sessionId, setSessionId] = useState('');
+  const mcpAdmission = useMcpAdmission(client, workspaceId, sessionId, projection.mcpRevision);
   const [agentId, setAgentId] = useState('');
-  const defaultModelId = useRef('');
+  const [firstAgent, setFirstAgent] = useState<AgentProfile>();
   const [snapshotGeneration, setSnapshotGeneration] = useState(0);
   const [workReadySession, setWorkReadySession] = useState('');
+  const [modelHistoryReadySession, setModelHistoryReadySession] = useState('');
+  const [projectModelUse, setProjectModelUse] = useState<ProjectModelUse>();
   const [sidebarFormActive, setSidebarFormActive] = useState(false);
   const [sessionTitle, setSessionTitle] = useState('');
   const [newSessionWorkspace, setNewSessionWorkspace] = useState<string>();
@@ -104,39 +154,135 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   const [skillLibrary, setSkillLibrary] = useState<{ key: DraftKey; origin: HTMLElement | null; recovery?: boolean;
     mcpScope?: ScopeRef;
     mcpTarget?: { server_id: string | null; workspace_id: string | null } }>();
-  const [skillNames, setSkillNames] = useState<Record<string, string>>({});
+  const [skillLabels, setSkillLabels] = useState<Record<string, { name: string; release?: string }>>({});
   function openSkillLibrary(entry: 'personal' | 'project') {
+    if (entry === 'personal') clearPages();
     setSkillLibrary({ key: { ...view.current }, origin: document.activeElement as HTMLElement,
       mcpScope: entry === 'personal' ? personalScope
         : { kind: 'workspace', workspace_id: view.current.workspaceId, session_id: null } });
   }
-  function closeSkillLibrary() { const origin = skillLibrary?.origin; setSkillLibrary(undefined); origin?.focus(); }
+  function closeSkillLibrary() {
+    pageOrigin.current = skillLibrary?.origin ?? null;
+    returnPageFocus.current = true;
+    setSkillLibrary(undefined);
+  }
+  function clearPages() {
+    taskDetailOrigin.current = null;
+    setPanel(null);
+    setManagement(undefined);
+    setSkillLibrary(undefined);
+    setAssistantsOpen(false);
+    setMemoryPage(undefined);
+    returnToInboxFromTask.current = undefined;
+  }
+  function showPage(action: () => void) {
+    if (pageGuard.current) pageGuard.current(action);
+    else action();
+  }
+  function openAssistants() {
+    if (compact) { void perform(() => showWorkbench({ kind: 'assistants' })); return; }
+    if (assistantsOpen) return;
+    clearPages();
+    pageOrigin.current = document.activeElement as HTMLElement;
+    setAssistantsOpen(true);
+  }
+  function openMemory(source?: RunSnapshot) {
+    if (compact) { void perform(() => showWorkbench({ kind: 'memory' })); return; }
+    if (memoryPage && !source) return;
+    if (!source) clearPages();
+    pageOrigin.current = document.activeElement as HTMLElement;
+    setMemoryPage({ source });
+  }
+  function closeSecondaryPage() {
+    returnPageFocus.current = true;
+    setAssistantsOpen(false);
+    setMemoryPage(undefined);
+  }
   const draftKey = { workspaceId, sessionId };
   const draft = useSyncExternalStore(drafts.subscribe, () => drafts.read(draftKey));
-  const { text, modelId } = draft;
+  const { text } = draft;
   const resources = draft.resourceIds.map(id => projection.resources[id]).filter(Boolean);
-  const setText = (text: string) => { userNavigated.current = true; drafts.update(draftKey, { text }); };
-  const setModelId = (modelId: string) => { userNavigated.current = true; drafts.update(draftKey, { modelId }); };
+  const setText = (text: string) => {
+    userNavigated.current = true;
+    const pinModel = text.trim() && !draft.modelId && !!agent && modelAvailable && !effortPending
+      && (!sessionId || modelHistoryReadySession === sessionId);
+    drafts.update(draftKey, pinModel ? { text, modelId, reasoningEffort } : { text });
+  };
+  const setModelId = (selectedId: string) => {
+    userNavigated.current = true;
+    if (selectedId !== draft.modelId) {
+      drafts.update(draftKey, { modelId: selectedId, reasoningEffort: selectedId === modelId ? reasoningEffort : null });
+    }
+  };
   const [questionDrafts, setQuestionDrafts] = useState<Record<string, { value: AnswerCommand['data']['answer'] | undefined; revision: number }>>({});
   const [interactionId, setInteractionId] = useState('');
   const [interactionCollapsed, setInteractionCollapsed] = useState(false);
-  const commandContexts = useRef(new Map<string, { key: DraftKey; revision?: number; steering?: boolean; targetId?: string;
-    submitted?: Draft; acknowledgedRevision?: number; runId?: string; missingHandled?: boolean; afterConfirmed?: () => Promise<void> }>());
+  const [approvalId, setApprovalId] = useState<string>();
+  type CommandContext = { key: DraftKey; draftKey?: DraftKey; revision?: number; steering?: boolean; targetId?: string; targetName?: string;
+    submitted?: Draft; acknowledgedRevision?: number; runId?: string; missingHandled?: boolean;
+    afterConfirmed?: (outcome: CommandOutcome) => Promise<void>; onRejected?: (error: unknown) => void };
+  const commandContexts = useRef(new Map<string, CommandContext>());
   const [artifactId, setArtifactId] = useState('');
+  const [artifactDeliveryRunId, setArtifactDeliveryRunId] = useState<string>();
   const [selectedRunId, setSelectedRunId] = useState('');
   const [management, setManagement] = useState<'center' | 'detail'>();
   const [centerTarget, setCenterTarget] = useState({ workspaceId: '', sequence: 0 });
   const [managedRunId, setManagedRunId] = useState('');
   const managementOrigin = useRef<HTMLElement | null>(null);
   const managementReturnPending = useRef(false);
+  const returnToInboxFromTask = useRef<(() => void) | undefined>(undefined);
+  const taskCenterContent = useRef<HTMLDivElement>(null);
+  const taskDetailOrigin = useRef<HTMLElement | null>(null);
+  const taskCenterReturnPending = useRef(false);
   const [backgroundInteraction, setBackgroundInteraction] = useState<string>();
-  const backgroundReturn = useRef<{ interactionId: string; management: typeof management; origin: HTMLElement | null } | undefined>(undefined);
-  const [resultsOpen, setResultsOpen] = useState(false);
+  const backgroundReturn = useRef<{ interactionId: string; management: typeof management; origin: HTMLElement; fromPanel: boolean; toInbox?: () => void } | undefined>(undefined);
+  const backgroundFocus = useRef<'sheet' | 'inline' | undefined>(undefined);
+  const interactionPanel = useRef<HTMLElement>(null);
+  const [deliveryIds, setDeliveryIds] = useState<string[]>();
+  const [detailRunId, setDetailRunId] = useState<string>();
   const [selectedNode, setSelectedNode] = useState<{ id: string; kind: 'task' | 'activity' }>();
-  const [panel, setPanel] = useState<'tasks' | 'artifacts' | 'trace' | 'resources' | null>(null);
+  const [panel, setPanel] = useState<DetailPanel | null>(null);
+  const detailBreakpoint = panel === 'context' ? wideContext : wideConversation;
+  const wide = useSyncExternalStore(subscribeToWidth, () => !!window.matchMedia?.(detailBreakpoint).matches);
+  function subscribeToWidth(update: () => void) {
+    const screen = window.matchMedia?.(detailBreakpoint);
+    screen?.addEventListener('change', update);
+    return () => screen?.removeEventListener('change', update);
+  }
+  const docked = wide && !compact && panel !== 'resources';
   const panelOrigin = useRef<HTMLElement | null>(null);
-  const conversationHeader = useRef<HTMLElement>(null);
+  const detailsRail = useRef<HTMLElement>(null);
+  const detailsPane = useRef<HTMLElement>(null);
+  const workbenchRoot = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
+    if (panel === 'context' && docked) {
+      detailsPane.current?.querySelector<HTMLElement>('h2')?.focus();
+    }
+  }, [panel, docked]);
+  const activePage = memoryPage ? 'memory' : assistantsOpen ? 'assistants' : skillLibrary ? 'capabilities' : management ? 'tasks' : undefined;
+  useLayoutEffect(() => {
+    if (!returnPageFocus.current) return;
+    returnPageFocus.current = false;
+    const origin = pageOrigin.current;
+    pageOrigin.current = null;
+    const active = document.activeElement;
+    if (active?.isConnected && !active.matches('body,html,:disabled') && !active.closest('[inert],[hidden]')) return;
+    for (const target of [origin, navTrigger.current, workbenchRoot.current?.querySelector<HTMLElement>('#message-input')]) {
+      if (!target?.isConnected || target.closest('[hidden],[inert]')) continue;
+      target.focus();
+      if (document.activeElement === target) break;
+    }
+  }, [activePage]);
+  useLayoutEffect(() => {
+    if (management === 'center' && taskCenterReturnPending.current) {
+      taskCenterReturnPending.current = false;
+      const origin = taskDetailOrigin.current;
+      taskDetailOrigin.current = null;
+      const center = taskCenterContent.current;
+      if (origin && center?.contains(origin) && !origin.matches(':disabled')) origin.focus();
+      else center?.querySelector<HTMLElement>('h2')?.focus();
+      return;
+    }
     if (management || !managementReturnPending.current) return;
     managementReturnPending.current = false;
     const origin = managementOrigin.current;
@@ -148,30 +294,57 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
       origin.focus();
       if (document.activeElement === origin) return;
     }
-    const target = conversationHeader.current?.querySelector<HTMLButtonElement>('[data-conversation-panel="tasks"]');
-    if (target && !target.closest('[inert]')) target.focus();
+    for (const target of [detailsRail.current?.querySelector<HTMLButtonElement>('[data-conversation-panel="tasks"]'), navTrigger.current]) {
+      if (!target || target.closest('[inert]')) continue;
+      target.focus();
+      if (document.activeElement === target) break;
+    }
   }, [management]);
-  function returnPanelFocus(event: Event) {
-    event.preventDefault();
+  function restorePanelFocus(container?: HTMLElement) {
     const active = document.activeElement as HTMLElement | null;
+    const origin = panelOrigin.current;
+    panelOrigin.current = null;
     // 旧 Sheet 的延迟回焦不能覆盖已由输入或新页面接管的焦点。
     if (active?.isConnected && !active.matches('body,html,:disabled') && !active.closest('[inert]')
-      && !(event.target as HTMLElement).contains(active)) return;
-    const origin = panelOrigin.current;
-    if (origin?.isConnected && !origin.matches('body,html,:disabled') && !origin.closest('[inert]')) {
+      && !container?.contains(active)) return;
+    if (origin?.isConnected && !origin.matches('body,html,:disabled') && !origin.closest('[inert],[hidden]')) {
       origin.focus();
       if (document.activeElement === origin) return;
     }
-    const target = conversationHeader.current?.querySelector<HTMLButtonElement>('[data-conversation-panel="tasks"]');
+    const target = detailsRail.current?.querySelector<HTMLButtonElement>(panel === 'context'
+      ? '[data-conversation-panel="context"]' : '[data-conversation-panel="tasks"]');
     if (target && !target.closest('[inert]')) target.focus();
   }
-  useEffect(() => { if (obscured) { setPanel(null); setResultsOpen(false); } }, [obscured]);
+  function openPanel(next: DetailPanel, origin = document.activeElement as HTMLElement) {
+    if (!panel || !origin.closest('.conversation-details, .ui-sheet')) panelOrigin.current = origin;
+    setPanel(next);
+  }
+  function closePanel() {
+    if (docked) restorePanelFocus(detailsPane.current ?? undefined);
+    setPanel(null);
+  }
+  function focusBackgroundForm() {
+    backgroundFocus.current = undefined;
+    const form = interactionPanel.current;
+    if (!form) return;
+    // Radix 单选与复选的可交互元素带有 data-slot，提交用的隐藏 input 没有。
+    const field = Array.from(form.querySelectorAll<HTMLElement>(
+      '.question-form :is([data-slot="input"], [data-slot="textarea"], [data-slot="native-select"], '
+      + '[data-slot="checkbox"], [data-slot="radio-group-item"])',
+    )).find(control => !control.matches(':disabled, [aria-disabled="true"]')
+      && !control.closest('[hidden], [inert], details:not([open])'));
+    (field ?? form).focus();
+  }
+  useEffect(() => { if (obscured) setPanel(null); }, [obscured]);
   const [graph, setGraph] = useState(true);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [runListCursor, setRunListCursor] = useState<string | null>(null);
   const [runCursors, setRunCursors] = useState<Record<string, Partial<Record<RunPageInput['kind'], string | null>>>>({});
+  const [runLabels, setRunLabels] = useState<Pick<RunDetail, 'task_goal' | 'task_title' | 'task_titles' | 'file_names' | 'source_valid' | 'watermark'> & { runId: string; authorization: string }>();
+  const [taskTitleEvent, setTaskTitleEvent] = useState<{ runId: string; position: string }>();
   const [trace, setTrace] = useState<{ runId: string; page: Awaited<ReturnType<RuntimeClient['trace']>> }>();
   const [confirmation, setConfirmation] = useState<Confirmation>();
+  const confirmationOrigin = useRef<HTMLElement | null>(null);
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const [error, setError] = useState('');
@@ -181,20 +354,20 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   const messageScroll = useRef<HTMLElement>(null);
   const scrollPositions = useRef(new Map<string, number>());
   const observedRuns = useRef(new Map<string, string>());
+  const notifiedErrors = useRef(new Set<string>());
   const [completion, setCompletion] = useState('');
   useEffect(() => {
     for (const run of Object.values(projection.runs)) {
       const previous = observedRuns.current.get(run.id);
       if (previous && previous !== run.state && run.state === 'completed' && run.interaction_session_id === sessionId) {
-        const message = run.output?.summary || '任务已完成，可打开结果或任务查看。';
-        setCompletion(message); toast.success(message, { id: `completed:${run.id}` });
+        setCompletion('任务已完成，可打开结果或任务查看。'); toast.success('任务已完成', { id: `completed:${run.id}` });
       }
       observedRuns.current.set(run.id, run.state);
     }
   }, [projection.runs, sessionId]);
   useLayoutEffect(() => {
     if (messageScroll.current) messageScroll.current.scrollTop = scrollPositions.current.get(sessionId) ?? 0;
-  }, [sessionId, projection.messages]);
+  }, [sessionId, projection.messages, activePage]);
   const [configurationRevision, setConfigurationRevision] = useState(0);
   const configRead = useRef(0);
   // 设置返回或两窗重新聚焦时重读配置，不替换聊天快照和草稿。
@@ -209,28 +382,29 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     const revision = ++configRead.current;
     Promise.all([client.models(), client.connections(), client.profiles()]).then(([models, connections, profiles]) => {
       if (revision !== configRead.current) return;
-      setModelPage(models); setConnectionPage(connections); setProfilePage(profiles);
-      setProjection(state => ({ ...state, models: mergeVersioned(state.models, models.items),
-        connections: mergeVersioned(state.connections, connections.items), profiles: mergeVersioned(state.profiles, profiles.items) }));
+      setCatalog({ models: models.next_cursor, connections: connections.next_cursor }); setProfilePage(profiles);
+      setProjection(state => ({ ...state, models: mergeVersioned({}, models.items),
+        connections: mergeVersioned({}, connections.items), profiles: mergeVersioned(state.profiles, profiles.items) }));
+      setModelLookup(undefined);
     }).catch(report);
   }, [client, configurationRevision]);
 
   function chooseSession(id: string) {
     navigationTarget.current = undefined;
     view.current = { workspaceId: view.current.workspaceId, sessionId: id };
-    const key = { workspaceId: view.current.workspaceId, sessionId: id };
     const profileId = store.getSnapshot().sessions[id]?.agent_profile_id ?? '';
     setAgentId(profileId);
-    defaultModelId.current = store.getSnapshot().profiles[profileId]?.default_model_profile_id ?? '';
-    if (id && store.getSnapshot().profiles[profileId] && drafts.read(key).revision === 0) drafts.update(key, { modelId: defaultModelId.current });
     setWorkReadySession('');
-    setSessionId(id); setHistoryCursor(null); setArtifactId(''); setPanel(null); setResultsOpen(false); setBackgroundInteraction(undefined); backgroundReturn.current = undefined;
+    setModelHistoryReadySession('');
+    setSessionId(id); setHistoryCursor(null); setArtifactId(''); setPanel(null); setDeliveryIds(undefined); setDetailRunId(undefined); setBackgroundInteraction(undefined); backgroundReturn.current = undefined; backgroundFocus.current = undefined;
     setSelectedRunId(''); setSelectedNode(undefined); setTrace(undefined); setRunCursors({}); setRunListCursor(null); setConfirmation(undefined);
+    setApprovalId(undefined); setRunConfigurationOpen(false);
     setFeedbackQuery(undefined);
   }
 
   function chooseWorkspace(id: string) {
     view.current = { workspaceId: id, sessionId: '' };
+    setReadyWorkspace('');
     setWorkspaceId(id); chooseSession(''); setTodoCursors(undefined); setResourceCursors(undefined); setSessionTitle('');
   }
 
@@ -255,24 +429,27 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     const context = commandContexts.current.get(outcome.commandId)!;
     if (outcome.status === 'confirmed') {
       context.runId = outcome.runId;
+      const key = context.draftKey ?? context.key;
       // 排队失败可先于确认到达；已因缺凭据保留的草稿不能再由迟到确认清空。
-      if (!context.missingHandled && context.revision !== undefined && drafts.read(context.key).revision === context.revision) {
-        drafts.acknowledge(context.key, context.revision, context.steering);
-        context.acknowledgedRevision = drafts.read(context.key).revision;
+      if (!context.missingHandled && context.revision !== undefined && drafts.read(key).revision === context.revision) {
+        drafts.acknowledge(key, context.revision, context.steering);
+        context.acknowledgedRevision = drafts.read(key).revision;
       }
       const afterConfirmed = context.afterConfirmed;
       context.afterConfirmed = undefined;
-      await afterConfirmed?.();
+      await afterConfirmed?.(outcome);
     }
     if (view.current.workspaceId === context.key.workspaceId && view.current.sessionId === context.key.sessionId) {
       setStatus(outcome.status === 'unconfirmed' ? '命令待核对' : outcome.sync === 'pending' ? '操作已接收，正在同步状态' : '操作已确认');
     }
   }
 
-  async function dispatchCommand(command: UiCommand, options: { key?: DraftKey; revision?: number; steering?: boolean; submitted?: Draft; afterConfirmed?: () => Promise<void> } = {}) {
+  async function dispatchCommand(command: UiCommand, options: Partial<CommandContext> = {}) {
     const commandId = uiCommandId(command);
     commandContexts.current.set(commandId, { key: { ...view.current }, targetId: typeof command.args[0] === 'string' ? command.args[0] : undefined, ...options });
-    const outcome = await store.dispatch(command);
+    let outcome: CommandOutcome;
+    try { outcome = await store.dispatch(command); }
+    catch (error) { options.onRejected?.(error); throw error; }
     await applyOutcome(outcome);
     return outcome;
   }
@@ -286,7 +463,7 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     let ignore = false;
     Promise.all([client.workspaces(), client.profiles(), client.models(), client.connections()]).then(([workspaces, profiles, models, connections]) => {
       if (ignore) return;
-      setProfilePage(profiles); setModelPage(models); setConnectionPage(connections);
+      setProfilePage(profiles); setCatalog({ models: models.next_cursor, connections: connections.next_cursor });
       const next = setProjection(state => mergeWorkspaces({ ...state, profiles: mergeVersioned(state.profiles, profiles.items), models: mergeVersioned(state.models, models.items), connections: mergeVersioned(state.connections, connections.items) }, workspaces.items));
       chooseWorkspace(defaultWorkspaceId.current ?? Object.keys(next.workspaces)[0] ?? '');
       setStatus('本机连接就绪');
@@ -301,12 +478,15 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     let ignore = false;
     async function locate() {
       const target = navigation!.target;
-      if (target.kind === 'assistants') { onAssistants?.(); return; }
+      if (target.kind === 'assistants') { openAssistants(); return; }
+      if (target.kind === 'memory') { openMemory(); return; }
       if (target.kind === 'mcp') {
+        setPanel(null); setManagement(undefined); setMemoryPage(undefined); setAssistantsOpen(false);
         setSkillLibrary({ key: { ...view.current }, origin: document.activeElement as HTMLElement,
           mcpTarget: { server_id: target.server_id, workspace_id: target.workspace_id } }); return;
       }
       if (target.kind === 'capabilities') { openSkillLibrary('personal'); return; }
+      clearPages();
       if (target.kind === 'tasks') {
         setCenterTarget(current => ({ workspaceId: target.workspace_id ?? '', sequence: current.sequence + 1 }));
         enterManagement('center'); return;
@@ -327,7 +507,7 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
       navigationTarget.current = { session, runId: detail.run.id };
       setWorkspaceGeneration(value => value + 1);
     }
-    locate().catch(error => { if (!ignore) report(error); });
+    showPage(() => { if (!ignore) void locate().catch(error => { if (!ignore) report(error); }); });
     return () => { ignore = true; };
   }, [client, initialized, navigation]);
 
@@ -338,6 +518,11 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
       if (abort.signal.aborted || view.current.workspaceId !== workspaceId
         || scopeDeleted(store.getSnapshot(), { workspace_id: workspaceId, session_id: null })) return;
       let next = store.getSnapshot();
+      setProjectModelUse({
+        workspaceId,
+        recent: snapshot.recent_model_uses ?? [],
+        sessions: {},
+      });
       setTodoCursors({ active_runs: snapshot.active_runs.next_cursor,
         pending_questions: snapshot.pending_questions.next_cursor, pending_approvals: snapshot.pending_approvals.next_cursor });
       setResourceCursors({ resources: snapshot.resources.next_cursor, grants: snapshot.grants.next_cursor });
@@ -357,8 +542,13 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
         }
         navigationTarget.current = undefined;
       }
-      if (!next.sessions[view.current.sessionId]) chooseSession(Object.values(next.sessions)
-        .find(session => session.workspace_id === workspaceId)?.id ?? '');
+      const unboundDraft = drafts.read({ workspaceId, sessionId: '' });
+      if (!next.sessions[view.current.sessionId]
+        && !store.getCommandsSnapshot().some(command => command.type === 'createSession' && command.targetId === workspaceId)
+        && !unboundDraft.text && !unboundDraft.modelId && !unboundDraft.resourceIds.length && !Object.keys(unboundDraft.skillVersions).length) {
+        chooseSession(Object.values(next.sessions).find(session => session.workspace_id === workspaceId)?.id ?? '');
+      }
+      setReadyWorkspace(workspaceId);
       setSnapshotGeneration(value => value + 1);
       const runIds = new Set([...snapshot.pending_questions.items.map(question => question.run_id), ...snapshot.pending_approvals.items.map(approval => approval.run_id)]
         .filter(id => !next.runs[id]));
@@ -368,9 +558,61 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     async function connect() {
       await store.loadWorkspace(workspaceId, {
         snapshot: installSnapshot,
-        event: () => {
+        event: envelope => {
           if (abort.signal.aborted) return;
           const next = store.getSnapshot();
+          if (envelope.kind === 'durable' && 'activities' in envelope.event.payload) {
+            const use = envelope.event.payload.chat_model_use;
+            if (use && envelope.event.workspace_id === workspaceId
+              && BigInt(use.event_id) > BigInt(next.snapshotWatermark)
+              && !scopeDeleted(next, { workspace_id: workspaceId, session_id: use.session_id })) {
+              setProjectModelUse(current => {
+                if (current?.workspaceId !== workspaceId) return current;
+                const oldModel = current.recent.find(previous => previous.model_profile_id === use.model_profile_id);
+                const recent = newerModelUse(use, oldModel)
+                  ? [use, ...current.recent.filter(previous => previous !== oldModel)]
+                    .sort((left, right) => newerModelUse(left, right) ? -1 : 1).slice(0, 10)
+                  : current.recent;
+                const sessions = newerModelUse(use, current.sessions[use.session_id])
+                  ? { ...current.sessions, [use.session_id]: use } : current.sessions;
+                return { workspaceId, recent, sessions };
+              });
+            }
+            if (envelope.event.kind === 'naming.task_changed' && envelope.event.run_id) {
+              setTaskTitleEvent({ runId: envelope.event.run_id, position: envelope.event_id });
+            }
+            const payload = envelope.event.payload;
+            const failures = payload.activities.filter(activity => activity.error
+              && activity.operation !== 'naming.title'
+              && !['cancelled', 'tool_cancelled', 'mcp_call_cancelled'].includes(activity.error)
+              && ['failed', 'uncertain'].includes(activity.state));
+            for (const activity of failures) {
+              const key = `activity:${activity.id}`;
+              if (activity.kind === 'model') notifiedErrors.current.add(`run:${activity.run_id}:${activity.error}`);
+              if (notifiedErrors.current.has(key)) continue;
+              notifiedErrors.current.add(key);
+              const run = next.runs[activity.run_id];
+              if (!run || run.interaction_session_id !== view.current.sessionId || !document.hasFocus()) continue;
+              const modelError = activity.kind === 'model';
+              toast.error(modelError ? modelFailures[activity.error!] ?? '模型请求未完成，请查看任务。' : '工具调用未完成，请查看任务中的处理方式。', {
+                id: key,
+                action: modelError ? { label: '检查连接', onClick: () => {
+                  if (activity.task_id === run.root_task_id) openConnection(run.config.model_profile.connection_id);
+                  else void client.task(activity.task_id).then(task => openConnection(task.binding.config.model_profile.connection_id)).catch(report);
+                } }
+                  : { label: '查看任务', onClick: () => openTask(run.id) },
+              });
+            }
+            for (const run of payload.runs) {
+              if (!run.reason || !Object.hasOwn(modelFailures, run.reason) || failures.some(activity => activity.run_id === run.id)) continue;
+              const key = `run:${run.id}:${run.reason}`;
+              if (notifiedErrors.current.has(key)) continue;
+              notifiedErrors.current.add(key);
+              if (run.interaction_session_id === view.current.sessionId && document.hasFocus()) toast.error(modelFailures[run.reason], {
+                id: key, action: { label: '检查连接', onClick: () => openConnection(run.config.model_profile.connection_id) },
+              });
+            }
+          }
           if (!next.workspaces[view.current.workspaceId]) {
             chooseWorkspace(Object.keys(next.workspaces)[0] ?? '');
           } else if (view.current.sessionId && !next.sessions[view.current.sessionId]) {
@@ -388,14 +630,20 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     if (!sessionId) return;
     let ignore = false;
     const request = view.current;
-    client.messages(sessionId).then(page => {
-      if (!ignore && currentView(request)) { setHistoryCursor(page.next_cursor); setProjection(state => mergeMessages(state, sessionId, page.items)); }
-    }).catch(error => { if (!ignore) report(error); });
-    client.sessionRuns(sessionId).then(page => {
+    const messages = client.messages(sessionId).then(page => {
+      if (!ignore && currentView(request)) { setHistoryCursor(page.next_cursor); setProjection(state => mergeMessages(state, sessionId, page)); }
+    });
+    const history = client.sessionRuns(sessionId).then(page => {
       if (!ignore && currentView(request)) {
         setRunListCursor(page.next_cursor);
         setProjection(state => page.items.reduce(mergeRunSnapshot, state));
+        const use = page.last_model_use;
+        if (use) setProjectModelUse(current => current?.workspaceId === request.workspaceId && newerModelUse(use, current.sessions[sessionId])
+          ? { ...current, sessions: { ...current.sessions, [sessionId]: use } } : current);
       }
+    });
+    void Promise.all([messages, history]).then(() => {
+      if (!ignore && currentView(request)) setModelHistoryReadySession(sessionId);
     }).catch(error => { if (!ignore) report(error); });
     store.refreshSessionWork(sessionId).then(() => {
       if (!ignore && currentView(request)) setWorkReadySession(sessionId);
@@ -403,7 +651,16 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     return () => { ignore = true; };
   }, [client, sessionId, snapshotGeneration]);
 
-  const agent = projection.profiles[agentId];
+  useEffect(() => {
+    if (!workspaceId || readyWorkspace !== workspaceId || sessionId) return;
+    let ignore = false;
+    setFirstAgent(undefined);
+    client.defaultAgent().then(profile => {
+      if (!ignore) setFirstAgent(profile);
+    }).catch(error => { if (!ignore) report(error); });
+    return () => { ignore = true; };
+  }, [client, sessionId, workspaceId, readyWorkspace, configurationRevision]);
+  const agent = sessionId ? projection.profiles[agentId] : firstAgent;
   useEffect(() => {
     if (!agentId || agent || !profilePage?.next_cursor) return;
     let ignore = false;
@@ -412,38 +669,98 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     }).catch(error => { if (!ignore) report(error); });
     return () => { ignore = true; };
   }, [client, agentId, agent, profilePage]);
-  useEffect(() => {
-    if (agent && sessionId && drafts.read({ workspaceId, sessionId }).revision === 0) drafts.update({ workspaceId, sessionId }, { modelId: agent.default_model_profile_id ?? '' });
-  }, [agent, sessionId]);
+  const runs = Object.values(projection.runs).filter(run => run.interaction_session_id === sessionId);
+  const workspaceModelUse = projectModelUse?.workspaceId === workspaceId ? projectModelUse : undefined;
+  const recentModelIds = workspaceModelUse?.recent.map(use => use.model_profile_id) ?? [];
+  const sessionChoice = workspaceModelUse?.sessions[sessionId];
+  const modelId = draft.modelId || sessionChoice?.model_profile_id || agent?.default_model_profile_id || recentModelIds[0] || '';
   const model = projection.models[modelId];
-  useEffect(() => {
-    if (!modelId || model) return;
-    let ignore = false;
-    setModelLookup({ id: modelId, state: 'loading' });
-    async function locate() {
-      let cursor = modelPage?.next_cursor;
-      while (cursor) {
-        const page = await client.models({ cursor });
-        if (ignore) return;
-        setProjection(state => ({ ...state, models: mergeVersioned(state.models, page.items) }));
-        if (page.items.some(item => item.id === modelId)) { setModelPage(page); setModelLookup(undefined); return; }
-        cursor = page.next_cursor;
-      }
-      if (!ignore) setModelLookup({ id: modelId, state: 'failed', message: '默认模型未在当前列表中找到，请选择其他模型或重试。' });
-    }
-    locate().catch(error => { if (!ignore) setModelLookup({ id: modelId, state: 'failed', message: `默认模型加载失败：${error instanceof Error ? error.message : '无法读取模型列表'}` }); });
-    return () => { ignore = true; };
-  }, [client, modelId, !!model, modelLookupRevision]);
-  const defaultModelLoading = !model && modelLookup?.id === modelId && modelLookup.state === 'loading';
-  const defaultModelError = !model && modelLookup?.id === modelId && modelLookup.state === 'failed' ? modelLookup.message : undefined;
   const connection = model && projection.connections[model.connection_id];
+  const modelAvailable = !!model && !!connection;
+  const catalogIncomplete = !!catalog && (!!catalog.models || !!catalog.connections);
+  const usesProviderPresets = Object.values(projection.connections).some(item => item.provider_preset_id);
   useEffect(() => {
-    if (connection && workspaceId && sessionId) {
+    if (!usesProviderPresets) return;
+    let current = true;
+    client.providerPresets().then(items => { if (current) setProviderPresets(items); })
+      .catch(error => { if (current) report(error); });
+    return () => { current = false; };
+  }, [client, usesProviderPresets]);
+  const lookupNeeded = !!modelId && (!model || !connection);
+  const lookupError = modelLookup?.id === modelId ? modelLookup.message : undefined;
+  const defaultModelLoading = lookupNeeded && catalogIncomplete && !lookupError;
+  const defaultModelError = lookupNeeded && catalog ? lookupError ?? (!catalogIncomplete
+    ? '所选模型或连接已不可用，请手动选择模型。' : undefined) : undefined;
+  const resolutionKey = modelAvailable ? JSON.stringify([model.id, model.version, connection.id, connection.version]) : '';
+  const [effortResolution, setEffortResolution] = useState<{
+    key: string;
+    options: NonNullable<ModelResolution['capabilities']['reasoning_efforts']>;
+  }>();
+  const requiresResolution = modelAvailable && (model.capabilities.reasoning_efforts != null || !!connection.provider_preset_id);
+  const effortOptions = effortResolution?.key === resolutionKey ? effortResolution.options : [];
+  const intendedEffort = draft.modelId ? draft.reasoningEffort : sessionChoice?.reasoning_effort;
+  const reasoningEffort = effortOptions.find(option => option === intendedEffort) ?? null;
+  const effortPending = !!intendedEffort && requiresResolution && effortResolution?.key !== resolutionKey;
+
+  function loadCatalog(): Promise<void> {
+    const revision = configRead.current;
+    if (!catalogIncomplete) return Promise.resolve();
+    if (loadingCatalog.current?.revision === revision) return loadingCatalog.current.promise;
+    const consume = async (kind: 'models' | 'connections') => {
+      let cursor = catalog![kind];
+      while (cursor && revision === configRead.current) {
+        if (kind === 'models') {
+          const page = await client.models({ cursor });
+          if (revision !== configRead.current) return;
+          cursor = page.next_cursor;
+          setProjection(state => ({ ...state, models: mergeVersioned(state.models, page.items) }));
+        } else {
+          const page = await client.connections({ cursor });
+          if (revision !== configRead.current) return;
+          cursor = page.next_cursor;
+          setProjection(state => ({ ...state, connections: mergeVersioned(state.connections, page.items) }));
+        }
+        const next = cursor;
+        setCatalog(current => current && { ...current, [kind]: next });
+      }
+    };
+    const promise = Promise.allSettled([consume('models'), consume('connections')]).then(results => {
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
+    }).finally(() => {
+      if (loadingCatalog.current?.revision === revision) loadingCatalog.current = undefined;
+    });
+    loadingCatalog.current = { revision, promise };
+    return promise;
+  }
+  useEffect(() => {
+    if (!lookupNeeded || !catalogIncomplete) return;
+    let ignore = false;
+    setModelLookup(undefined);
+    void loadCatalog().catch(error => {
+      if (!ignore) setModelLookup({ id: modelId, message: `默认模型加载失败：${error instanceof Error ? error.message : '无法读取模型列表'}` });
+    });
+    return () => { ignore = true; };
+  }, [client, modelId, lookupNeeded, catalogIncomplete, modelLookupRevision, configurationRevision]);
+  useEffect(() => {
+    if (!requiresResolution) return;
+    let ignore = false;
+    client.modelResolution(modelId).then(resolution => {
+      if (!ignore && resolution.version === model.version && resolution.connection_version === connection.version) {
+        setEffortResolution({ key: resolutionKey, options: resolution.capabilities.reasoning_efforts ?? [] });
+      }
+    }).catch(error => {
+      if (!ignore) report(error);
+    });
+    return () => { ignore = true; };
+  }, [client, resolutionKey, requiresResolution, configurationRevision]);
+  useLayoutEffect(() => {
+    if (connection && workspaceId) {
       try { drafts.applyPreference(draftKey, connection.endpoint); } catch (error) { report(error); }
     }
   }, [drafts, workspaceId, sessionId, connection?.endpoint]);
-  const memorySources = useMemorySources(client, draft.memoryScopes, connection?.endpoint, projection.memoryRevision);
-  const runs = Object.values(projection.runs).filter(run => run.interaction_session_id === sessionId);
+  const memorySources = useMemorySources(client, draft.memoryScopes, connection?.endpoint, projection.memoryRevision,
+    workspaceId, runConfigurationOpen);
   const activeRun = runs.find(run => run.kind === 'user' && run.execution_session_id === sessionId && !terminal(run.state))
     ?? runs.find(run => run.kind === 'follow_up' && run.execution_session_id === sessionId && !terminal(run.state)
       && !(run.state === 'interrupted' && run.reason === 'yield_to_user'));
@@ -462,22 +779,76 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   const sourceResultInvalid = !!draft.sourceResult && (!sourceResult?.source_valid || sourceResult.target_session_id !== sessionId || sourceResult.delivery_state === 'invalidated');
   const pendingSubmission = pendingCommands.some(command => {
     const context = commandContexts.current.get(command.commandId);
-    return command.status === 'unconfirmed' && (command.type === 'startRun' || command.type === 'enqueueUser'
+    return command.status === 'unconfirmed' && (command.type === 'createSession' || command.type === 'startRun' || command.type === 'enqueueUser'
       || command.type === 'steer' || command.type === 'grant' && !!context?.afterConfirmed)
-      && context?.key.workspaceId === workspaceId && context.key.sessionId === sessionId;
+      && [context?.key, context?.draftKey].some(key => key?.workspaceId === workspaceId && key.sessionId === sessionId);
   });
   const configurationLocked = !!steering || pendingSubmission;
+  const lockedModel = steering ? activeRun.config.model_profile : undefined;
   const selectedRun = runs.find(run => run.id === selectedRunId) ?? activeRun ?? runs.at(-1);
   const tracePage = trace?.runId === selectedRun?.id ? trace?.page : undefined;
   const tasks = Object.values(projection.tasks).filter(task => task.run_id === selectedRun?.id);
   const activities = Object.values(projection.activities).filter(activity => activity.run_id === selectedRun?.id);
-  const artifacts = Object.values(projection.artifacts).filter(artifact => projection.entityScopes[artifact.id]?.session_id === sessionId
+  const dependenciesVisible = (dependencies: ArtifactRef['dependencies']) =>
+    dependencies.every(({ scope_id, epoch }) => [projection.scopes[scope_id], projection.grants[scope_id]]
+      .every(scope => !scope || scope.epoch <= epoch && scope.status === 'active') && !(projection.resources[scope_id]?.version > epoch));
+  const sourcesVisible = (item: Pick<ArtifactRef, 'dependencies'>) => dependenciesVisible(item.dependencies);
+  const fixedActivities = Object.values(projection.activities).filter(sourcesVisible);
+  const scopedArtifacts = Object.values(projection.artifacts).filter(artifact => projection.entityScopes[artifact.id]?.session_id === sessionId
     && projection.entityScopes[artifact.id]?.workspace_id === workspaceId);
-  const selectedArtifact = artifacts.find(artifact => artifact.id === artifactId) ?? null;
+  const scriptArtifacts = fixedActivities.flatMap(activity => {
+    const owner = projection.runs[activity.run_id];
+    if (owner?.interaction_session_id !== sessionId || owner.workspace_id !== workspaceId) return [];
+    return (activity.script_execution?.outputs ?? []).flatMap(({ artifact }) =>
+      artifact.activity_id === activity.id && artifact.task_id === activity.task_id ? [artifact] : []);
+  });
+  const artifacts = [...new Map([...scriptArtifacts, ...scopedArtifacts].filter(sourcesVisible).map(artifact => [artifact.id, artifact])).values()];
+  const visibleArtifacts = new Map(artifacts.map(artifact => [artifact.id, artifact]));
+  const deliveryIdsByRun = new Map<string, Set<string>>();
+  for (const run of runs) {
+    if (run.kind === 'managed' || !dependenciesVisible(run.scope_dependencies)) continue;
+    deliveryIdsByRun.set(run.id, new Set(run.output?.artifact_ids ?? []));
+  }
+  for (const artifact of scriptArtifacts) {
+    const owner = projection.activities[artifact.activity_id].run_id;
+    deliveryIdsByRun.get(owner)?.add(artifact.id);
+  }
+  const selectedArtifact = artifactId ? visibleArtifacts.get(artifactId) : undefined;
+  const artifactsByRun = new Map<string, ArtifactRef[]>();
+  for (const [owner, ids] of deliveryIdsByRun) {
+    artifactsByRun.set(owner, [...ids].flatMap(id => {
+      const artifact = visibleArtifacts.get(id);
+      return artifact ? [artifact] : [];
+    }));
+  }
+  const options = selectedArtifact && !artifactDeliveryRunId ? [selectedArtifact]
+    : artifactsByRun.get((selectedArtifact && artifactDeliveryRunId) || selectedRun?.id || '') ?? [];
+  const artifactOptions = describeArtifacts(options, fixedActivities);
+  const selectedArtifactLabel = artifactOptions.find(option => option.artifact.id === artifactId)?.label;
+  const chatArtifacts = [...artifactsByRun].flatMap(([runId, group]) => describeArtifacts(group, fixedActivities)
+    .map(({ artifact, label }) => ({ id: artifact.id, runId, label })));
+  for (const [runId, ids] of deliveryIdsByRun) {
+    let position = 0;
+    for (const id of ids) {
+      if (visibleArtifacts.has(id) || projection.artifacts[id]) continue;
+      chatArtifacts.push({ id, runId, label: `交付文件 ${++position}` });
+    }
+  }
+  const selectedRunSources = selectedRun && dependenciesVisible(selectedRun.scope_dependencies);
+  const fileAuthorization = [...Object.values(projection.grants), ...Object.values(projection.scopes)]
+    .map(scope => `${scope.id}:${scope.epoch}:${scope.status}`).join(',');
+  const selectedRunLabels = runLabels?.runId === selectedRun?.id && runLabels && runLabels.source_valid !== false
+    && runLabels.authorization === fileAuthorization && BigInt(runLabels.watermark) >= BigInt(projection.snapshotWatermark) ? runLabels : undefined;
   const questions = Object.values(projection.questions).filter(question => question.status === 'pending'
     && (question.run_id === backgroundInteraction || projection.runs[question.run_id]?.interaction_session_id === sessionId && projection.runs[question.run_id]?.kind !== 'managed'));
   const approvals = Object.values(projection.approvals).filter(approval => approval.status === 'pending'
     && (approval.run_id === backgroundInteraction || approval.session_id === sessionId && projection.runs[approval.run_id]?.kind !== 'managed'));
+  const activeApproval = approvals.find(approval => approval.id === approvalId);
+  useEffect(() => {
+    if (!approvalId || activeApproval || busy) return;
+    if (backgroundReturn.current) returnFromBackground();
+    else setApprovalId(undefined);
+  }, [approvalId, activeApproval, busy]);
   const publications = Object.values(projection.publications).filter(item => backgroundInteraction ? item.run_id === backgroundInteraction : item.session_id === sessionId);
   const interactions = [
     ...questions.map(question => ({ kind: 'question' as const, id: question.id, title: '回答问题', question })),
@@ -486,10 +857,14 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     ...(publications.length ? [{ kind: 'recovery' as const, id: 'recovery', title: '导出恢复' }] : []),
   ];
   const interaction = interactions.find(item => item.id === interactionId) ?? interactions[0];
-  const summary = selectedRun && projection.runSummaries[selectedRun.id];
-  const composerRun = activeRun ?? runs.filter(run => run.kind === 'user' && run.execution_session_id === sessionId).at(-1);
-  const composerSummary = composerRun && projection.runSummaries[composerRun.id];
+  useLayoutEffect(() => {
+    if (backgroundFocus.current === 'inline' && backgroundInteraction && !panel) focusBackgroundForm();
+  }, [backgroundInteraction, interaction?.id, panel]);
   const messageIds = orderedMessageIds(projection, sessionId);
+  const reportMessages = new Map(messageIds.flatMap(id => {
+    const message = projection.messages[id];
+    return message.origin === 'background_report' ? (message.delivery_ids ?? []).map(deliveryId => [deliveryId, id] as const) : [];
+  }));
   const feedbackRequests = [...new Set(messageIds.map(id => projection.messages[id].run_id))]
     .filter(id => !projection.runFeedback[id] || projection.runFeedback[id].version < (projection.runs[id]?.version ?? 0));
   const feedbackRequestKey = feedbackRequests.map(id => `${id}:${projection.runs[id]?.version ?? 0}:${projection.runFeedbackWatermarks[id] ?? '0'}`).join(',');
@@ -519,9 +894,10 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
       if (scopeDeleted(projection, { workspace_id: context.key.workspaceId, session_id: context.key.sessionId })) continue;
       context.missingHandled = true;
       // 仅恢复该命令清空且之后未编辑的草稿；较新的输入始终保留。
-      if (context.acknowledgedRevision === drafts.read(context.key).revision) {
+      const key = context.draftKey ?? context.key;
+      if (context.acknowledgedRevision === drafts.read(key).revision) {
         const { revision: _revision, ...submitted } = context.submitted;
-        drafts.update(context.key, submitted);
+        drafts.update(key, submitted);
       }
       if (context.key.workspaceId === workspaceId && context.key.sessionId === sessionId) {
         setError('此连接尚未配置密钥，当前输入已保留。配置后可再次发送。');
@@ -533,22 +909,68 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   const [coverage, setCoverage] = useState<{ key: string; result?: ResourceCoverage; error?: string }>();
   const policyRevision = useMemo(() => JSON.stringify([projection.resources, projection.grants, projection.scopes]),
     [projection.resources, projection.grants, projection.scopes]);
-  const coverageKey = JSON.stringify([workspaceId, sessionId, modelId, connection?.endpoint,
+  const coverageKey = JSON.stringify([workspaceId, sessionId, modelId, model?.version, connection?.id, connection?.version, connection?.endpoint,
     draft.resourceIds, policyRevision, coverageRevision]);
   const currentCoverage = coverage?.key === coverageKey ? coverage : undefined;
   const coverageLoading = !!connection && !!sessionId && draft.resourceIds.length > 0 && !currentCoverage;
   const resourcesSyncing = !resourceCursors || resourceCursors.resources !== null || resourceCursors.grants !== null || coverageLoading;
-  const granted = !!currentCoverage?.result?.allowed && currentCoverage.result.destination === connection?.endpoint;
+  const directoryIds = resources.filter(resource => resource.kind === 'directory').map(resource => resource.id);
+  const missingCoverage = currentCoverage?.result && currentCoverage.result.destination === connection?.endpoint
+    ? new Set([...currentCoverage.result.missing_read, ...currentCoverage.result.missing_model_send]) : undefined;
+  const directoriesGranted = !!missingCoverage && directoryIds.every(id => !missingCoverage.has(id));
+  const [fileIssues, setFileIssues] = useState<Record<string, FileIssue>>({});
+  const [handledFileReads, setHandledFileReads] = useState<ReadonlySet<string>>(() => new Set());
+  function fileIssueKey(key: DraftKey) {
+    return JSON.stringify([key.workspaceId, key.sessionId, modelId, model?.version, connection?.id, connection?.version]);
+  }
+  function clearFileIssue(key: string, issue?: FileIssue) {
+    if (issue?.observedRunId) setHandledFileReads(current => new Set([...current, issue.observedRunId!]));
+    setFileIssues(current => {
+      if (!current[key]) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }
+  const activeFileIssueKey = fileIssueKey(draftKey);
+  const latestUserRun = runs.filter(run => run.kind === 'user' && run.execution_session_id === sessionId).at(-1);
+  const observedFileIssue = useMemo<FileIssue | undefined>(() => {
+    if (!latestUserRun || !terminal(latestUserRun.state) || handledFileReads.has(latestUserRun.id)) return;
+    const changed = new Set<string>();
+    for (const id of messageIds) {
+      const message = projection.messages[id];
+      if (message.run_id !== latestUserRun.id || messageSourceInvalid(message, projection)) continue;
+      for (const result of message.parts) {
+        if (result.kind !== 'tool_result' || (result.error !== 'file_source_changed' && result.error !== 'file_identity_changed')
+          || !result.origin_message_id) continue;
+        const origin = projection.messages[result.origin_message_id];
+        if (!origin || origin.run_id !== latestUserRun.id || messageSourceInvalid(origin, projection)) continue;
+        for (const call of origin.parts) {
+          if (call.kind === 'tool_call' && call.name === 'files.read_text' && call.call_id === result.call_id
+            && typeof call.arguments === 'object' && call.arguments !== null && typeof call.arguments.resource_id === 'string') {
+            changed.add(call.arguments.resource_id);
+          }
+        }
+      }
+    }
+    if (changed.size) return { kind: 'version', resourceIds: [...changed], observedRunId: latestUserRun.id };
+  }, [latestUserRun, handledFileReads, messageIds, projection]);
+  const fileIssue = fileIssues[activeFileIssueKey] ?? observedFileIssue;
   useEffect(() => {
     if (!sessionId || !connection || !draft.resourceIds.length || resources.length !== draft.resourceIds.length) return;
     let ignore = false;
     client.resourceCoverage(sessionId, { resource_ids: draft.resourceIds, model_profile_id: modelId })
       .then(result => { if (!ignore) setCoverage({ key: coverageKey, result }); })
-      .catch(error => { if (!ignore) setCoverage({ key: coverageKey, error: error instanceof Error ? error.message : '授权核对失败' }); });
+      .catch(error => {
+        if (ignore) return;
+        const issue = classifyFileIssue(error);
+        if (issue) setFileIssues(current => ({ ...current, [activeFileIssueKey]: issue }));
+        setCoverage({ key: coverageKey, error: error instanceof Error ? error.message : '授权核对失败' });
+      });
     return () => { ignore = true; };
   }, [client, coverageKey]);
 
-  const formActive = busy || nativeSelecting || sidebarFormActive || newSessionWorkspace !== undefined || !!text || !!sessionTitle || resources.length > 0 || !!confirmation
+  const formActive = busy || nativeSelecting || sidebarFormActive || newSessionWorkspace !== undefined || !!text || !!sessionTitle || resources.length > 0 || !!confirmation || !!renameTarget
     || draft.allowManaged || draft.allowFollowUp || !!draft.sourceResult || draft.memoryScopes.length > 0 || Object.keys(draft.skillVersions).length > 0
     || Object.values(projection.questions).some(question => question.status === 'pending' && projection.runs[question.run_id]?.interaction_session_id === sessionId)
     || Object.values(projection.approvals).some(approval => approval.status === 'pending' && approval.session_id === sessionId);
@@ -565,13 +987,16 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     client.run(selectedRun.id).then(detail => {
       if (ignore || !currentView(request)) return;
       setProjection(state => mergeRunDetail(state, detail));
+      setRunLabels({ runId: detail.run.id, task_goal: detail.task_goal, task_title: detail.task_title, task_titles: detail.task_titles, file_names: detail.file_names,
+        source_valid: detail.source_valid, watermark: detail.watermark, authorization: fileAuthorization });
       setRunCursors(current => ({ ...current, [detail.run.id]: Object.fromEntries(
         (['tasks', 'activities', 'artifacts', 'waits', 'consumptions', 'joins'] as const).map(kind => [kind, detail[kind].next_cursor])) }));
     }).catch(error => {
       if (!ignore && !store.getCommandsSnapshot().some(command => command.status === 'confirmed' && command.runId === selectedRun.id)) report(error);
     });
     return () => { ignore = true; };
-  }, [client, selectedRun?.id, sessionId]);
+  }, [client, selectedRun?.id, sessionId, projection.snapshotWatermark, fileAuthorization,
+    taskTitleEvent?.runId === selectedRun?.id ? taskTitleEvent?.position : undefined]);
 
   useEffect(() => {
     if (!selectedRun) return;
@@ -589,7 +1014,7 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
 
   function selectRun(id: string) {
     const run = store.getSnapshot().runs[id];
-    if (run.kind === 'managed') { openTask(id); return; }
+    if (run.kind === 'managed') { setDetailRunId(id); openPanel('tasks'); return; }
     if (run.interaction_session_id === null) return;
     const interactionSessionId = run.interaction_session_id;
     if (!store.getSnapshot().sessions[interactionSessionId]) {
@@ -611,14 +1036,23 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     managementReturnPending.current = false;
     setManagement(next);
   }
-  function closeManagement() { managementReturnPending.current = true; setManagement(undefined); }
+  function closeManagement() {
+    taskDetailOrigin.current = null;
+    const toInbox = returnToInboxFromTask.current;
+    returnToInboxFromTask.current = undefined;
+    if (toInbox) toInbox();
+    else managementReturnPending.current = true;
+    setManagement(undefined);
+  }
   function openTaskCenter() {
     if (compact) { void perform(() => showWorkbench({ kind: 'tasks', workspace_id: workspaceId || null })); return; }
+    if (management === 'center' && !memoryPage) return;
+    clearPages();
     setCenterTarget(current => ({ workspaceId, sequence: current.sequence + 1 }));
     enterManagement('center');
   }
   function openTask(runId: string) {
-    setPanel(null); setResultsOpen(false);
+    setPanel(null);
     if (compact) {
       void perform(async () => { const detail = await client.run(runId); await showWorkbench({ kind: 'task', task_id: detail.run.root_task_id }); });
       return;
@@ -628,32 +1062,61 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   }
   function returnFromBackground() {
     const previous = backgroundReturn.current;
-    setBackgroundInteraction(undefined);
-    if (previous) { setInteractionId(previous.interactionId); setManagement(previous.management); previous.origin?.focus(); }
     backgroundReturn.current = undefined;
+    backgroundFocus.current = undefined;
+    setApprovalId(undefined);
+    setBackgroundInteraction(undefined);
+    if (!previous) return;
+    setInteractionId(previous.interactionId);
+    setManagement(previous.management);
+    if (previous.toInbox) previous.toInbox();
+    else if (previous.fromPanel) document.getElementById('message-input')?.focus();
+    else previous.origin.focus();
   }
-  async function openBackground(runId: string, itemId?: string) {
+  async function openBackground(runId: string, itemId?: string, panelTrigger?: HTMLButtonElement, toInbox?: () => void, inboxApproval = false) {
     const request = view.current;
+    const origin = panelTrigger ?? document.activeElement as HTMLElement;
     const detail = await client.run(runId);
-    if (view.current !== request) return;
+    if (view.current !== request || (panelTrigger && !panelTrigger.isConnected)) { toInbox?.(); return; }
+    if (panelTrigger && ![...detail.questions.items, ...detail.approvals.items].some(item => item.id === itemId && item.status === 'pending')) {
+      throw new Error('该待办已处理，请刷新任务详情。');
+    }
     setProjection(state => mergeRunDetail(state, detail));
-    backgroundReturn.current = { interactionId, management, origin: document.activeElement as HTMLElement };
+    const id = itemId ?? detail.questions.items.find(question => question.status === 'pending')?.id ?? detail.approvals.items.find(approval => approval.status === 'pending')?.id ?? '';
+    const isApproval = inboxApproval || detail.approvals.items.some(approval => approval.id === id && approval.status === 'pending');
+    backgroundReturn.current = { interactionId, management, origin, fromPanel: !!panelTrigger, toInbox };
+    if (panelTrigger && !isApproval) {
+      // Sheet 解除焦点约束后再交接。宽窗侧栏退出后，表单可立即接收焦点。
+      backgroundFocus.current = docked ? 'inline' : 'sheet';
+      if (backgroundFocus.current === 'inline') panelOrigin.current = null;
+    }
+    if (toInbox && !isApproval) backgroundFocus.current = 'inline';
+    if (panelTrigger) setPanel(null);
     setBackgroundInteraction(runId); setManagement(undefined);
-    setInteractionId(itemId ?? detail.questions.items.find(question => question.status === 'pending')?.id ?? detail.approvals.items.find(approval => approval.status === 'pending')?.id ?? '');
+    setInteractionId(id);
+    if (isApproval) setApprovalId(id);
     setInteractionCollapsed(false);
   }
-  function openPending(item: InboxPage['items'][number]) {
+  function openPending(item: InboxPage['items'][number], toInbox: () => void) {
+    if (pending.current) { toInbox(); return; }
     void perform(async () => {
-      await openBackground(item.run_id, item.id);
+      if (activePage !== 'tasks') clearPages();
+      try { await openBackground(item.run_id, item.id, undefined, toInbox, item.kind === 'approval'); }
+      catch (error) { toInbox(); throw error; }
       // 待办可来自RunDetail首页之外；仍绑定Inbox返回的真实原对象及版本。
       if (item.kind === 'question') setProjection(state => mergeQuestions(state, [item.question]));
       else if (item.kind === 'approval') setProjection(state => mergeApprovals(state, [item.approval]));
     });
   }
-  async function pendingAction(item: PendingAction, action: PendingAction['allowed_actions'][number]) {
-    if (action.kind === 'view_task') { openTask(action.target_id); return; }
+  async function pendingAction(item: PendingAction, action: PendingAction['allowed_actions'][number], toInbox: () => void) {
+    if (action.kind === 'view_task') {
+      if (!compact) returnToInboxFromTask.current = toInbox;
+      openTask(action.target_id);
+      if (compact) toInbox();
+      return;
+    }
     if (action.kind === 'inspect_export_recovery') {
-      await openBackground(action.target_id, 'recovery');
+      await openBackground(action.target_id, 'recovery', undefined, toInbox);
       const publications = await client.exportRecovery(action.target_id);
       setProjection(state => mergePublications(state, publications));
       return;
@@ -667,6 +1130,7 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   function navigateProject(target: ProjectNavigation) {
     if (scopeDeleted(store.getSnapshot(), { workspace_id: target.workspaceId, session_id: target.sessionId ?? null })) { setStatus('目标项目或会话已删除'); return; }
     userNavigated.current = true;
+    clearPages();
     const sequence = ++projectNavigationSequence.current;
     void (async () => {
       if (target.sessionId) {
@@ -715,7 +1179,8 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
       const owner = { workspaceId: detail.run.workspace_id, sessionId: detail.run.interaction_session_id ?? '' };
       const selection = await invoke<{ resources: unknown[] }>('choose_export_target', {
         scope: { kind: owner.sessionId ? 'session' : 'workspace', workspace_id: owner.workspaceId, session_id: owner.sessionId || null },
-        binary: artifact.media_type === 'application/octet-stream',
+        // JSON 可读，但保存对话框应沿用原始字节的扩展名规则。
+        binary: artifact.media_type !== 'text/plain' && artifact.media_type !== 'text/markdown',
       });
       if (!currentView(request) || !selection.resources.length) return;
       const target = validate('ResourceRef', selection.resources[0]);
@@ -731,132 +1196,449 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   async function confirm() {
     await perform(async () => {
       const action = confirmation!;
-      const request = view.current;
+      const key = { workspaceId: action.workspaceId, sessionId: action.kind === 'session' ? action.id : '' };
       try {
         if (action.kind === 'session') {
-          await dispatchCommand({ type: 'deleteSession', args: [action.id, commandMeta(action.version)] }, { afterConfirmed: async () => {
-            if (view.current === request) chooseSession(Object.values(store.getSnapshot().sessions).find(session => session.workspace_id === request.workspaceId)?.id ?? '');
+          await dispatchCommand({ type: 'deleteSession', args: [action.id, commandMeta(action.version)] }, { key, afterConfirmed: async () => {
+            if (view.current.sessionId === action.id) chooseSession(Object.values(store.getSnapshot().sessions).find(session => session.workspace_id === action.workspaceId)?.id ?? '');
           } });
         } else {
-          await dispatchCommand({ type: 'deleteWorkspace', args: [action.id, commandMeta(action.version)] }, { afterConfirmed: async () => {
-            if (view.current === request) chooseWorkspace(Object.keys(store.getSnapshot().workspaces)[0] ?? '');
+          await dispatchCommand({ type: 'deleteWorkspace', args: [action.id, commandMeta(action.version)] }, { key, afterConfirmed: async () => {
+            if (view.current.workspaceId === action.id) chooseWorkspace(Object.keys(store.getSnapshot().workspaces)[0] ?? '');
           } });
         }
-        if (view.current === request) setConfirmation(undefined);
+        setConfirmation(undefined);
       } catch (error) {
         if (error instanceof ApiError && error.code === 'skill_export_recovery_pending') {
           setConfirmation(undefined);
-          setSkillLibrary({ key: { workspaceId: action.kind === 'workspace' ? action.id : request.workspaceId, sessionId: '' },
-            origin: document.getElementById('message-input'), recovery: true });
+          clearPages();
+          setSkillLibrary({ key: { workspaceId: action.workspaceId, sessionId: '' },
+            origin: confirmationOrigin.current, recovery: true });
         }
         throw error;
       }
     });
   }
 
-  async function send(event: FormEvent) {
+  async function send(event: FormEvent, choice?: 'text' | Record<string, string>) {
     event.preventDefault();
-    if (steering && !canSteer || pendingSubmission || sourceResultInvalid || draft.sourceResult && steering || !steering && memorySources.loading) return;
-    const request = view.current;
-    const key = { ...draftKey };
-    const submitted = drafts.read(key);
-    await perform(async () => {
+    const textOnly = choice === 'text';
+    const adoptions = typeof choice === 'object' ? choice : undefined;
+    if (sendUnavailable || (!textOnly && selectionUnavailable) || (!steering && fileIssue && !choice)) return;
+    let request = view.current;
+    const originalKey = { ...draftKey };
+    const submitted = { ...drafts.read(originalKey), modelId, reasoningEffort };
+    const resourceIds = textOnly ? [] : [...new Set([...submitted.resourceIds, ...Object.keys(adoptions ?? {})])];
+    const mcpServerId = !steering && !textOnly ? mcpAdmission.selected : '';
+    const submit = async () => { let accepted = false; await perform(async () => {
       if (steering) {
-        await dispatchCommand({ type: 'steer', args: [activeRun!.id, { meta: commandMeta(activeRun!.version), data: { text: submitted.text } }] }, { key, revision: submitted.revision, steering: true });
-      } else {
-        const command: UiCommand = { type: queueing ? 'enqueueUser' : 'startRun', args: [key.sessionId, { meta: commandMeta(), data: {
-          agent_profile_id: agentId, model_profile_id: submitted.modelId, text: submitted.text, allow_managed: submitted.allowManaged,
-          allow_follow_up: submitted.allowFollowUp, source_result: submitted.sourceResult, limits: submitted.limits,
-          sources: { resource_ids: submitted.resourceIds, memory_scopes: memorySources.scopes, skill_versions: submitted.skillVersions, excluded_source_ids: submitted.excludedSourceIds },
-        } }] };
-        const submit = async () => {
-          if (submitted.resourceIds.length) {
-            const result = await client.resourceCoverage(key.sessionId, {
-              resource_ids: submitted.resourceIds, model_profile_id: submitted.modelId });
-            if (currentView(request)) setCoverage({ key: coverageKey, result });
-            if (result.destination !== connection?.endpoint) throw new Error('接收方已变化，请刷新连接并核对发送目标。');
-            if (!result.allowed) throw new Error('所选资料的读取或发送授权已失效，请重新授权。');
-          }
-          await dispatchCommand(command, { key, revision: submitted.revision, submitted });
-        };
-        if (submitted.resourceIds.length && !granted && resources.every(resource => resource.kind === 'file')) {
-          await dispatchCommand({ type: 'grant', args: [{ meta: commandMeta(), data: {
-            scope: { kind: 'session', workspace_id: key.workspaceId, session_id: key.sessionId },
-            resource_ids: submitted.resourceIds, purposes: ['read', 'model_send'], destination: connection!.endpoint,
-          } }] }, { key, afterConfirmed: submit });
-        } else await submit();
+        await dispatchCommand({ type: 'steer', args: [activeRun!.id, { meta: commandMeta(activeRun!.version), data: { text: submitted.text } }] }, { key: originalKey, revision: submitted.revision, steering: true });
+        return;
       }
-    });
+      function checkDestination() {
+        const current = store.getSnapshot();
+        const currentModel = current.models[submitted.modelId];
+        const currentConnection = currentModel && current.connections[currentModel.connection_id];
+        if (!currentModel || !currentConnection || currentModel.version !== model.version || currentConnection.id !== connection!.id
+          || currentConnection.version !== connection!.version) {
+          throw new Error('模型或连接已变化，请核对模型、思考强度和发送目标后重试。');
+        }
+      }
+      async function submitGoal(key: DraftKey, submitAgentId: string, ackKey: DraftKey, revision?: number) {
+        checkDestination();
+        const issueKey = fileIssueKey(key);
+        const rememberFileIssue = (error: unknown) => {
+          const issue = classifyFileIssue(error);
+          if (issue) setFileIssues(current => ({ ...current, [issueKey]: issue }));
+        };
+        const command: UiCommand = { type: queueing ? 'enqueueUser' : 'startRun', args: [key.sessionId, { meta: commandMeta(), data: {
+          agent_profile_id: submitAgentId, model_profile_id: submitted.modelId, text: submitted.text, allow_managed: submitted.allowManaged,
+          model_selection: { model_version: model.version, connection_id: connection!.id, connection_version: connection!.version },
+          ...(reasoningEffort === null ? {} : { reasoning_effort: reasoningEffort }),
+          ...(textOnly || adoptions ? { inherit_session_files: false } : {}),
+          ...(adoptions ? { session_file_adoptions: adoptions } : {}),
+          allow_follow_up: submitted.allowFollowUp, source_result: textOnly ? null : submitted.sourceResult, limits: submitted.limits,
+          sources: { resource_ids: resourceIds, memory_scopes: textOnly ? [] : memorySources.scopes,
+            skill_versions: textOnly ? {} : submitted.skillVersions,
+            skill_execution_permissions: textOnly ? {} : submitted.skillExecutionPermissions,
+            excluded_source_ids: textOnly ? [] : submitted.excludedSourceIds.filter(id => !adoptions?.[id]) },
+        } }, ...(mcpServerId ? [mcpServerId] : [])] } as UiCommand;
+        const readCoverage = async () => {
+          let result: ResourceCoverage;
+          try { result = await client.resourceCoverage(key.sessionId, { resource_ids: resourceIds, model_profile_id: submitted.modelId }); }
+          catch (error) { rememberFileIssue(error); throw error; }
+          if (originalKey.sessionId && !adoptions && currentView(request)) setCoverage({ key: coverageKey, result });
+          if (result.destination !== connection?.endpoint) throw new Error('接收方已变化，请刷新连接并核对发送目标。');
+          checkDestination();
+          return result;
+        };
+        const sendGoal = async () => {
+          checkDestination();
+          const outcome = await dispatchCommand(command, { key, draftKey: ackKey, revision, submitted, onRejected: rememberFileIssue,
+            afterConfirmed: async () => clearFileIssue(issueKey, fileIssue) });
+          accepted = outcome.status === 'confirmed';
+        };
+        const result = resourceIds.length ? await readCoverage() : undefined;
+        if (!result) {
+          await sendGoal();
+          return;
+        }
+        const missing = [...new Set([...result.missing_read, ...result.missing_model_send])];
+        const error = '所选资料的读取或发送授权已失效，请核对资料后再发送。';
+        if (!result.allowed && (!missing.length || missing.some(id => directoryIds.includes(id)
+          || (originalKey.sessionId && !adoptions?.[id] && !missingCoverage?.has(id))))) {
+          throw new Error(error);
+        }
+        const [first, ...rest] = originalKey.sessionId ? [...new Set([...missing, ...Object.keys(adoptions ?? {})])] : resourceIds;
+        if (!first) {
+          await sendGoal();
+          return;
+        }
+        await dispatchCommand({ type: 'grant', args: [{ meta: commandMeta(), data: {
+          scope: { kind: 'session', workspace_id: key.workspaceId, session_id: key.sessionId },
+          resource_ids: [first, ...rest], purposes: ['read', 'model_send'], destination: connection!.endpoint,
+        } }] }, { key, draftKey: ackKey, onRejected: rememberFileIssue, afterConfirmed: async () => {
+          if (!(await readCoverage()).allowed) throw new Error(error);
+          await sendGoal();
+        } });
+      }
+      if (originalKey.sessionId) {
+        await submitGoal(originalKey, agentId, originalKey, submitted.revision);
+        return;
+      }
+      checkDestination();
+      userNavigated.current = true;
+      await dispatchCommand({ type: 'createSession', args: [originalKey.workspaceId, { meta: commandMeta(), data: { title: null } }] }, {
+        key: originalKey, afterConfirmed: async outcome => {
+          const session = store.getSnapshot().sessions[outcome.sessionId!];
+          if (!session) throw new Error('项目或会话已删除，当前输入已保留。');
+          const key = { workspaceId: session.workspace_id, sessionId: session.id };
+          const migration = drafts.move(originalKey, key, { modelId, reasoningEffort });
+          const ackKey = migration ? key : originalKey;
+          const revision = migration
+            ? (migration.fromRevision === submitted.revision ? migration.moved.revision : undefined)
+            : submitted.revision;
+          if (view.current === request) {
+            chooseSession(session.id);
+            request = view.current;
+          }
+          if (session.agent_profile_id !== agent!.id) throw new Error('默认助理已变化，请核对新会话的模型后再发送。');
+          setProjection(state => ({ ...state, profiles: mergeVersioned(state.profiles, [agent!]) }));
+          await submitGoal(key, session.agent_profile_id, ackKey, revision);
+        },
+      });
+    }); return accepted; };
+    if (mcpServerId) {
+      try { await mcpAdmission.send(mcpServerId, submitted.limits.deadline_seconds ?? 900,
+        () => currentView(request) && drafts.read(originalKey).revision === submitted.revision, submit); }
+      catch (error) { report(error); }
+    } else await submit();
   }
 
-  async function selectResources(kind: 'file' | 'directory') {
+  async function selectResources(kind: 'file' | 'directory', trigger: HTMLButtonElement, replace?: FileIssue) {
     const request = view.current;
     setNativeSelecting(true);
     try {
       await onFormActiveChange?.(true);
-      const selection = await invoke<{ resources: unknown[] }>('select_resources', { scope: { kind: 'session', workspace_id: workspaceId, session_id: sessionId }, kind });
-      if (!currentView(request)) return;
+      const scope: ScopeRef = request.sessionId
+        ? { kind: 'session', workspace_id: request.workspaceId, session_id: request.sessionId }
+        : { kind: 'workspace', workspace_id: request.workspaceId, session_id: null };
+      const selection = await invoke<{ resources: unknown[] }>('select_resources', { scope, kind });
+      if (!selection.resources.length || view.current !== request || scopeDeleted(store.getSnapshot(), scope)) return;
       const selected = selection.resources.map(resource => validate('ResourceRef', resource));
       setProjection(state => mergeResources(state, selected));
       const key = { ...request };
-      drafts.update(key, { resourceIds: [...new Set([...drafts.read(key).resourceIds, ...selected.map(resource => resource.id)])] });
-    } finally { setNativeSelecting(false); }
+      const current = drafts.read(key);
+      const adopted = selected.map(resource => resource.id);
+      drafts.update(key, {
+        resourceIds: [...new Set([...current.resourceIds.filter(id => !replace?.resourceIds.includes(id)), ...adopted])],
+        ...(replace ? { excludedSourceIds: [...new Set([...current.excludedSourceIds, ...replace.resourceIds])].filter(id => !adopted.includes(id)) } : {}),
+      });
+      if (replace) clearFileIssue(fileIssueKey(key), replace);
+    } finally {
+      setNativeSelecting(false);
+      requestAnimationFrame(() => {
+        if (view.current !== request || !document.activeElement?.matches('body,html,:disabled')) return;
+        const target = trigger.isConnected ? trigger : workbenchRoot.current?.querySelector<HTMLElement>('#message-input');
+        if (target && !target.closest('[inert]')) target.focus();
+      });
+    }
   }
 
   function requestSettings(section: 'models' | 'resources' | 'memory') {
-    setPanel(null); setResultsOpen(false);
+    setRunConfigurationOpen(false);
+    setPanel(null);
     if (onSettings) { onSettings(section); return; }
     void perform(async () => { await onFormActiveChange?.(true); await openSettings(section); });
+  }
+  function openConnection(connectionId: string) {
+    setPanel(null);
+    if (onSettings) { onSettings('models', connectionId); return; }
+    void perform(() => showWorkbench({ kind: 'connection', connection_id: connectionId }));
   }
 
   const commandStatus = <CommandStatus commands={pendingCommands.filter(command => commandContexts.current.has(command.commandId))} busy={busy} canCheck={command => !!commandContexts.current.get(command.commandId)!.key.sessionId} location={command => {
     const context = commandContexts.current.get(command.commandId)!;
-    return `${projection.workspaces[context.key.workspaceId]?.name ?? '原工作区尚未同步'} · ${projection.sessions[context.key.sessionId]?.title ?? '原会话尚未同步'}`;
+    const workspace = projection.workspaces[context.key.workspaceId]?.name;
+    if (command.type === 'stopWorkspace' || command.type === 'createSession') return workspace ?? context.targetName ?? '原工作区尚未同步';
+    return `${workspace ?? '原工作区尚未同步'} · ${projection.sessions[context.key.sessionId]?.title ?? context.targetName ?? '原会话尚未同步'}`;
   }} onCheck={command => void perform(async () => { await applyOutcome(await store.check(command.commandId, commandContexts.current.get(command.commandId)!.key.sessionId)); })}
-    onRetry={command => void perform(async () => { await applyOutcome(await store.retry(command.commandId)); })} />;
+    onRetry={command => void perform(async () => {
+      let outcome: CommandOutcome;
+      try { outcome = await store.retry(command.commandId); }
+      catch (error) { commandContexts.current.get(command.commandId)?.onRejected?.(error); throw error; }
+      await applyOutcome(outcome);
+    })} />;
 
-  return <main className={`workbench ${compact ? 'workbench--compact' : ''} ${panel ? 'workbench--detail' : ''}`}>
-    <ProjectSidebar client={client} workspaceId={workspaceId} sessionId={sessionId} refreshKey={`${projection.cursor}:${Object.values(projection.sessions).map(item => `${item.id}:${item.version}`).join(',')}:${Object.values(projection.workspaces).map(item => `${item.id}:${item.version}`).join(',')}`} onTaskCenter={openTaskCenter} onCapabilities={() => openSkillLibrary('personal')} onMemory={() => {
-      if (onMemory) onMemory(); else void perform(() => showWorkbench({ kind: 'memory' }));
-    }} onAssistants={() => {
-      if (onAssistants) onAssistants(); else void perform(() => showWorkbench({ kind: 'assistants' }));
-    }} onPendingOpen={openPending} onPendingAction={pendingAction} onFormActiveChange={setSidebarFormActive} allowDirectoryCreation={!compact} deletedWorkspaceIds={Object.keys(projection.deletedWorkspaces)} deletedSessionIds={Object.keys(projection.deletedSessions)} onDefaultWorkspace={id => {
+  function chooseDetail(next: DetailSection, origin: HTMLElement, toggle: boolean) {
+    if (next === 'results') setDeliveryIds(undefined);
+    if (next === 'tasks') setDetailRunId(undefined);
+    if (next === 'artifacts') setArtifactId('');
+    if (toggle && panel === next) closePanel();
+    else openPanel(next, origin);
+  }
+  const unread = Object.values(projection.deliveries).some(entry => entry.target_session_id === sessionId && !entry.viewed_at && entry.source_valid);
+  const detailButtons = (inside: boolean) => (Object.keys(detailSections) as DetailSection[]).map(name =>
+    <Button key={name} variant="ghost" data-conversation-panel={name} aria-pressed={name === panel || name === 'tasks' && panel === 'trace'}
+      aria-label={`${detailSections[name]}${name === 'results' && unread ? ' · 未读' : ''}`} title={detailTitles[name]}
+      disabled={name === 'context' && !sessionId}
+      onClick={event => chooseDetail(name, event.currentTarget, !inside)}>
+      <UiIcon name={name === 'results' ? 'inbox' : name} /><span>{detailSections[name]}</span>
+      {name === 'results' && unread && <i className="detail-unread" aria-hidden="true" />}
+    </Button>);
+
+  function showConversationTask(runId: string) {
+    setDetailRunId(runId);
+    openPanel('tasks');
+  }
+  function showArtifact(id: string, deliveryRunId?: string) {
+    setArtifactDeliveryRunId(deliveryRunId);
+    setArtifactId(id);
+    openPanel('artifacts');
+  }
+  function showDeliveryArtifact(id: string, runId: string) {
+    if (deliveryIdsByRun.get(runId)?.has(id)) loadPublishedArtifact(id, runId);
+  }
+  function loadPublishedArtifact(id: string, runId: string, activityId?: string) {
+    const cached = visibleArtifacts.get(id);
+    const deliveryRunId = activityId ? undefined : runId;
+    if (cached && (!activityId || cached.activity_id === activityId)) { showArtifact(id, deliveryRunId); return; }
+    void perform(async () => {
+      const request = view.current;
+      const page = await client.sessionArtifact(request.sessionId, id);
+      if (!currentView(request)) return;
+      const artifact = page.items.find(item => item.id === id && (!activityId || item.activity_id === activityId));
+      if (!artifact) throw new Error('产物已不可用');
+      const updated = setProjection(state => mergeRunPage(state, runId, { kind: 'artifacts', page: { ...page, items: [artifact] } }));
+      if (updated.artifacts[id]) showArtifact(id, deliveryRunId);
+    });
+  }
+
+  function conversationRunName(run: RunSnapshot) {
+    if (dependenciesVisible(run.scope_dependencies)) {
+      const goal = (run.id === selectedRun?.id ? selectedRunLabels?.task_title ?? selectedRunLabels?.task_goal : undefined)
+        || projection.tasks[run.root_task_id]?.binding.agent_work?.goal;
+      if (goal) return goal;
+      const firstUserGoal = messageIds.map(id => projection.messages[id]).find(message => message.run_id === run.id
+        && message.role === 'user' && message.origin === 'conversation');
+      const text = firstUserGoal?.parts.find(part => part.kind === 'text')?.text;
+      if (text || run.output?.summary) return text || run.output!.summary;
+    }
+    return `${runKinds[run.kind]} · ${run.config.agent_profile.display_name}`;
+  }
+
+  const detailContent = <>
+    {panel === 'results' && sessionId && <ResultInbox client={client} store={store} sessionId={sessionId} onCommand={dispatchCommand}
+      deliveryIds={deliveryIds} onOpen={showConversationTask} activities={fixedActivities}
+      messageDeliveryIds={new Set(reportMessages.keys())} onMessage={deliveryId => {
+        const id = reportMessages.get(deliveryId);
+        if (!id) return;
+        setPanel(null);
+        requestAnimationFrame(() => {
+          const message = messageScroll.current?.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+          message?.scrollIntoView({ block: 'nearest' });
+          message?.querySelector('button')?.focus();
+        });
+      }}
+      onArtifact={(artifact, entry, activityPage) => void perform(async () => {
+        const request = view.current;
+        const trigger = document.activeElement;
+        const detail = await client.run(entry.result.run_id);
+        const current = store.getSnapshot();
+        if (!trigger?.isConnected || !currentView(request) || detail.source_valid === false || !current.deliveries[entry.id]?.source_valid
+          || current.deliveries[entry.id].result_version !== entry.result_version) return;
+        setProjection(state => {
+          let next = mergeRunDetail(state, detail);
+          if (activityPage) next = mergeRunPage(next, detail.run.id, { kind: 'activities', page: activityPage });
+          return mergeRunPage(next, detail.run.id, { kind: 'artifacts', page: { ...detail.artifacts, items: [artifact] } });
+        });
+        showArtifact(artifact.id);
+      })}
+      summaryBlocked={busy || pendingSubmission || activeRun?.kind === 'user' || projection.sessions[sessionId]?.archived}
+      onSummarize={entry => { drafts.update(draftKey, { sourceResult: entry.id, summaryRunId: null }); setPanel(null); requestAnimationFrame(() => document.getElementById('message-input')?.focus()); }} />}
+    {panel === 'resources' && workspaceId && <ResourcePanel client={client} workspaceId={workspaceId} sessionId={sessionId || null} refreshKey={Object.values(projection.grants).map(item => `${item.id}:${item.version}`).join(',') + Object.values(projection.scopes).map(item => `${item.id}:${item.epoch}`).join(',')} isRevokePending={id => pendingCommands.some(command => command.type === 'revoke' && commandContexts.current.get(command.commandId)?.targetId === id)} onGrantsLoaded={items => setProjection(state => mergeGrants(state, items))} onRevoke={(id, meta) => dispatchCommand({ type: 'revoke', args: [id, meta] })} />}
+    {panel === 'tasks' && detailRunId && <>
+      <IconButton icon="back" label="返回会话任务" onClick={() => setDetailRunId(undefined)} />
+      <TaskDetail client={client} store={store} runId={detailRunId} onCommand={(command, key) => dispatchCommand(command, { key })}
+        onQuestion={(runId, itemId, trigger) => void perform(() => openBackground(runId, itemId, trigger))} onOpen={showConversationTask} onOpenConnection={openConnection}
+        onExport={chooseExport} exportBlocked={nativeSelecting || pendingCommands.some(command => command.type === 'exportArtifact')} />
+    </>}
+    {panel === 'context' && sessionId && <ContextPanel key={sessionId} client={client} sessionId={sessionId}
+      revision={projection.cursor} authorization={`${projection.snapshotWatermark}:${fileAuthorization}`}
+      onInspect={openTask} onResources={() => openPanel('resources')}
+      fileSelectionDisabled={busy || configurationLocked || nativeSelecting || !!projection.sessions[sessionId]?.archived}
+      onUseFileVersion={(trigger, observedRunId, resourceIds) => void perform(() => selectResources('file', trigger,
+        { kind: 'version', observedRunId, resourceIds }))} />}
+    {panel === 'tasks' && !detailRunId && <>
+      {feedbackQuery?.request === view.current && feedbackQuery.failed && <div className="status-message" role="status">
+        <p>暂时无法读取本会话的任务反馈。</p>
+        <Button variant="outline" size="sm" disabled={feedbackQuery.loading} onClick={() => setFeedbackRetry(value => value + 1)}>重新读取消息反馈</Button>
+      </div>}
+      {selectedRun && <RunFeedbackNotice run={selectedRun} feedback={projection.runFeedback[selectedRun.id]} onOpenConnection={openConnection} />}
+      <div className="button-row">
+        <Button size="sm" variant={graph ? 'secondary' : 'ghost'} aria-pressed={graph} onClick={() => setGraph(true)}>任务图</Button>
+        <Button size="sm" variant={graph ? 'ghost' : 'secondary'} aria-pressed={!graph} onClick={() => setGraph(false)}>任务列表</Button>
+      </div>
+      <section className="run-navigation" aria-label="会话任务"><h3>会话任务</h3>{runs.map(run => <Button key={run.id} variant="ghost" size="sm" className="run-nav" onClick={() => selectRun(run.id)}>
+        <span>{conversationRunName(run)}</span><Status state={run.state} /></Button>)}
+        {runListCursor && <Button variant="ghost" size="sm" disabled={busy} onClick={() => perform(async () => { const request = view.current; const page = await client.sessionRuns(sessionId, { cursor: runListCursor }); if (!currentView(request)) return; setProjection(state => page.items.reduce(mergeRunSnapshot, state)); setRunListCursor(page.next_cursor); })}>更多会话任务</Button>}
+      </section><Button variant="outline" size="sm" onClick={() => setPanel('trace')}>查看 Trace</Button>
+      {graph ? <TaskGraph tasks={tasks} activities={activities} waits={Object.values(projection.waits).filter(item => item.run_id === selectedRun?.id)}
+        consumptions={Object.values(projection.consumptions).filter(item => item.run_id === selectedRun?.id)} joins={Object.values(projection.joins).filter(item => item.run_id === selectedRun?.id)}
+        collapsedIds={collapsed} selectedId={selectedNode?.id} onSelect={(id, kind) => setSelectedNode({ id, kind })} onToggle={id => setCollapsed(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} />
+        : <TaskList tasks={tasks} activities={activities} selectedId={selectedNode?.id} onSelect={(id, kind) => setSelectedNode({ id, kind })} />}
+      {selectedRunSources && selectedNode && <SelectedStep id={selectedNode.id} tasks={tasks} activities={activities.filter(sourcesVisible)}
+        fileNames={selectedRunLabels?.file_names} taskTitles={selectedRunLabels?.task_titles} onArtifact={showArtifact} />}
+      {selectedRun && Object.entries(runCursors[selectedRun.id] ?? {}).filter(([, cursor]) => cursor).map(([kind]) => <Button key={kind} disabled={busy} onClick={() => perform(() => loadRunPage(kind as RunPageInput['kind']))}>更多 {kind}</Button>)}
+    </>}
+    {panel === 'artifacts' && <>
+      {artifactOptions.length > 0 && (!selectedArtifact || artifactOptions.length > 1) && <div className="artifact-links">{artifactOptions.map(({ artifact, label }) =>
+        <Button key={artifact.id} size="sm" variant={artifact.id === artifactId ? 'secondary' : 'ghost'} aria-pressed={artifact.id === artifactId} onClick={() => setArtifactId(artifact.id)}>{label}</Button>)}</div>}
+      {artifactOptions.length === 0 && <p className="empty-state">暂无产物。</p>}
+      {artifactOptions.length > 0 && <ArtifactPanel key={projection.snapshotWatermark} artifact={selectedArtifact ?? null} label={selectedArtifactLabel}
+        client={client} onExport={chooseExport} exportBlocked={nativeSelecting || pendingCommands.some(command => command.type === 'exportArtifact' && commandContexts.current.get(command.commandId)?.targetId === selectedArtifact?.id || command.type === 'grant' && !!commandContexts.current.get(command.commandId)?.afterConfirmed)}
+        onSelectSource={(taskId, activityId) => void perform(async () => {
+          const request = view.current;
+          const task = projection.tasks[taskId] ?? await client.task(taskId);
+          if (currentView(request)) {
+            if (projection.runs[task.run_id]?.kind === 'managed') showConversationTask(task.run_id);
+            else { setSelectedNode({ id: activityId, kind: 'activity' }); setSelectedRunId(task.run_id); setPanel('trace'); }
+          }
+        })} />}
+    </>}
+    {panel === 'trace' && <TracePanel client={client} events={(tracePage?.items ?? []).map(event => ({
+      ...event, activities: event.activities.filter(sourcesVisible),
+    }))} selectedId={selectedNode?.id}
+      onSelect={(id, kind) => setSelectedNode({ id, kind })} onArtifact={showArtifact} nextCursor={tracePage?.next_cursor} loading={busy}
+      onLoadMore={() => void perform(async () => { const request = view.current, owner = trace!; const page = await client.trace(owner.runId, { cursor: owner.page.next_cursor! });
+        if (currentView(request)) setTrace(current => current === owner ? { runId: owner.runId, page: { ...page,
+          items: [...new Map([...owner.page.items, ...page.items].map(item => [item.event_id, item])).values()]
+            .sort((left, right) => BigInt(left.event_id) < BigInt(right.event_id) ? -1 : BigInt(left.event_id) > BigInt(right.event_id) ? 1 : 0) } } : current); })} />}
+  </>;
+
+  const hasModels = Object.keys(projection.models).length > 0;
+  const needsModel = !hasModels && catalog?.models === null;
+  const sendUnavailable = busy || !!mcpAdmission.waiting || !workspaceId || readyWorkspace !== workspaceId
+    || (!!sessionId && (workReadySession !== sessionId || projection.sessions[sessionId]?.archived))
+    || pendingSubmission || (!!steering && !canSteer) || !text.trim()
+    || (!!draft.sourceResult && !!steering)
+    || (!steering && ((!!sessionId && !draft.modelId && !sessionChoice && modelHistoryReadySession !== sessionId)
+      || effortPending || !agent || !modelAvailable));
+  const selectionUnavailable = sourceResultInvalid || (!steering && (memorySources.loading
+    || draft.resourceIds.length !== resources.length
+    || (!!sessionId && draft.resourceIds.length > 0 && (!missingCoverage || !directoriesGranted))));
+  const sendDisabled = sendUnavailable || selectionUnavailable || (!steering && !!fileIssue);
+  const historicalFiles = new Map<string, { name: string; version?: string }>();
+  if (fileIssue) {
+    for (const id of messageIds.slice().reverse()) {
+      const message = projection.messages[id];
+      if (messageSourceInvalid(message, projection)) continue;
+      for (const attachment of message.attachments ?? []) {
+        const resourceId = attachment.resource_id;
+        if (!fileIssue.resourceIds.includes(resourceId) || historicalFiles.has(resourceId)
+          || !attachment.resource_lineage.every(id => !projection.scopes[id] || projection.scopes[id].status === 'active')
+          || !attachment.read_grant_ids.some(id => projection.grants[id]?.status === 'active'
+            && (!projection.scopes[id] || projection.scopes[id].status === 'active'))) continue;
+        const version = projection.runs[message.run_id]?.file_inputs?.[resourceId]?.source_version;
+        historicalFiles.set(resourceId, { name: attachment.name, version });
+      }
+    }
+  }
+  const adoptionVersions = fileIssue?.kind === 'recipient' && fileIssue.resourceIds.length > 0
+    && fileIssue.resourceIds.every(id => !!historicalFiles.get(id)?.version)
+    ? Object.fromEntries(fileIssue.resourceIds.map(id => [id, historicalFiles.get(id)!.version!])) : undefined;
+  const issueLabels = fileIssue && [...new Set([
+    ...resources.filter(resource => fileIssue.resourceIds.includes(resource.id)).map(resource => resource.label),
+    ...[...historicalFiles.values()].map(file => file.name),
+  ])];
+  const showWelcome = initialized && !!workspaceId && readyWorkspace === workspaceId
+    && (!sessionId || modelHistoryReadySession === sessionId) && !messageIds.length && !historyCursor && !runs.length
+    && (hasModels || needsModel);
+  const showStartAction = showWelcome && needsModel;
+
+  const backToTaskCenter = management === 'detail' && !!taskDetailOrigin.current && !returnToInboxFromTask.current;
+  return <main ref={workbenchRoot} className={`workbench ${compact ? 'workbench--compact' : ''}`}>
+    <ProjectSidebar client={client} workspaceId={workspaceId} sessionId={sessionId} activePage={activePage} drawerToggleRef={navTrigger} sessionVersions={projection.sessions}
+      renderScopeActions={(target, createSession) => <ScopeActions client={client} target={target} onCommand={dispatchCommand} onNewSession={createSession}
+        onRename={origin => setRenameTarget({ target, origin })}
+        onSuggestName={'name' in target ? origin => setRenameTarget({ target, origin, suggest: true }) : undefined}
+        onDirectory={!compact && 'name' in target ? origin => setDirectoryTarget({ workspace: target, origin }) : undefined}
+        onDelete={origin => {
+          confirmationOrigin.current = origin;
+          if ('title' in target) setConfirmation({ kind: 'session', id: target.id, workspaceId: target.workspace_id, version: target.version, name: target.title });
+          else setConfirmation({ kind: 'workspace', id: target.id, workspaceId: target.id, version: target.version, name: target.name });
+        }}
+        busy={busy || pendingCommands.some(command => ['stopSession', 'stopWorkspace', 'archiveSession'].includes(command.type))} />}
+      refreshKey={`${projection.cursor}:${Object.values(projection.sessions).map(item => `${item.id}:${item.version}`).join(',')}:${Object.values(projection.workspaces).map(item => `${item.id}:${item.version}`).join(',')}`}
+      onTaskCenter={() => showPage(openTaskCenter)} onCapabilities={() => showPage(() => openSkillLibrary('personal'))}
+      onMemory={() => showPage(() => openMemory())} onAssistants={() => showPage(openAssistants)}
+      onPendingOpen={openPending} onPendingAction={pendingAction} onOpenInbox={showPage} onFormActiveChange={setSidebarFormActive} allowDirectoryCreation={!compact} deletedWorkspaceIds={Object.keys(projection.deletedWorkspaces)} deletedSessionIds={Object.keys(projection.deletedSessions)} onDefaultWorkspace={id => {
       defaultWorkspaceId.current = id;
       if (id && !userNavigated.current && view.current.workspaceId && view.current.workspaceId !== id && !scopeDeleted(store.getSnapshot(), { workspace_id: id, session_id: null })) chooseWorkspace(id);
-    }} onNewSession={(id, returnFocus) => { userNavigated.current = true; newSession(id, returnFocus); }} onNavigate={navigateProject} onCreated={workspace => setProjection(state => mergeWorkspaces(state, [workspace]))} onSettings={() => requestSettings('models')}>
-    <details className="workspace-picker"><summary>项目设置</summary><section aria-label="项目设置">
-      <div className="privacy-actions"><Button disabled={!sessionId || busy} onClick={() => { const session = projection.sessions[sessionId]; setConfirmation({ kind: 'session', id: session.id, version: session.version, name: session.title }); }}>删除会话</Button>
-        <Button disabled={!workspaceId || busy} onClick={() => { const workspace = projection.workspaces[workspaceId]; setConfirmation({ kind: 'workspace', id: workspace.id, version: workspace.version, name: workspace.name }); }}>删除工作区</Button></div>
-      {!compact && projection.workspaces[workspaceId] && <ProjectDirectory client={client} workspace={projection.workspaces[workspaceId]} blocked={pendingCommands.some(command => command.type === 'setWorkspaceDirectory' && commandContexts.current.get(command.commandId)?.targetId === workspaceId)} onLink={(resource_id, version) => dispatchCommand({ type: 'setWorkspaceDirectory', args: [workspaceId, { meta: commandMeta(version), data: { resource_id } }] })} />}
-    </section></details>
-    </ProjectSidebar>
-    <section className="conversation" inert={management !== undefined}><header ref={conversationHeader} className="conversation-header"><div><div className="assistant-identity">{agent && <span className="profile-symbol" aria-label="助理图标">{assistantIcons.find(icon => icon.id === agent.icon_id)?.symbol ?? agent.icon_id}</span>}<h1>{agent?.display_name ?? '主助理'}</h1></div><h2>{projection.sessions[sessionId]?.title ?? '从一件想完成的事开始'}</h2></div>
-      <div className="button-row"><Button aria-pressed={resultsOpen} onClick={() => { setPanel(null); setResultsOpen(!resultsOpen); }}>结果{Object.values(projection.deliveries).some(entry => entry.target_session_id === sessionId && !entry.viewed_at) ? ' · 未读' : ''}</Button>{(['tasks', 'artifacts'] as const).map((name, index) => <Button key={name} data-conversation-panel={name} aria-pressed={panel === name} onClick={() => { setResultsOpen(false); setPanel(panel === name ? null : name); }}>{['任务', '产物'][index]}</Button>)}{!management && onReturnToQuick && <Button onClick={() => void perform(onReturnToQuick)}>返回快捷小窗</Button>}{headerActions}</div></header>
-    {projection.sessions[sessionId] && <SessionActions client={client} session={projection.sessions[sessionId]} busy={busy || pendingCommands.some(command => ['stopSession', 'stopWorkspace', 'archiveSession'].includes(command.type))} onCommand={dispatchCommand} />}
+    }} onNewSession={(id, returnFocus) => showPage(() => { userNavigated.current = true; clearPages(); newSession(id, returnFocus); })}
+      onNavigate={target => showPage(() => navigateProject(target))} onCreated={workspace => setProjection(state => mergeWorkspaces(state, [workspace]))} onSettings={() => requestSettings('models')} />
+    <div className={`conversation-layout${activePage ? ' hidden!' : ''}`} hidden={!!activePage} inert={!!activePage}
+      onKeyDown={event => {
+        if (docked && panel && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing
+          && event.nativeEvent.keyCode !== 229 && !(event.target as HTMLElement).closest('[role="dialog"],[role="menu"]')) {
+          event.preventDefault();
+          closePanel();
+        }
+      }}>
+    <section className={`conversation ${showWelcome ? 'conversation--empty' : ''}`}><header className="conversation-header"><div><div className="assistant-identity">{agent && <span className="profile-symbol" aria-label="助理图标">{assistantIcons.find(icon => icon.id === agent.icon_id)?.symbol ?? agent.icon_id}</span>}<h1>{agent?.display_name ?? '主助理'}</h1></div><h2>{projection.sessions[sessionId]?.title ?? '新会话'}</h2></div>
+      <div className="button-row">{!management && onReturnToQuick && <IconButton icon="quick" label="返回快捷小窗" onClick={() => void perform(onReturnToQuick)} />}{headerActions}</div></header>
     <p className={`connection-status ${['本机事件流已连接', '本机连接就绪', '操作已确认'].includes(status) ? 'connection-status--ready' : ''}`} role="status">{status}</p>
-    {error && <details className="operation-error"><summary>上次操作未完成</summary><p role="alert">{error}</p></details>}
     {!management && commandStatus}
     <p className="sr-only" role="status" aria-live="polite">{completion}</p>
     <section ref={messageScroll} className="messages" aria-label="持久对话" onScroll={event => { scrollPositions.current.set(sessionId, event.currentTarget.scrollTop); }}><div className="thread">
-      {!messageIds.length && <div className="welcome"><span className="welcome-icon" aria-hidden="true">✦</span><h2>把想法变成可追溯的成果</h2><p>聊一个问题，或选几份笔记，一起整理出下一步。</p>
-        {!sessionId && <Button className="button--primary" onClick={() => newSession()}>开始新会话</Button>}
-        {!Object.keys(projection.models).length && initialized && <section aria-label="首次配置"><p>先添加连接和模型，即可发送第一条消息。草稿会为你保留。</p><Button onClick={() => requestSettings('models')}>配置第一个模型</Button></section>}</div>}
-      {feedbackQuery?.request === view.current && feedbackQuery.failed && <div className="status-message" role="status">
-        <p>暂时无法读取本会话的消息反馈。</p>
-        <button type="button" disabled={feedbackQuery.loading} onClick={() => setFeedbackRetry(value => value + 1)}>重新读取消息反馈</button>
-      </div>}
+      {showWelcome && <section className="conversation-start" aria-label="会话引导">
+        <h2>今天想做什么？</h2>
+        {showStartAction && <div className="conversation-start-model">
+          <span>连接模型后即可发送</span>
+          <Button variant="outline" size="sm" onClick={() => requestSettings('models')}>配置模型</Button>
+        </div>}
+      </section>}
       <MessageList client={client} store={store} messages={messageIds.map(id => projection.messages[id]).filter(Boolean)} assistantName={agent?.display_name ?? '主助理'}
-        runs={runs} feedback={Object.values(projection.runFeedback).filter(item => item.session_id === sessionId
-          && item.version >= (projection.runs[item.run_id]?.version ?? 0))}
-        onOpenConnection={connection_id => void perform(() => showWorkbench({ kind: 'connection', connection_id }))}
-        onOpenResults={() => { setPanel(null); setResultsOpen(true); }} />
-      {historyCursor && <button disabled={busy} onClick={() => perform(async () => { const request = view.current; const page = await client.messages(sessionId, { cursor: historyCursor }); if (!currentView(request)) return; setHistoryCursor(page.next_cursor); setProjection(state => mergeMessages(state, sessionId, page.items)); })}>更多历史</button>}
-      {Object.entries(projection.previews).filter(([id]) => projection.runs[projection.activities[id].run_id]?.interaction_session_id === sessionId).map(([id, chunks]) => <p key={id} aria-label="未提交预览" style={{ whiteSpace: 'pre-wrap' }}>临时预览：{Object.values(chunks).join('')}</p>)}
-      {Object.entries(projection.reasoningPreviews).filter(([id]) => projection.runs[projection.activities[id].run_id]?.interaction_session_id === sessionId).map(([id, chunks]) => <details className="reasoning" key={id}><summary>推理 · 未提交预览</summary><p style={{ whiteSpace: 'pre-wrap' }}>{Object.values(chunks).join('')}</p></details>)}
+        activities={Object.values(projection.activities)} previews={projection.previews} reasoningPreviews={projection.reasoningPreviews}
+        runs={runs} artifacts={chatArtifacts} onOpenArtifact={showDeliveryArtifact} onOpenToolArtifact={loadPublishedArtifact} onInspectRun={openTask}
+        hideInlineContext={panel === 'context'}
+        onOpenResults={ids => { setDeliveryIds(ids); openPanel('results'); }} />
+      {historyCursor && <Button variant="ghost" size="sm" disabled={busy} onClick={() => perform(async () => { const request = view.current; const page = await client.messages(sessionId, { cursor: historyCursor }); if (!currentView(request)) return; setHistoryCursor(page.next_cursor); setProjection(state => mergeMessages(state, sessionId, page)); })}>更多历史</Button>}
       <section className="run-actions" aria-label="运行与待办">
-        {todoCursors?.active_runs && <button disabled={busy} onClick={() => perform(async () => { const request = view.current; const page = await client.activeRuns(workspaceId, { cursor: todoCursors.active_runs! }); const details = await Promise.all(page.items.map(run => client.run(run.id))); if (view.current !== request) return; setProjection(state => details.reduce(mergeRunDetail, state)); setTodoCursors(current => current && ({ ...current, active_runs: page.next_cursor })); })}>更多运行</button>}
-        {todoCursors?.pending_questions && <button disabled={busy} onClick={() => perform(async () => { const request = view.current; const page = await client.pendingQuestions(workspaceId, { cursor: todoCursors.pending_questions! }); const details = await Promise.all([...new Set(page.items.map(question => question.run_id))].map(id => client.run(id))); if (view.current !== request) return; setProjection(state => mergeQuestions(details.reduce(mergeRunDetail, state), page.items)); setTodoCursors(current => current && ({ ...current, pending_questions: page.next_cursor })); })}>更多问题</button>}
-        {todoCursors?.pending_approvals && <button disabled={busy} onClick={() => perform(async () => { const request = view.current; const page = await client.pendingApprovals(workspaceId, { cursor: todoCursors.pending_approvals! }); const details = await Promise.all([...new Set(page.items.map(approval => approval.run_id))].map(id => client.run(id))); if (view.current !== request) return; setProjection(state => mergeApprovals(details.reduce(mergeRunDetail, state), page.items)); setTodoCursors(current => current && ({ ...current, pending_approvals: page.next_cursor })); })}>更多审批</button>}
+        {runs.filter(run => run.state === 'interrupted' && run.reason === queryUncertain).map(run => {
+          const activity = Object.values(projection.activities).find(item => item.run_id === run.id && item.state === 'uncertain'
+            && item.error === 'mcp_call_uncertain');
+          return <McpQueryRecovery key={run.id} client={client} run={run}
+            tool={activity && run.config.catalog.mcp_tools[activity.operation]?.original_name}
+            revision={`${projection.cursor}:${projection.sessions[sessionId]?.version ?? ''}`}
+            busy={busy || unconfirmed('resume', run.id)} onInspect={() => openTask(run.id)}
+            onResume={(version, retryReadonly) => void perform(() => dispatchCommand({
+              type: 'resume', args: [run.id, commandMeta(version), retryReadonly],
+            }))} />;
+        })}
+        {todoCursors?.active_runs && <Button variant="outline" size="sm" disabled={busy} onClick={() => perform(async () => { const request = view.current; const page = await client.activeRuns(workspaceId, { cursor: todoCursors.active_runs! }); const details = await Promise.all(page.items.map(run => client.run(run.id))); if (view.current !== request) return; setProjection(state => details.reduce(mergeRunDetail, state)); setTodoCursors(current => current && ({ ...current, active_runs: page.next_cursor })); })}>更多运行</Button>}
+        {todoCursors?.pending_questions && <Button variant="outline" size="sm" disabled={busy} onClick={() => perform(async () => { const request = view.current; const page = await client.pendingQuestions(workspaceId, { cursor: todoCursors.pending_questions! }); const details = await Promise.all([...new Set(page.items.map(question => question.run_id))].map(id => client.run(id))); if (view.current !== request) return; setProjection(state => mergeQuestions(details.reduce(mergeRunDetail, state), page.items)); setTodoCursors(current => current && ({ ...current, pending_questions: page.next_cursor })); })}>更多问题</Button>}
+        {todoCursors?.pending_approvals && <Button variant="outline" size="sm" disabled={busy} onClick={() => perform(async () => { const request = view.current; const page = await client.pendingApprovals(workspaceId, { cursor: todoCursors.pending_approvals! }); const details = await Promise.all([...new Set(page.items.map(approval => approval.run_id))].map(id => client.run(id))); if (view.current !== request) return; setProjection(state => mergeApprovals(details.reduce(mergeRunDetail, state), page.items)); setTodoCursors(current => current && ({ ...current, pending_approvals: page.next_cursor })); })}>更多审批</Button>}
         <ManagedTaskStrip runs={runs} intents={Object.values(projection.followUpIntents).filter(intent => intent.target_session_id === sessionId)} busy={busy}
           onOpen={id => projection.runs[id].kind === 'follow_up' ? selectRun(id) : openTask(id)}
           onQuestion={id => void perform(() => openBackground(id))} onStop={run => void perform(() => dispatchCommand({ type: 'cancel', args: [run.id, commandMeta(run.version)] }))} />
@@ -864,20 +1646,18 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
           const request = view.current, detail = await client.run(id);
           if (currentView(request)) { setProjection(state => mergeRunDetail(state, detail)); selectRun(id); }
         })} />
-        {runs.filter(run => run.kind !== 'managed').map(run => <article className="run-state" key={run.id}><Status state={run.state} />{run.reason && run.reason !== 'user_cancelled' && !Object.hasOwn(modelFailures, run.reason) && <details><summary>本轮运行诊断</summary><p>{run.reason}</p></details>}
-          {run.output && <section className="run-output delivery"><h3>任务交付摘要</h3><Markdown>{run.output.summary}</Markdown>{run.output.unresolved.length > 0 && <ul>{run.output.unresolved.map((item, index) => <li key={index}>{item}</li>)}</ul>}</section>}
-          {['interrupted', 'blocked_incompatible', 'waiting_user'].includes(run.state) && <p className="muted">恢复与阻塞的当前允许操作请见“待办”；不会按状态猜测恢复权限。</p>}
-        </article>)}
-        {questions.map(question => <p key={question.id}>有待回答的问题 <button onClick={() => { setInteractionId(question.id); setInteractionCollapsed(false); }}>回答问题</button></p>)}
+        {questions.map(question => <p key={question.id}>有待回答的问题 <Button variant="ghost" size="sm" onClick={() => { setInteractionId(question.id); setInteractionCollapsed(false); }}>回答问题</Button></p>)}
         {Object.values(projection.questions).filter(question => question.status !== 'pending' && projection.runs[question.run_id]?.interaction_session_id === sessionId).flatMap(question => Object.entries(questionDrafts).filter(([key, draft]) => key.startsWith(`${question.id}:`) && draft.value !== undefined).map(([key, draft]) => <p key={key}>问题已处理，未提交的回答已保留：{typeof draft.value === 'string' ? draft.value : JSON.stringify(draft.value)}</p>))}
       </section>
     </div></section>
     <div className="composer-wrap"><div className="composer-inner">
-    {composerSummary && <div className="composer-summary" key={composerRun?.id}><RunCostSummary summary={composerSummary.cost_summary} disclosureName={summaryDisclosureName} />
-      <ContextNotice usage={composerSummary.context_usage} disclosureName={summaryDisclosureName} onInspectRun={() => openTask(composerRun!.id)} /></div>}
-    {interactions.length > 1 && <label className="interaction-picker">当前待办 <select value={interaction?.id} onChange={event => { setInteractionId(event.target.value); setInteractionCollapsed(false); }}>{interactions.map(item => <option key={item.id} value={item.id}>{item.title}{item.kind === 'question' ? `：${item.question.question}` : ''}</option>)}</select></label>}
-    {backgroundInteraction && <div className="background-return"><p>仅处理原后台任务；当前会话、草稿和本次配置不变。</p><button onClick={returnFromBackground}>返回原页与草稿</button></div>}
-    {interaction && <InteractionPanel item={interaction} collapsed={interactionCollapsed} onCollapse={() => setInteractionCollapsed(value => !value)}>
+    {interactions.length > 1 && <Field className="interaction-picker"><FieldLabel htmlFor={`${summaryDisclosureName}-pending-item`}>当前待办</FieldLabel>
+      <NativeSelect id={`${summaryDisclosureName}-pending-item`} value={interaction?.id} onChange={event => { setInteractionId(event.target.value); setInteractionCollapsed(false); }}>
+        {interactions.map(item => <NativeSelectOption key={item.id} value={item.id}>{item.title}{item.kind === 'question' ? `：${item.question.question}` : ''}</NativeSelectOption>)}
+      </NativeSelect>
+    </Field>}
+    {backgroundInteraction && <div className="background-return"><p>仅处理原后台任务；当前会话、草稿和本次配置不变。</p><IconButton icon="back" label="返回原页与草稿" onClick={returnFromBackground} /></div>}
+    {interaction && <InteractionPanel ref={interactionPanel} item={interaction} collapsed={interactionCollapsed} onCollapse={() => setInteractionCollapsed(value => !value)}>
     {interaction.kind === 'question' && (() => {
       const question = interaction.question, key = `${question.id}:${question.version}`;
       const answerDraft = questionDrafts[key] ?? { value: undefined, revision: 0 };
@@ -889,170 +1669,330 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
           afterConfirmed: async () => { setQuestionDrafts(current => current[key]?.revision === answerDraft.revision ? { ...current, [key]: { value: undefined, revision: answerDraft.revision + 1 } } : current); if (returnTarget && backgroundReturn.current === returnTarget) returnFromBackground(); },
         }))} />;
     })()}
-    {interaction.kind === 'approval' && <ApprovalCard approval={interaction.approval} busy={busy || unconfirmed('decide', interaction.approval.id)} onDecision={allow => {
-      const returnTarget = backgroundReturn.current;
-      return perform(() => dispatchCommand({ type: 'decide', args: [interaction.approval.id, { meta: commandMeta(interaction.approval.version), data: { allow } }] }, { key: { workspaceId: interaction.approval.workspace_id, sessionId: interaction.approval.session_id ?? '' }, afterConfirmed: async () => { if (returnTarget && backgroundReturn.current === returnTarget) returnFromBackground(); } }));
-    }} />}
+    {interaction.kind === 'approval' && <Button variant="outline" size="sm" onClick={() => setApprovalId(interaction.approval.id)}>查看审批</Button>}
     {interaction.kind === 'recovery' && <RecoveryPanel publications={publications} busy={busy} isPending={id => pendingCommands.some(command => ['restoreExport', 'releaseExport'].includes(command.type) && commandContexts.current.get(command.commandId)?.targetId === id)} onCommand={(type, item) => dispatchCommand({ type, args: [item.id, commandMeta(item.version)] }, { key: { workspaceId: item.workspace_id, sessionId: item.session_id } })} />}
     {interaction.kind === 'scope' && <section className="resource-bar" aria-label="资料选择"><div className="interaction-body">
-      {resourcesSyncing && <p>资料与授权同步中；尚未加载的授权状态未知。</p>}
-      {currentCoverage?.error && <p role="alert">{currentCoverage.error}<button onClick={() => setCoverageRevision(value => value + 1)}>重新核对授权</button></p>}
-      {resourceCursors?.resources && <button disabled={busy || !sessionId} onClick={() => perform(() => loadResourcePage('resources'))}>更多资料</button>}
-      {resourceCursors?.grants && <button disabled={busy || !sessionId} onClick={() => perform(() => loadResourcePage('grants'))}>更多授权</button>}
-      <ul>{draft.resourceIds.map(id => <li key={id}>{projection.resources[id]?.label ?? `资料尚未同步 · ${id}`} <button aria-label="移除本次附件" disabled={busy || configurationLocked} onClick={() => drafts.update(draftKey, { resourceIds: draft.resourceIds.filter(item => item !== id) })}>移除本次附件</button></li>)}</ul>
-      <p>点击发送即同意本次读取所列文件并发送至：{connection ? `${connection.display_name} · ${connection.endpoint}` : model ? '连接尚未同步，无法确认目的地' : '请先选择模型'}。目录范围需要另行授权。</p></div><footer className="interaction-footer"><button disabled={busy || !connection || granted || resourcesSyncing || resources.length !== draft.resourceIds.length || configurationLocked || unconfirmed('grant')} onClick={() => perform(() => dispatchCommand({ type: 'grant', args: [{ meta: commandMeta(), data: { scope: { kind: 'session', workspace_id: workspaceId, session_id: sessionId }, resource_ids: draft.resourceIds as [string, ...string[]], purposes: ['read', 'model_send'], destination: connection.endpoint } }] }))}>{granted ? '当前范围已授权' : resourcesSyncing ? '授权状态同步中' : '授权读取并发送'}</button></footer>
+      {sessionId && resourcesSyncing && <p>资料与授权同步中；尚未加载的授权状态未知。</p>}
+      {currentCoverage?.error && <p role="alert">{currentCoverage.error}<Button variant="outline" size="sm" onClick={() => setCoverageRevision(value => value + 1)}>重新核对授权</Button></p>}
+      {resourceCursors?.resources && <Button variant="outline" size="sm" disabled={busy || !sessionId} onClick={() => perform(() => loadResourcePage('resources'))}>更多资料</Button>}
+      {resourceCursors?.grants && <Button variant="outline" size="sm" disabled={busy || !sessionId} onClick={() => perform(() => loadResourcePage('grants'))}>更多授权</Button>}
+      <ul aria-label="本次附件">{draft.resourceIds.map((id, index) => {
+        const name = projection.resources[id]?.label ?? `附件 ${index + 1}（正在同步）`;
+        return <li key={id} className="inline-flex max-w-full items-center gap-1">
+          <span className="min-w-0 wrap-anywhere">{name}</span>
+          <IconButton icon="close" size="icon-xs" label={`移除附件「${name}」`} disabled={busy || configurationLocked}
+            onClick={event => {
+              const row = event.currentTarget.closest('li')!;
+              const adjacent = row.nextElementSibling ?? row.previousElementSibling;
+              const focusTarget = adjacent?.querySelector<HTMLButtonElement>('button')
+                ?? workbenchRoot.current?.querySelector<HTMLTextAreaElement>('#message-input');
+              focusTarget?.focus();
+              drafts.update(draftKey, { resourceIds: draft.resourceIds.filter(item => item !== id) });
+            }} />
+        </li>;
+      })}</ul>
+      <p>点击发送即同意本次读取所列文件并发送至：{connection ? `${connection.display_name} · ${connection.endpoint}` : model ? '连接尚未同步，无法确认目的地' : '请先选择模型'}。此授权仅用于当前会话。{directoryIds.length > 0 && '目录范围需要另行授权。'}</p></div>
+      {directoryIds.length > 0 && <footer className="interaction-footer"><Button variant="outline" size="sm" disabled={busy || !connection || directoriesGranted || resourcesSyncing || !missingCoverage || configurationLocked || unconfirmed('grant')} onClick={() => perform(() => dispatchCommand({ type: 'grant', args: [{ meta: commandMeta(), data: { scope: { kind: 'session', workspace_id: workspaceId, session_id: sessionId }, resource_ids: directoryIds as [string, ...string[]], purposes: ['read', 'model_send'], destination: connection.endpoint } }] }))}>{directoriesGranted ? '当前目录已授权' : resourcesSyncing ? '授权状态同步中' : '授权读取并发送目录'}</Button></footer>}
     </section>}
     </InteractionPanel>}
-    {interaction?.kind !== 'scope' && <div className="resource-pagination">{resourceCursors?.resources && <button onClick={() => perform(() => loadResourcePage('resources'))}>更多资料</button>}{resourceCursors?.grants && <button onClick={() => perform(() => loadResourcePage('grants'))}>更多授权</button>}</div>}
-    {activeRun?.kind === 'follow_up' && !activeRun.yield_requested && !activeRun.follow_up_closed && <fieldset className="configuration-row" disabled={busy}><legend>本次输入</legend>
-      <label><input type="radio" name={`summary-mode-${summaryDisclosureName}`} checked={!editingSummary} onChange={() => drafts.update(draftKey, { summaryRunId: null })} />新目标（默认排队）</label>
-      <label><input type="radio" name={`summary-mode-${summaryDisclosureName}`} disabled={!!draft.sourceResult} checked={editingSummary} onChange={() => drafts.update(draftKey, { summaryRunId: activeRun.id })} />修改这个总结</label>
-    </fieldset>}
+    {interaction?.kind !== 'scope' && <div className="resource-pagination">{resourceCursors?.resources && <Button variant="ghost" size="sm" onClick={() => perform(() => loadResourcePage('resources'))}>更多资料</Button>}{resourceCursors?.grants && <Button variant="ghost" size="sm" onClick={() => perform(() => loadResourcePage('grants'))}>更多授权</Button>}</div>}
+    {activeRun?.kind === 'follow_up' && !activeRun.yield_requested && !activeRun.follow_up_closed &&
+      <FieldSet className="mb-2"><FieldLegend id={`${summaryDisclosureName}-summary-mode`}>本次输入</FieldLegend>
+        <RadioGroup aria-labelledby={`${summaryDisclosureName}-summary-mode`} className="flex flex-wrap gap-3" disabled={busy}
+          value={editingSummary ? 'edit' : 'new'} onValueChange={value => drafts.update(draftKey, { summaryRunId: value === 'edit' ? activeRun.id : null })}>
+          <Field orientation="horizontal"><RadioGroupItem id={`${summaryDisclosureName}-new-goal`} value="new" />
+            <FieldLabel htmlFor={`${summaryDisclosureName}-new-goal`}>新目标（默认排队）</FieldLabel></Field>
+          <Field orientation="horizontal"><RadioGroupItem id={`${summaryDisclosureName}-edit-summary`} value="edit" disabled={!!draft.sourceResult} />
+            <FieldLabel htmlFor={`${summaryDisclosureName}-edit-summary`}>修改这个总结</FieldLabel></Field>
+        </RadioGroup>
+      </FieldSet>}
     {draft.sourceResult && <section className="resource-bar" aria-label="本次总结引用"><p>本次将总结所选交付结果 · 结果版本 {sourceResult?.result_version ?? '待同步'}</p>
       <p>使用本次模型、资料与限额创建新的用户任务。</p>{sourceResultInvalid && <p role="alert">总结引用已失效或尚未同步，请重新选择结果</p>}
-      <button disabled={busy} onClick={() => drafts.update(draftKey, { sourceResult: null })}>移除总结引用</button></section>}
+      <Button variant="ghost" size="sm" disabled={busy} onClick={() => drafts.update(draftKey, { sourceResult: null })}>移除总结引用</Button></section>}
     {Object.keys(draft.skillVersions).length > 0 && <section aria-label="新目标的 Skill 版本" className="skill-pins">
-      {Object.entries(draft.skillVersions).map(([id, hash]) => <span key={id}>{skillNames[`${id}:${hash}`] ?? `Skill ${id}`} · {hash.slice(0, 12)}
-        <button type="button" aria-label={`移除 Skill ${skillNames[`${id}:${hash}`] ?? id}`} onClick={() => {
-          const skillVersions = { ...draft.skillVersions }; delete skillVersions[id]; drafts.update(draftKey, { skillVersions });
-        }}>×</button></span>)}
+      {Object.entries(draft.skillVersions).map(([id, hash], index) => {
+        const label = skillLabels[`${id}:${hash}`];
+        const name = label?.name ?? `已选 Skill ${index + 1}`;
+        return <span key={id}>{name} · {label?.release || '本次已选版本'}
+        {id in draft.skillExecutionPermissions && (draft.skillExecutionPermissions[id] ? ' · 本机脚本已选' : ' · 仅指导')}
+        <IconButton type="button" icon="close" size="icon-xs" label={label ? `移除 Skill ${name}` : `移除${name}`} onClick={() => {
+          const skillVersions = { ...draft.skillVersions };
+          const skillExecutionPermissions = { ...draft.skillExecutionPermissions };
+          delete skillVersions[id]; delete skillExecutionPermissions[id];
+          drafts.update(draftKey, { skillVersions, skillExecutionPermissions });
+        }} /></span>;
+      })}
       {steering && <p>这些版本为新目标保留；补充指令沿当前运行原版本。</p>}
     </section>}
     {defaultModelLoading && <p role="status" id="default-model-status">正在加载默认模型…</p>}
     {defaultModelError && <div id="default-model-status"><p role="alert">{defaultModelError}</p><Button onClick={() => retryModelLookup(value => value + 1)}>重试加载默认模型</Button></div>}
+    {fileIssue && !steering && <section className="resource-bar" aria-label="处理会话文件">
+      <div className="interaction-body">
+        <p role="status">{fileIssue.kind === 'recipient'
+          ? `会话文件的接收方已改变。请确认要发送到 ${connection?.display_name} · ${connection?.endpoint} 的文件。`
+          : '文件已改变。重新选择文件可使用新版。'}</p>
+        {adoptionVersions ? <ul aria-label="可继续使用的原文件版本">
+          {fileIssue.resourceIds.map(id => <li key={id}>{historicalFiles.get(id)!.name} · 版本{' '}
+            <code title={adoptionVersions[id]}>{adoptionVersions[id].slice(0, 12)}</code></li>)}
+        </ul> : !!issueLabels?.length && <p>{issueLabels.join('、')}</p>}
+      </div>
+      <footer className="interaction-footer">
+        {adoptionVersions && <Button type="button" size="sm" disabled={sendUnavailable || selectionUnavailable}
+          onClick={event => void send(event, adoptionVersions)}>向此接收方使用原文件版本</Button>}
+        <Button type="button" size="sm" disabled={busy || configurationLocked} onClick={event => {
+          const trigger = event.currentTarget;
+          void perform(() => selectResources('file', trigger, fileIssue));
+        }}>{fileIssue.kind === 'recipient' ? '重新选择要发送的文件' : '重新选择以使用新版'}</Button>
+        <Button type="button" variant="outline" size="sm" disabled={sendUnavailable} onClick={event => void send(event, 'text')}>仅发送本条文字</Button>
+      </footer>
+    </section>}
     <Composer value={text} onChange={setText} onSubmit={send} steering={!!canSteer} queueing={queueing}
       onStop={activeRun ? () => void perform(() => dispatchCommand({ type: 'cancel', args: [activeRun.id, commandMeta(activeRun.version)] })) : undefined}
       stopDisabled={busy || !!activeRun && unconfirmed('cancel', activeRun.id)}
-      blockedReason={!Object.keys(projection.models).length ? '还没有配置模型，请打开模型设置' : !modelId ? '在输入区选择本次使用的模型' : !sessionId ? '先新建一个会话' : projection.sessions[sessionId]?.archived ? '会话已归档；取消归档后可发送，草稿已保留' : draft.sourceResult && steering ? '当前用户任务结束后可总结所选结果，草稿已保留' : steering && !canSteer ? activeRoot?.kind === 'tool' ? '导出结束后可发送；也可另开会话' : '正在同步当前运行类型，草稿已保留' : pendingSubmission ? '请先核对上次提交，草稿已保留' : undefined}
+      blockedReason={!workspaceId ? '请选择项目' : needsModel && !steering ? '请先配置模型'
+        : !modelId && !steering ? '在输入区选择本次使用的模型'
+        : projection.sessions[sessionId]?.archived ? '会话已归档，取消归档后可发送。草稿已保留'
+        : draft.sourceResult && steering ? '当前用户任务结束后可总结所选结果，草稿已保留'
+        : steering && !canSteer ? activeRoot?.kind === 'tool' ? '导出结束后可发送；也可另开会话' : '正在同步当前运行类型，草稿已保留'
+        : pendingSubmission ? '请先核对上次提交，草稿已保留'
+        : !sessionId && !agent ? '正在读取默认助理' : undefined}
       toolbar={<div className="composer-toolbar">
-        <button type="button" className="attachment-button" aria-label="选择文本文件" title="选择文本文件" disabled={busy || !sessionId || configurationLocked} onClick={() => perform(() => selectResources('file'))}>♧</button>
-        <button type="button" className="attachment-button" aria-label="选择目录" title="选择目录" disabled={busy || !sessionId || configurationLocked} onClick={() => perform(() => selectResources('directory'))}>▱</button>
-        <button type="button" disabled={!sessionId} onClick={() => openSkillLibrary('project')}>选择 Skill</button>
-        <select aria-label="模型" aria-busy={defaultModelLoading} aria-invalid={!!defaultModelError || undefined} aria-describedby={defaultModelLoading || defaultModelError ? 'default-model-status' : undefined} title={connection ? `${connection.display_name} · ${connection.endpoint}` : '连接尚未同步'} value={modelId} disabled={busy || configurationLocked} onChange={event => setModelId(event.target.value)}><option value="">请选择模型</option>{modelId && !model && <option value={modelId}>默认模型{defaultModelError ? '（加载失败）' : '（加载中）'}</option>}{Object.values(projection.models).map(model => <option key={model.id} value={model.id}>{model.display_name ?? model.model_id} · {projection.connections[model.connection_id]?.display_name ?? '连接尚未同步'}</option>)}</select>
-        <details className="composer-options"><summary aria-label="运行配置" title="运行配置">⋯</summary><div className="composer-options-panel">
-          <fieldset className="configuration-row" disabled={busy || configurationLocked}><legend>新运行的配置（当前运行固定原配置）</legend>
-            <label><input type="checkbox" checked={draft.allowManaged} onChange={event => drafts.update(draftKey, { allowManaged: event.target.checked })} />允许本次转为独立后台任务</label>
-            <label><input type="checkbox" checked={draft.allowFollowUp} onChange={event => drafts.update(draftKey, { allowFollowUp: event.target.checked })} />完成后自动总结</label>
-            <fieldset><legend>本次记忆范围</legend>
-              {([['user_global', '本次读取个人记忆'], ['workspace', '本次读取项目记忆']] as const).map(([kind, label]) =>
-                <label key={kind}><input type="checkbox" checked={draft.memoryScopes.some(scope => scope.kind === kind)}
-                  onChange={event => drafts.update(draftKey, { memoryScopes: event.target.checked
-                    ? [...draft.memoryScopes, kind === 'user_global' ? personalScope : { kind, workspace_id: workspaceId, session_id: null }]
-                    : draft.memoryScopes.filter(scope => scope.kind !== kind) })} />{label}</label>)}
-              {!draft.memoryScopes.length && <p>未选择记忆范围，本次不读取长期记忆。</p>}
-              {memorySources.descriptions.map(description => <p key={description}>{description}</p>)}
-              {memorySources.records.length > 0 && <details><summary>本次排除单条记忆</summary>
-                {memorySources.records.map(record => <label key={record.id}><input type="checkbox" checked={draft.excludedSourceIds.includes(record.id)}
-                  onChange={event => drafts.update(draftKey, { excludedSourceIds: event.target.checked ? [...draft.excludedSourceIds, record.id]
-                    : draft.excludedSourceIds.filter(id => id !== record.id) })} />本次排除：{record.text}</label>)}
-              </details>}
-              {draft.excludedSourceIds.length > 0 && <p>本次明确排除 {draft.excludedSourceIds.length} 条记忆。</p>}
-              {memorySources.error && <p role="alert">{memorySources.error}</p>}
-              <p>切换模型将重新核对目的地；补充指令沿当前运行原范围。</p>
-              <button type="button" onClick={() => requestSettings('memory')}>记忆读取与授权设置</button>
-              <p>可将本次记忆范围和 Skill 版本记为当前项目、当前模型地址的偏好；有效授权仍逐次复核。</p>
-              <button type="button" disabled={!connection} onClick={() => {
-                try { drafts.rememberPreference(draftKey, connection!.endpoint); } catch (error) { report(error); }
-              }}>记住本项目的来源偏好</button>
-              <button type="button" disabled={!connection} onClick={() => {
-                try { drafts.forgetPreference(draftKey, connection!.endpoint); } catch (error) { report(error); }
-              }}>清除本项目的来源偏好</button>
-            </fieldset>
-            <details><summary>本次限额</summary>
-              {([['max_model_requests', '模型请求上限'], ['max_steps', '步骤上限'], ['max_tasks', '任务上限'], ['max_total_tokens', '总 Token 上限'],
-                ['deadline_seconds', '时限（秒）'], ['max_delegation_depth', '委派深度上限'], ['max_parallel_agents', '并行成员上限']] as const).map(([key, label]) => <label key={key}>{label}
-                <input type="number" min={key === 'deadline_seconds' ? '0.001' : '0'} step={key === 'deadline_seconds' ? 'any' : '1'} max={Number.MAX_SAFE_INTEGER}
-                  placeholder="使用默认限制" value={draft.limits[key] ?? ''} onChange={event => drafts.update(draftKey, { limits: { ...draft.limits, [key]: event.target.value === '' ? undefined : event.target.valueAsNumber } })} /></label>)}
-              <label>费用上限（记账单位）<input inputMode="numeric" pattern="(0|[1-9][0-9]*)" placeholder="使用默认限制" value={draft.limits.max_cost_units ?? ''}
-                onChange={event => drafts.update(draftKey, { limits: { ...draft.limits, max_cost_units: event.target.value || undefined } })} /></label>
-            </details>
-            <label>助理 <select value={agentId} onChange={event => { setAgentId(event.target.value); setModelId(projection.profiles[event.target.value].default_model_profile_id ?? ''); }}>{Object.values(projection.profiles).map(profile => <option key={profile.id} value={profile.id}>{profile.display_name}</option>)}</select></label>
-            {profilePage?.next_cursor && <button type="button" onClick={() => perform(async () => { const page = await client.profiles({ cursor: profilePage.next_cursor! }); setProfilePage(page); setProjection(state => ({ ...state, profiles: mergeVersioned(state.profiles, page.items) })); })}>更多助理</button>}
-            <button type="button" onClick={() => perform(async () => { const page = await client.models(modelPage?.next_cursor ? { cursor: modelPage.next_cursor } : {}); setModelPage(page); setProjection(state => ({ ...state, models: mergeVersioned(state.models, page.items) })); })}>{modelPage?.next_cursor ? '更多模型' : '刷新模型'}</button>
-            <button type="button" onClick={() => perform(async () => { const page = await client.connections(connectionPage?.next_cursor ? { cursor: connectionPage.next_cursor } : {}); setConnectionPage(page); setProjection(state => ({ ...state, connections: mergeVersioned(state.connections, page.items) })); })}>{connectionPage?.next_cursor ? '更多连接' : '刷新连接'}</button>
-          </fieldset>
-          <button type="button" onClick={() => setPanel(panel === 'resources' ? null : 'resources')}>管理授权</button>
-        </div></details>
-        <button type="button" aria-label="模型设置" title="模型设置" onClick={() => requestSettings('models')}>⚙</button>
+        {!steering && <McpAdmission admission={mcpAdmission} />}
+        <IconButton type="button" icon="file" label="选择文本文件" disabled={busy || !workspaceId || readyWorkspace !== workspaceId || configurationLocked} onClick={event => {
+          const trigger = event.currentTarget;
+          void perform(() => selectResources('file', trigger));
+        }} />
+        <IconButton type="button" icon="folder" label="选择目录" disabled={busy || !sessionId || configurationLocked} onClick={event => {
+          const trigger = event.currentTarget;
+          void perform(() => selectResources('directory', trigger));
+        }} />
+        <IconButton type="button" icon="skill" label="选择 Skill" disabled={!workspaceId || readyWorkspace !== workspaceId || busy || pendingSubmission} onClick={() => openSkillLibrary('project')} />
+        <ComposerModelPicker models={Object.values(projection.models)}
+          connections={Object.values(projection.connections)}
+          providerPresets={providerPresets}
+          recentModelIds={recentModelIds} modelId={lockedModel?.id ?? modelId} onModelChange={setModelId}
+          effort={lockedModel ? lockedModel.reasoning_effort ?? null : reasoningEffort}
+          effortOptions={lockedModel ? lockedModel.capabilities.reasoning_efforts ?? [] : effortOptions}
+          onEffortChange={value => drafts.update(draftKey, { modelId, reasoningEffort: value })}
+          disabled={!workspaceId || busy || configurationLocked} onLoadCatalog={loadCatalog} />
+        <Button type="button" ref={runConfigurationTrigger} variant="ghost" size="sm" aria-label="运行配置"
+          aria-haspopup="dialog" onClick={() => setRunConfigurationOpen(true)}>运行配置</Button>
       </div>}
-      disabled={busy || workReadySession !== sessionId || projection.sessions[sessionId]?.archived || pendingSubmission || !!steering && !canSteer || !sessionId || !text.trim()
-          || sourceResultInvalid || !!draft.sourceResult && !!steering || (!steering && (memorySources.loading || !agent || !model || draft.resourceIds.length !== resources.length || (draft.resourceIds.length > 0 && (!connection || !currentCoverage?.result || (!granted && resources.some(resource => resource.kind !== 'file'))))))} />
+      disabled={sendDisabled} />
+        {runConfigurationOpen && <Dialog title="运行配置" onClose={() => setRunConfigurationOpen(false)} onReturnFocus={() => {
+          if (!runConfigurationTrigger.current?.closest('[inert]')) runConfigurationTrigger.current?.focus();
+        }}><FieldGroup className="run-configuration">
+          <FieldSet disabled={busy || configurationLocked}>
+            <FieldLegend>新运行的配置（当前运行固定原配置）</FieldLegend>
+            <Field><FieldLabel htmlFor={`${summaryDisclosureName}-agent`}>助理</FieldLabel>
+              <NativeSelect id={`${summaryDisclosureName}-agent`} value={agent?.id ?? ''} disabled={!sessionId} onChange={event => {
+                const profile = projection.profiles[event.target.value];
+                setAgentId(profile.id);
+                setModelId(profile.default_model_profile_id ?? sessionChoice?.model_profile_id ?? recentModelIds[0] ?? '');
+              }}>
+                {Object.values(projection.profiles).map(profile => <NativeSelectOption key={profile.id} value={profile.id}>{profile.display_name}</NativeSelectOption>)}
+              </NativeSelect>
+            </Field>
+            {profilePage?.next_cursor && <Button variant="outline" size="sm" className="self-start" onClick={() => perform(async () => {
+              const page = await client.profiles({ cursor: profilePage.next_cursor! });
+              setProfilePage(page); setProjection(state => ({ ...state, profiles: mergeVersioned(state.profiles, page.items) }));
+            })}>更多助理</Button>}
+            <Field orientation="horizontal"><Checkbox id={`${summaryDisclosureName}-managed`} disabled={busy || configurationLocked}
+              checked={draft.allowManaged} onCheckedChange={allowManaged => drafts.update(draftKey, { allowManaged: allowManaged === true })} />
+              <FieldLabel htmlFor={`${summaryDisclosureName}-managed`}>允许本次转为独立后台任务</FieldLabel></Field>
+            <Field orientation="horizontal"><Checkbox id={`${summaryDisclosureName}-follow-up`} disabled={busy || configurationLocked}
+              checked={draft.allowFollowUp} onCheckedChange={allowFollowUp => drafts.update(draftKey, { allowFollowUp: allowFollowUp === true })} />
+              <FieldLabel htmlFor={`${summaryDisclosureName}-follow-up`}>完成后自动总结</FieldLabel></Field>
+            <FieldSet className="rounded-control border border-border p-3">
+              <FieldLegend>本次记忆范围</FieldLegend>
+              <FieldDescription>开启记忆读取后，项目偏好和指令会在使用已获授权的模型服务时自动应用到主助理和成员。</FieldDescription>
+              <FieldDescription>开启个人画像读取后，个人偏好和指令仅由已获个人记忆授权的主助理默认使用。</FieldDescription>
+              {([['user_global', '本次读取其他个人记忆'], ['workspace', '本次读取其他项目记忆']] as const).map(([kind, label]) =>
+                <Field key={kind} orientation="horizontal"><Checkbox id={`${summaryDisclosureName}-${kind}`} disabled={busy || configurationLocked}
+                  checked={draft.memoryScopes.some(scope => scope.kind === kind)}
+                  onCheckedChange={checked => drafts.update(draftKey, { memoryScopes: checked === true
+                    ? [...draft.memoryScopes, kind === 'user_global' ? personalScope : { kind, workspace_id: workspaceId, session_id: null }]
+                    : draft.memoryScopes.filter(scope => scope.kind !== kind) })} />
+                  <FieldLabel htmlFor={`${summaryDisclosureName}-${kind}`}>{label}</FieldLabel></Field>)}
+              {memorySources.descriptions.map(description => <FieldDescription key={description}>{description}</FieldDescription>)}
+              {memorySources.previews.length > 0 && <details><summary>本次排除单条记忆</summary>
+                <FieldDescription>发送时按授权、来源和上下文容量核对可用记忆。</FieldDescription>
+                {memorySources.previews.map(group => <section key={group.label} aria-label={group.label} className="my-2 flex flex-col items-start gap-2">
+                  <FieldDescription>{group.label}</FieldDescription>
+                  {group.records.map(record => <Field key={record.id} orientation="horizontal">
+                    <Checkbox id={`${summaryDisclosureName}-${record.id}`} disabled={busy || configurationLocked} checked={draft.excludedSourceIds.includes(record.id)}
+                      onCheckedChange={checked => drafts.update(draftKey, { excludedSourceIds: checked === true ? [...draft.excludedSourceIds, record.id]
+                        : draft.excludedSourceIds.filter(id => id !== record.id) })} />
+                    <FieldLabel htmlFor={`${summaryDisclosureName}-${record.id}`} className="wrap-anywhere">本次排除：{record.text}</FieldLabel></Field>)}
+                  {group.loading && <FieldDescription>正在加载记忆…</FieldDescription>}
+                  {group.error && <FieldDescription>载入失败：{group.error}</FieldDescription>}
+                  {group.retry && <Button variant="outline" size="sm" onClick={() => void group.retry?.()}>重试读取{group.label}</Button>}
+                  {group.more && <Button variant="outline" size="sm" disabled={group.loading} onClick={() => void group.more?.()}>加载更多{group.label}</Button>}
+                </section>)}
+              </details>}
+              {draft.excludedSourceIds.length > 0 && <FieldDescription>本次明确排除 {draft.excludedSourceIds.length} 条记忆。</FieldDescription>}
+              {memorySources.error && <p role="alert">{memorySources.error}</p>}
+              <FieldDescription>切换模型将重新核对目的地；补充指令沿当前运行原范围。</FieldDescription>
+              <Button variant="outline" size="sm" className="self-start" onClick={() => requestSettings('memory')}>记忆读取与授权设置</Button>
+              <FieldDescription>可将本次记忆范围和 Skill 版本记为当前项目、当前模型地址的偏好；有效授权仍逐次复核。</FieldDescription>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" disabled={!connection} onClick={() => {
+                  try { drafts.rememberPreference(draftKey, connection!.endpoint); } catch (error) { report(error); }
+                }}>记住本项目的来源偏好</Button>
+                <Button variant="outline" size="sm" disabled={!connection} onClick={() => {
+                  try { drafts.forgetPreference(draftKey, connection!.endpoint); } catch (error) { report(error); }
+                }}>清除本项目的来源偏好</Button>
+              </div>
+            </FieldSet>
+            <details><summary>本次限额</summary>
+              <FieldGroup className="mt-2 sm:grid sm:grid-cols-2">
+              {([['max_model_requests', '模型请求上限'], ['max_steps', '步骤上限'], ['max_tasks', '任务上限'], ['max_total_tokens', '总 Token 上限'],
+                ['deadline_seconds', '时限（秒）'], ['max_delegation_depth', '委派深度上限'], ['max_parallel_agents', '并行成员上限']] as const).map(([key, label]) =>
+                <Field key={key}><FieldLabel htmlFor={`${summaryDisclosureName}-${key}`}>{label}</FieldLabel>
+                  <Input id={`${summaryDisclosureName}-${key}`} type="number" min={key === 'deadline_seconds' ? '0.001' : '0'} step={key === 'deadline_seconds' ? 'any' : '1'} max={Number.MAX_SAFE_INTEGER}
+                    placeholder="使用默认限制" value={draft.limits[key] ?? ''} onChange={event => drafts.update(draftKey, { limits: { ...draft.limits, [key]: event.target.value === '' ? undefined : event.target.valueAsNumber } })} /></Field>)}
+              <Field><FieldLabel htmlFor={`${summaryDisclosureName}-cost`}>费用上限（记账单位）</FieldLabel>
+                <Input id={`${summaryDisclosureName}-cost`} inputMode="numeric" pattern="(0|[1-9][0-9]*)"
+                  placeholder="使用默认限制" value={draft.limits.max_cost_units ?? ''}
+                  onChange={event => drafts.update(draftKey, { limits: { ...draft.limits, max_cost_units: event.target.value || undefined } })} /></Field>
+              </FieldGroup>
+            </details>
+            <div className="flex flex-wrap gap-2">
+            </div>
+          </FieldSet>
+          <div className="flex flex-wrap justify-end gap-2"><Button variant="outline" onClick={() => requestSettings('models')}>模型设置</Button>
+            <Button variant="outline" onClick={() => { setRunConfigurationOpen(false); openPanel('resources', runConfigurationTrigger.current!); }}>管理授权</Button></div>
+        </FieldGroup></Dialog>}
     </div></div>
     </section>
-    <Sheet open={!!panel || resultsOpen} onOpenChange={open => { if (!open) { setPanel(null); setResultsOpen(false); } }}><SheetContent onOpenAutoFocus={() => { panelOrigin.current = document.activeElement as HTMLElement; }} onCloseAutoFocus={returnPanelFocus} onEscapeKeyDown={event => { if (event.isComposing || event.keyCode === 229) event.preventDefault(); }}><header className="panel-header"><SheetTitle asChild><h2>{resultsOpen ? '后台交付结果' : panel ? { tasks: '任务详情', artifacts: '产物', trace: 'Trace', resources: '管理授权' }[panel] : '会话详情'}</h2></SheetTitle><Button aria-label="关闭详情" onClick={() => { setPanel(null); setResultsOpen(false); }}>×</Button></header>
-      {resultsOpen && sessionId && <ResultInbox client={client} store={store} sessionId={sessionId} onCommand={dispatchCommand} onOpen={id => { setResultsOpen(false); openTask(id); }}
-        summaryBlocked={busy || pendingSubmission || activeRun?.kind === 'user' || projection.sessions[sessionId]?.archived}
-        onSummarize={entry => { drafts.update(draftKey, { sourceResult: entry.id, summaryRunId: null }); setResultsOpen(false); requestAnimationFrame(() => document.getElementById('message-input')?.focus()); }} />}
-      {panel === 'resources' && workspaceId && <ResourcePanel client={client} workspaceId={workspaceId} sessionId={sessionId || null} refreshKey={Object.values(projection.grants).map(item => `${item.id}:${item.version}`).join(',') + Object.values(projection.scopes).map(item => `${item.id}:${item.epoch}`).join(',')} isRevokePending={id => pendingCommands.some(command => command.type === 'revoke' && commandContexts.current.get(command.commandId)?.targetId === id)} onGrantsLoaded={items => setProjection(state => mergeGrants(state, items))} onRevoke={(id, meta) => dispatchCommand({ type: 'revoke', args: [id, meta] })} />}
-      {panel === 'tasks' && summary && <RunCostSummary key={selectedRun?.id} summary={summary.cost_summary} disclosureName={`${summaryDisclosureName}-task`} />}
-      {panel === 'tasks' && <><div className="button-row"><Button aria-pressed={graph} onClick={() => setGraph(true)}>任务图</Button><Button aria-pressed={!graph} onClick={() => setGraph(false)}>任务列表</Button></div>
-        <section className="run-navigation" aria-label="会话任务"><h3>会话任务</h3>{runs.map(run => <Button key={run.id} className="run-nav" onClick={() => selectRun(run.id)}><span>{run.output?.summary || '会话任务'}</span><Status state={run.state} /></Button>)}
-          {runListCursor && <Button disabled={busy} onClick={() => perform(async () => { const request = view.current; const page = await client.sessionRuns(sessionId, { cursor: runListCursor }); if (!currentView(request)) return; setProjection(state => page.items.reduce(mergeRunSnapshot, state)); setRunListCursor(page.next_cursor); })}>更多会话任务</Button>}
-        </section><Button onClick={() => setPanel('trace')}>查看 Trace</Button>
-        {selectedRun && <details className="muted"><summary><Status state={selectedRun.state} /> · 运行信息</summary><code>{selectedRun.id}</code></details>}
-        {graph ? <TaskGraph tasks={tasks} activities={activities} waits={Object.values(projection.waits).filter(item => item.run_id === selectedRun?.id)}
-          consumptions={Object.values(projection.consumptions).filter(item => item.run_id === selectedRun?.id)} joins={Object.values(projection.joins).filter(item => item.run_id === selectedRun?.id)}
-          collapsedIds={collapsed} selectedId={selectedNode?.id} onSelect={(id, kind) => setSelectedNode({ id, kind })} onToggle={id => setCollapsed(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} />
-          : <TaskList tasks={tasks} activities={activities} selectedId={selectedNode?.id} onSelect={(id, kind) => setSelectedNode({ id, kind })} />}
-        {selectedNode && [...tasks, ...activities].some(item => item.id === selectedNode.id) && <section className="entity-detail"><h3>{selectedNode.kind === 'task' ? 'Task' : 'Activity'} <code>{selectedNode.id}</code></h3>
-          <pre>{JSON.stringify(selectedNode.kind === 'task' ? projection.tasks[selectedNode.id] : projection.activities[selectedNode.id], null, 2)}</pre>
-          <Button onClick={() => setPanel('trace')}>查看对应 Trace</Button>
-          {artifacts.filter(item => item.task_id === selectedNode.id || item.activity_id === selectedNode.id).map(item => <Button key={item.id} onClick={() => { setArtifactId(item.id); setPanel('artifacts'); }}>查看来源产物 {item.id}</Button>)}
-        </section>}
-        {selectedRun && Object.entries(runCursors[selectedRun.id] ?? {}).filter(([, cursor]) => cursor).map(([kind]) => <Button key={kind} disabled={busy} onClick={() => perform(() => loadRunPage(kind as RunPageInput['kind']))}>更多 {kind}</Button>)}
-      </>}
-      {panel === 'artifacts' && <><div className="artifact-links">{artifacts.map((artifact, index) => <Button key={artifact.id} onClick={() => setArtifactId(artifact.id)}>{artifact.media_type === 'application/octet-stream' ? '二进制文件' : artifact.media_type === 'text/markdown' ? 'Markdown 文档' : '文本产物'} {index + 1}</Button>)}</div><ArtifactPanel artifact={selectedArtifact} client={client} onExport={chooseExport} exportBlocked={nativeSelecting || pendingCommands.some(command => command.type === 'exportArtifact' && commandContexts.current.get(command.commandId)?.targetId === selectedArtifact?.id || command.type === 'grant' && !!commandContexts.current.get(command.commandId)?.afterConfirmed)} onSelectSource={(taskId, activityId) => void perform(async () => {
-        const request = view.current;
-        const task = projection.tasks[taskId] ?? await client.task(taskId);
-        if (currentView(request)) {
-          if (compact) await showWorkbench({ kind: 'task', task_id: task.id });
-          else { setSelectedNode({ id: activityId, kind: 'activity' }); setSelectedRunId(task.run_id); setPanel('trace'); }
-        }
-      })} /></>}
-      {panel === 'trace' && <TracePanel events={tracePage?.items ?? []} selectedId={selectedNode?.id} onSelect={(id, kind) => setSelectedNode({ id, kind })} nextCursor={tracePage?.next_cursor} loading={busy}
-        onLoadMore={() => void perform(async () => { const request = view.current, owner = trace!; const page = await client.trace(owner.runId, { cursor: owner.page.next_cursor! });
-          if (currentView(request)) setTrace(current => current === owner ? { runId: owner.runId, page: { ...page,
-            items: [...new Map([...owner.page.items, ...page.items].map(item => [item.event_id, item])).values()]
-              .sort((left, right) => BigInt(left.event_id) < BigInt(right.event_id) ? -1 : BigInt(left.event_id) > BigInt(right.event_id) ? 1 : 0) } } : current); })} />}
-    </SheetContent></Sheet>
-    {management && <section className="task-management" aria-label="任务管理页面"><header className="panel-header"><button onClick={() => setManagement('center')}>返回任务中心</button><button onClick={closeManagement}>返回对话与草稿</button></header>
-      {onReturnToQuick && <button onClick={() => void perform(onReturnToQuick)}>返回快捷小窗</button>}
+    {docked && panel && <aside ref={detailsPane} className="conversation-details" aria-label={detailTitles[panel]}>
+      <header className="panel-header"><h2 tabIndex={panel === 'context' ? -1 : undefined}>{detailTitles[panel]}</h2><IconButton icon="close" label="关闭详情" onClick={closePanel} /></header>
+      <div className="conversation-details-body">{detailContent}</div>
+    </aside>}
+    <nav ref={detailsRail} className="conversation-detail-rail" aria-label="会话详情入口">{detailButtons(false)}</nav>
+    </div>
+    <Sheet open={!!panel && !docked} onOpenChange={open => { if (!open) closePanel(); }}>
+      <SheetContent className="conversation-detail-sheet" onOpenAutoFocus={() => { panelOrigin.current ??= document.activeElement as HTMLElement; }}
+        onCloseAutoFocus={event => {
+          event.preventDefault();
+          if (backgroundFocus.current === 'sheet') {
+            panelOrigin.current = null;
+            focusBackgroundForm();
+          } else restorePanelFocus(event.target as HTMLElement);
+        }}
+        onEscapeKeyDown={event => { if (event.isComposing || event.keyCode === 229) event.preventDefault(); }}>
+        <header className="panel-header"><SheetTitle asChild><h2>{panel ? detailTitles[panel] : '会话详情'}</h2></SheetTitle>
+          <IconButton icon="close" label="关闭详情" onClick={closePanel} /></header>
+        {panel !== 'resources' && <nav className="conversation-sheet-tabs" aria-label="会话详情入口">{detailButtons(true)}</nav>}
+        <div className="conversation-details-body">{detailContent}</div>
+      </SheetContent>
+    </Sheet>
+    {management && <section className="task-management workbench-page ui-page-motion" hidden={!!memoryPage} aria-label="任务管理页面">
+      <header className="panel-header">
+        <IconButton icon="back" size="icon-sm"
+          label={backToTaskCenter ? '返回任务中心' : returnToInboxFromTask.current ? '返回待办' : '返回对话与草稿'}
+          onClick={backToTaskCenter ? () => { taskCenterReturnPending.current = true; setManagement('center'); } : closeManagement} />
+        {onReturnToQuick && <IconButton className="ml-auto" icon="quick" label="返回快捷小窗" onClick={() => void perform(onReturnToQuick)} />}
+      </header>
       {commandStatus}
-      <div hidden={management !== 'center'}><TaskCenter key={centerTarget.sequence} client={client} workspaceId={centerTarget.workspaceId}
-        workspaces={Object.values(projection.workspaces)} onOpen={openTask} onOrganize={onMemory ? source => onMemory(source) : undefined} /></div>
-      {management === 'detail' && <TaskDetail key={managedRunId} client={client} store={store} runId={managedRunId} onCommand={(command, key) => dispatchCommand(command, { key })} onQuestion={id => void perform(() => openBackground(id))} onOpen={openTask}
+      <div ref={taskCenterContent} hidden={management !== 'center'}><TaskCenter key={centerTarget.sequence} client={client} workspaceId={centerTarget.workspaceId}
+        workspaces={Object.values(projection.workspaces)} sessionNames={Object.fromEntries(Object.values(projection.sessions).map(session => [session.id, session.title]))}
+        onOpen={id => { taskDetailOrigin.current = document.activeElement as HTMLElement; openTask(id); }}
+         onOrganize={!compact ? openMemory : undefined} /></div>
+      {management === 'detail' && <TaskDetail key={managedRunId} client={client} store={store} runId={managedRunId} onCommand={(command, key) => dispatchCommand(command, { key })} onQuestion={(runId, itemId) => void perform(() => openBackground(runId, itemId))} onOpen={openTask} onOpenConnection={openConnection}
         onExport={chooseExport} exportBlocked={nativeSelecting || pendingCommands.some(command => command.type === 'exportArtifact' || command.type === 'grant' && !!commandContexts.current.get(command.commandId)?.afterConfirmed)} />}
     </section>}
-    {skillLibrary && <CapabilityLibrary compact={compact} mcpTarget={skillLibrary.mcpTarget} mcpRevision={projection.mcpRevision}
+    {assistantsOpen && <AssistantsPage client={client} refreshKey={profileRevision} skillsRevision={projection.skillsRevision}
+      navigationGuard={pageGuard} onClose={closeSecondaryPage} onReturnToQuick={onReturnToQuick && (async () => { await onReturnToQuick(); closeSecondaryPage(); })} />}
+    {memoryPage && <MemoryPage embedded client={client} store={store} initialSource={memoryPage.source}
+      onClose={closeSecondaryPage}
+      onOpenTask={task => { setMemoryPage(undefined); openTask(task.run_id); }}
+      onSettings={scope => onSettings?.('memory', undefined, scope)} onReturnToQuick={onReturnToQuick} />}
+    {skillLibrary && <CapabilityLibrary compact={compact} embedded={!compact} navigationGuard={pageGuard} mcpTarget={skillLibrary.mcpTarget} mcpRevision={projection.mcpRevision}
       initialMcpScope={skillLibrary.mcpScope}
       onReturnToQuick={onReturnToQuick} client={client} workspaceId={skillLibrary.key.workspaceId || undefined} refreshKey={projection.skillsRevision}
       initialRecovery={skillLibrary.recovery} onClose={closeSkillLibrary}
-      onUse={skillLibrary.key.sessionId ? async version => {
+       useInDraft={!skillLibrary.key.sessionId}
+       onUse={skillLibrary.key.sessionId || skillLibrary.mcpScope?.kind === 'workspace' ? async (version, permissionId) => {
         const originalKey = { ...skillLibrary.key };
         const selected = await client.resolveSkills({ scope: { kind: 'workspace', workspace_id: originalKey.workspaceId, session_id: null },
           versions: { [version.skill_id]: version.content_hash } });
-        if (!store.getSnapshot().sessions[originalKey.sessionId] || scopeDeleted(store.getSnapshot(), { workspace_id: originalKey.workspaceId, session_id: originalKey.sessionId })) {
-          throw new Error('原会话已不可用，未修改其他草稿');
+         const currentProjection = store.getSnapshot();
+         if ((originalKey.sessionId && !currentProjection.sessions[originalKey.sessionId])
+           || scopeDeleted(currentProjection, { workspace_id: originalKey.workspaceId, session_id: originalKey.sessionId || null })) {
+           throw new Error('原项目或会话已不可用，未修改其他草稿');
         }
-        setSkillNames(current => ({ ...current, ...Object.fromEntries(selected.entries.map(item => [`${item.skill_id}:${item.content_hash}`, item.name])) }));
-        drafts.update(originalKey, { skillVersions: { ...drafts.read(originalKey).skillVersions, ...selected.versions } });
+        setSkillLabels(current => ({ ...current, ...Object.fromEntries(selected.entries.map(item => [
+          `${item.skill_id}:${item.content_hash}`, {
+            name: item.name, release: item.skill_id === version.skill_id && item.content_hash === version.content_hash
+              ? version.metadata.version : undefined,
+          },
+        ])) }));
+        const current = drafts.read(originalKey);
+        const skillExecutionPermissions = { ...current.skillExecutionPermissions };
+        if (version.files.some(file => file.path.startsWith('scripts/'))) {
+          skillExecutionPermissions[version.skill_id] = permissionId ?? null;
+        } else {
+          delete skillExecutionPermissions[version.skill_id];
+        }
+        drafts.update(originalKey, { skillVersions: { ...current.skillVersions, ...selected.versions },
+          skillExecutionPermissions });
         closeSkillLibrary();
       } : undefined} />}
     {newSessionWorkspace !== undefined && <Dialog title="新建会话" onReturnFocus={() => sessionReturnFocus.current?.()} onClose={() => { if (!busy) closeNewSession(); }}><form onSubmit={event => { event.preventDefault(); void perform(async () => {
-      const session = await client.createSession(newSessionWorkspace, { meta: commandMeta(), data: { title: sessionTitle } });
+      const origin = view.current;
+      const session = await client.createSession(newSessionWorkspace, { meta: commandMeta(), data: { title: sessionTitle.trim() || null } });
       const next = setProjection(state => mergeSessions(state, [session]));
       if (next.sessions[session.id]) {
         if (view.current.workspaceId !== session.workspace_id) chooseWorkspace(session.workspace_id);
+        if (!origin.sessionId && origin.workspaceId === session.workspace_id) {
+          drafts.move(origin, { workspaceId: session.workspace_id, sessionId: session.id });
+        }
         chooseSession(session.id); navigationTarget.current = { session }; setWorkspaceGeneration(value => value + 1);
       }
       sessionReturnFocus.current = () => document.getElementById('message-input')?.focus();
       closeNewSession();
-    }); }}><label>新会话标题 <input autoFocus required value={sessionTitle} onChange={event => setSessionTitle(event.target.value)} /></label>
-      {error && <p role="alert">{error}</p>}<div className="button-row"><Button disabled={busy} onClick={closeNewSession}>取消</Button><Button type="submit" className="button--primary" disabled={busy || !newSessionWorkspace}>创建会话</Button></div>
+    }); }}><Field><FieldLabel htmlFor={`${summaryDisclosureName}-new-session`}>新会话标题</FieldLabel>
+      <Input id={`${summaryDisclosureName}-new-session`} autoFocus maxLength={256} placeholder="留空时按目标命名" value={sessionTitle} onChange={event => setSessionTitle(event.target.value)} /></Field>
+      {error && <p role="alert">{error}</p>}<div className="button-row"><Button type="button" variant="outline" disabled={busy} onClick={closeNewSession}>取消</Button><Button type="submit" variant="default" disabled={busy || !newSessionWorkspace}>创建会话</Button></div>
     </form></Dialog>}
-    {confirmation && <Dialog title="确认隐私删除" onClose={() => { if (!busy) setConfirmation(undefined); }}>
+    {renameTarget && <ScopeNameDialog client={client} target={renameTarget.target} suggest={renameTarget.suggest}
+      onClose={() => setRenameTarget(undefined)}
+      onReturnFocus={() => { if (renameTarget.origin.isConnected) renameTarget.origin.focus(); else navTrigger.current?.focus(); }}
+      onRenamed={target => {
+        setProjection(state => 'title' in target ? mergeSessions(state, [target]) : mergeWorkspaces(state, [target]));
+        setRenameTarget(undefined);
+      }} />}
+    {directoryTarget && <Dialog title={`项目目录 · ${directoryTarget.workspace.name}`} onClose={() => setDirectoryTarget(undefined)}
+      onReturnFocus={() => directoryTarget.origin.focus()}>
+      <ProjectDirectory client={client} workspace={projection.workspaces[directoryTarget.workspace.id] ?? directoryTarget.workspace}
+        blocked={pendingCommands.some(command => command.type === 'setWorkspaceDirectory' && commandContexts.current.get(command.commandId)?.targetId === directoryTarget.workspace.id)}
+        onLink={(resource_id, version) => dispatchCommand({ type: 'setWorkspaceDirectory', args: [directoryTarget.workspace.id, { meta: commandMeta(version), data: { resource_id } }] },
+          { key: { workspaceId: directoryTarget.workspace.id, sessionId: '' } })} />
+    </Dialog>}
+    {activeApproval && !activePage && !obscured && <Dialog title="审批本次操作" onClose={() => {
+      if (busy) return;
+      setApprovalId(undefined);
+      if (backgroundReturn.current) returnFromBackground();
+    }}>
+      <ApprovalCard approval={activeApproval} busy={busy || unconfirmed('decide', activeApproval.id)} onDecision={allow => {
+        const returnTarget = backgroundReturn.current;
+        return perform(() => dispatchCommand({ type: 'decide', args: [activeApproval.id, { meta: commandMeta(activeApproval.version), data: { allow } }] }, {
+          key: { workspaceId: activeApproval.workspace_id, sessionId: activeApproval.session_id ?? '' },
+          afterConfirmed: async () => {
+            setApprovalId(undefined);
+            if (returnTarget && backgroundReturn.current === returnTarget) returnFromBackground();
+          },
+        }));
+      }} />
+    </Dialog>}
+    {confirmation && <Dialog title="确认隐私删除" onClose={() => { if (!busy) setConfirmation(undefined); }} onReturnFocus={() => {
+      const origin = confirmationOrigin.current;
+      if (origin?.isConnected) origin.focus();
+      else (navTrigger.current?.offsetParent ? navTrigger.current : document.getElementById('message-input'))?.focus();
+    }}>
       <p>删除“{confirmation.name}”中的本地内容、产物引用和运行记录。逻辑删除立即生效；被占用文件的清理会在后续回收时重试。未完成的导出恢复必须先处理；不会删除外部目标或备份。</p>
-      <div className="button-row"><Button disabled={busy} onClick={() => setConfirmation(undefined)}>取消</Button><Button className="button--primary" disabled={busy} onClick={() => void confirm()}>确认删除</Button></div>
+      <div className="button-row"><Button type="button" variant="outline" disabled={busy} onClick={() => setConfirmation(undefined)}>取消</Button><Button type="button" variant="destructive" disabled={busy} onClick={() => void confirm()}>确认删除</Button></div>
     </Dialog>}
   </main>;
 }

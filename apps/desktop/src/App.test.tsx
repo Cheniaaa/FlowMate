@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { invoke } from '@tauri-apps/api/core';
 import App from './App';
 import { Conversation } from './features/chat/Conversation';
 import { RuntimeClient } from './api/client';
+import { openComposerModelOption, selectComposerModel } from './test/composer-model';
 import { agent, binding, connection, event, id, model, page, run, runDetailSummary, secondId, limits } from './test/fixtures';
 import type { Approval, ModelMessage, Question, RunDetail, StreamEvent } from './generated/contracts';
 
@@ -52,6 +53,36 @@ function server(active = false, pending: { questions?: Question[]; approvals?: A
 }
 
 describe('最小产品对话', () => {
+  it('启动恢复字号，其他窗口改字号时立即同步', () => {
+    localStorage.setItem('flowmate:text-size', 'compact');
+    vi.mocked(invoke).mockReturnValue(new Promise(() => {}));
+    const view = render(<App />);
+    try {
+      expect(document.documentElement.dataset.textSize).toBe('compact');
+      fireEvent(window, new StorageEvent('storage', { key: 'flowmate:text-size', newValue: 'large' }));
+      expect(document.documentElement.dataset.textSize).toBe('large');
+    } finally {
+      view.unmount();
+      localStorage.removeItem('flowmate:text-size');
+      delete document.documentElement.dataset.textSize;
+      vi.mocked(invoke).mockReset();
+    }
+  });
+  it('外观设置关闭时，工作台也应用已保存的主题并同步其他窗口的选择', () => {
+    localStorage.setItem('flowmate:theme', 'dark');
+    vi.mocked(invoke).mockReturnValue(new Promise(() => {}));
+    const view = render(<App />);
+    try {
+      expect(document.documentElement.dataset.theme).toBe('dark');
+      fireEvent(window, new StorageEvent('storage', { key: 'flowmate:theme', newValue: 'light' }));
+      expect(document.documentElement.dataset.theme).toBe('light');
+    } finally {
+      view.unmount();
+      localStorage.removeItem('flowmate:theme');
+      delete document.documentElement.dataset.theme;
+      vi.mocked(invoke).mockReset();
+    }
+  });
   it('连接尚未同步时不从历史快照猜目的地，也不能授权发送资料', async () => {
     const commands = server();
     const previousFetch = globalThis.fetch;
@@ -61,11 +92,14 @@ describe('最小产品对话', () => {
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('持久历史');
-    await user.selectOptions(screen.getByLabelText('模型'), model.id);
-    expect(screen.getByRole('option', { name: /explicit-model · 连接尚未同步/ })).toBeTruthy();
+    const option = await openComposerModelOption(user, model.id);
+    expect(option.textContent).toMatch(/explicit-model.*连接尚未同步/);
+    await user.click(option);
     await user.click(screen.getByRole('button', { name: '选择文本文件' }));
     await screen.findByText(/连接尚未同步，无法确认目的地/);
-    expect((screen.getByRole('button', { name: '授权读取并发送' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.type(screen.getByLabelText('消息'), '整理附件');
+    expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', true);
+    expect(screen.queryByRole('button', { name: /授权读取并发送/ })).toBeNull();
     expect(commands).toHaveLength(0);
   });
   it('启动只查询产品事实、不运行 M0 diagnose；读取历史并由用户提交真实命令', async () => {
@@ -76,7 +110,7 @@ describe('最小产品对话', () => {
     await screen.findByText('持久历史');
     expect(commands).toEqual([]);
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('runtime_connection');
-    await user.selectOptions(screen.getByLabelText('模型'), model.id);
+    await selectComposerModel(user, model.id);
     await user.type(screen.getByLabelText('消息'), '纯对话');
     await user.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(commands).toHaveLength(1));
@@ -84,10 +118,18 @@ describe('最小产品对话', () => {
   });
   it('终态取消使用服务 completed 回执，不把已完成任务显示为 cancelled', async () => {
     const commands = server(true);
+    vi.mocked(invoke).mockImplementation(async name => name === 'runtime_connection' ? client.connection : null);
     const user = userEvent.setup();
-    render(<Conversation client={client} />);
+    render(<App />);
     await user.click(await screen.findByRole('button', { name: '停止当前运行' }));
-    await waitFor(() => expect(document.querySelector('.run-state .status')?.textContent).toContain('已完成'));
+    await screen.findByText('任务已完成', { exact: true });
+    expect(screen.queryByRole('button', { name: '停止当前运行' })).toBeNull();
+    const details = screen.getByRole('navigation', { name: '会话详情入口' });
+    await user.click(within(details).getByRole('button', { name: '任务' }));
+    const runs = within(await screen.findByRole('region', { name: '会话任务' }));
+    expect(runs.getByRole('button', { name: /本次对话.*已完成/ })).toBeTruthy();
+    expect(runs.queryByRole('button', { name: /已取消/ })).toBeNull();
+    expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({ path: `/runs/${id}/cancel`, body: { expected_version: 1 } });
     expect(commands[0].body).not.toHaveProperty('data');
   });
@@ -97,7 +139,7 @@ describe('最小产品对话', () => {
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('持久历史');
-    await user.selectOptions(screen.getByLabelText('模型'), model.id);
+    await selectComposerModel(user, model.id);
     await user.click(screen.getByRole('button', { name: '选择文本文件' }));
     await screen.findByText('notes.md');
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('select_resources', { scope: { kind: 'session', workspace_id: id, session_id: id }, kind: 'file' });
@@ -107,7 +149,8 @@ describe('最小产品对话', () => {
     await user.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(commands).toHaveLength(2));
     expect(commands[0]).toMatchObject({ path: '/grants', body: { data: { purposes: ['read', 'model_send'], destination: connection.endpoint, resource_ids: [secondId] } } });
-    expect(commands[1].body.data.sources.resource_ids).toEqual([secondId]);
+    expect(commands[1]).toMatchObject({ path: `/sessions/${id}/runs`,
+      body: { data: { model_profile_id: model.id, sources: { resource_ids: [secondId] } } } });
     expect(vi.mocked(invoke).mock.calls.some(([name]) => String(name).includes('credential'))).toBe(false);
   });
   it('持久问题呈现 answer_schema，并按问题版本提交字符串回答', async () => {
@@ -126,13 +169,16 @@ describe('最小产品对话', () => {
     const commands = server(true, { approvals: [approval] });
     const user = userEvent.setup();
     render(<Conversation client={client} />);
-    await user.click(await screen.findByRole('button', { name: '拒绝本次操作' }));
+    await user.click(await screen.findByRole('button', { name: '查看审批' }));
+    const review = within(await screen.findByRole('dialog', { name: '审批本次操作' }));
+    expect(review.getByText(approval.export_preview!.target_path)).toBeTruthy();
+    await user.click(review.getByRole('button', { name: '拒绝本次操作' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: '拒绝本次操作' })).toBeNull());
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({ path: `/approvals/${secondId}/decision`, body: { meta: { expected_version: 1 }, data: { allow: false } } });
   });
   it('真实 reducer 的实时 assistant 不显示在已提交 user 前，迟到查询也不覆盖会话顺序', async () => {
-    server();
+    const commands = server();
     const previousFetch = globalThis.fetch;
     let stream!: ReadableStreamDefaultController<Uint8Array>;
     const userMessage: ModelMessage = { id: '00000000-0000-4000-8000-000000000003', run_id: id, role: 'user', parts: [{ kind: 'text', text: 'T7-CHAT plain conversation' }], source_dependencies: [], activity_id: null, private_ref: null, origin: 'conversation', event_id: '9007199254740994', event_index: 0 };
@@ -153,10 +199,11 @@ describe('最小产品对话', () => {
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('本机事件流已连接');
-    await user.selectOptions(screen.getByLabelText('模型'), model.id);
+    await selectComposerModel(user, model.id);
     await user.type(screen.getByLabelText('消息'), 'T7-CHAT plain conversation');
     await user.click(screen.getByRole('button', { name: '发送' }));
     await screen.findByText('T7-CHAT plain conversation');
+    expect(commands[0]).toMatchObject({ path: `/sessions/${id}/runs`, body: { data: { model_profile_id: model.id } } });
     await act(async () => {
       const value = { kind: 'durable', event_id: '9007199254740995', event: { ...event, event_id: '9007199254740995', seq: 2,
         payload: { runs: [], tasks: [], activities: [], budgets: [], messages: [assistantMessage], artifacts: [], questions: [], waits: [], consumptions: [], joins: [], pending_commands: [], follow_up_intents: [] } } };
@@ -212,19 +259,33 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function deletionServer() {
+function deletionServer(artifactEntry?: 'delivery' | 'tool') {
   const uuid = (suffix: number) => `00000000-0000-4000-8000-${String(suffix).padStart(12, '0')}`;
   const other = { ...session, id: uuid(100), title: '另一个会话' };
   const artifact = { id: uuid(101), version: 1, task_id: run.root_task_id, activity_id: uuid(102),
     content_hash: 'a'.repeat(64), dependencies: [], media_type: 'text/plain' as const };
+  const messages: ModelMessage[] = [message as ModelMessage];
+  if (artifactEntry === 'tool') {
+    const call = { ...message, id: uuid(105), role: 'assistant' as const, origin: 'conversation' as const,
+      parts: [{ kind: 'tool_call' as const, call_id: 'read', name: 'files.read_text', arguments: { resource_id: uuid(107) } }] };
+    messages.unshift(call, { ...call, id: uuid(106), activity_id: artifact.activity_id, role: 'tool', event_index: 1,
+      parts: [{ kind: 'tool_result', call_id: 'read', origin_message_id: call.id, error: null,
+        result: { kind: 'artifact_preview', artifact_id: artifact.id, truncated: true, preview: '来源预览', total_chars: 24 } }] });
+    messages[2] = { ...messages[2], event_index: 2 };
+  }
   const approval: Approval = { mcp: null, id: uuid(103), version: 1, workspace_id: id, session_id: id, run_id: id,
     task_id: run.root_task_id, activity_id: artifact.activity_id, call_id: 'export-1', tool_name: 'deleted-export',
     tool_version: '1', args_hash: 'hash', target: 'private-target', export_preview: null, parameters: { text: 'deleted-approval-content' },
     dependencies: [], expires_at: '2026-11-07T13:00:00Z', status: 'pending' };
-  const detail: RunDetail = { ...runDetailSummary, run: { ...run, state: 'completed' }, tasks: page([{ id: run.root_task_id,
+  const output = artifactEntry ? { summary: '持久历史', artifact_ids: artifactEntry === 'delivery' ? [artifact.id] : [],
+    unresolved: [], handled_failures: [] } : run.output;
+  const detail: RunDetail = { ...runDetailSummary, run: { ...run, state: 'completed', output }, tasks: page([{ id: run.root_task_id,
     version: 1, run_id: id, binding, parent_task_id: null, origin_task_id: null, kind: 'agent', executor_id: 'builtin.agent',
     state: 'completed', created_seq: 1, deadline_at: null, result_version: 1, reason: null }]),
-    activities: page([]), messages: page([message as ModelMessage]), artifacts: page([artifact]), questions: page([]),
+    activities: page(artifactEntry ? [{ id: artifact.activity_id, run_id: run.id, task_id: artifact.task_id,
+      kind: 'tool', version: 3, state: 'succeeded', operation: artifactEntry === 'tool' ? 'files.read_text' : 'artifacts.create_text',
+      error: null, usage: null, actual_units: null, dependencies: [], script_execution: null }] : []),
+    messages: page(messages), artifacts: page([artifact]), questions: page([]),
     approvals: page([]), waits: page([]), consumptions: page([]), joins: page([]), budget: { id: run.budget_id,
       version: 1, run_id: id, limits, spent_units: '0', reserved_units: '0', model_requests: 0, steps: 0, task_count: 1, total_tokens: 0, reserved_tokens: 0 }, watermark: event.event_id };
   let stream!: ReadableStreamDefaultController<Uint8Array>;
@@ -246,7 +307,7 @@ function deletionServer() {
     if (path === `/runs/${id}`) return detail;
     if (path === `/sessions/${id}/runs`) return page([detail.run]);
     if (path === `/sessions/${other.id}/runs`) return page([]);
-    if (path === `/sessions/${id}/messages`) return { ...page([message]), next_cursor: 'history-next' };
+    if (path === `/sessions/${id}/messages`) return { ...page(messages), next_cursor: 'history-next' };
     if (path === `/sessions/${other.id}/messages`) return page([{ ...message, id: uuid(104), parts: [{ kind: 'text', text: '另一会话历史' }] }]);
     throw new Error(`测试未定义路由 ${path}`);
   };
@@ -292,26 +353,45 @@ describe('删除与本地异步响应围栏', () => {
     expect(screen.queryByRole('option', { name: '会话' })).toBeNull();
   });
   it.each(['delete', 'switch', 'roundtrip'] as const)('产物内容读取期间%s，迟到原文不能显示或在返回原会话时从缓存复活', async mode => {
-    const fixture = deletionServer();
-    const content = fixture.hold(`GET /v3/artifacts/${fixture.artifact.id}/content?offset=0`);
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    const fixture = deletionServer('tool');
+    const request = `GET /v3/artifacts/${fixture.artifact.id}/content?offset=0`;
+    const content = fixture.hold(request);
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('本机事件流已连接');
-    await user.click(screen.getByRole('button', { name: '产物' }));
-    await user.click(screen.getByRole('button', { name: '文本产物 1' }));
+    const tool = (await screen.findByText('读取文本')).closest('details')!;
+    expect(screen.queryByLabelText('本轮产物')).toBeNull();
+    await user.click(within(tool).getByText('读取文本'));
+    await user.click(within(tool).getByRole('button', { name: '阅读完整回执' }));
+    const panel = within(await screen.findByRole('complementary', { name: '产物' }));
+    expect(await panel.findByText('正在加载产物…')).toBeTruthy();
+    await waitFor(() => expect(fixture.requests.filter(item => item === request)).toHaveLength(1));
     if (mode === 'delete') await fixture.deleted();
-    else { await user.click(screen.getByRole('button', { name: '关闭详情' })); await user.click(screen.getByRole('button', { name: fixture.other.title })); }
-    if (mode === 'roundtrip') await user.click(screen.getByRole('button', { name: session.title }));
-    await act(async () => { content.resolve(json({ text: 'deleted-artifact-content', start: 0, end: 24, total_chars: 24, source_version: 'v1' })); });
-    await waitFor(() => expect(screen.queryByTitle('产物预览')).toBeNull());
-    if (screen.queryByRole('button', { name: '关闭详情' })) await user.click(screen.getByRole('button', { name: '关闭详情' }));
-    await user.click(screen.getByRole('button', { name: fixture.other.title }));
-    await screen.findByText('另一会话历史');
-    if (mode !== 'delete') {
+    else {
+      await user.click(screen.getByRole('button', { name: fixture.other.title }));
+      await screen.findByText('另一会话历史');
+    }
+    if (mode === 'roundtrip') {
       await user.click(screen.getByRole('button', { name: session.title }));
       await screen.findByText('持久历史');
-      expect(screen.queryByTitle('产物预览')).toBeNull();
     }
+    const text = 'deleted-artifact-content';
+    await act(async () => { content.resolve(json({ text, start: 0, end: text.length, total_chars: text.length, source_version: fixture.artifact.content_hash })); });
+    await waitFor(() => expect(screen.queryByTitle('产物预览')).toBeNull());
+    expect(screen.queryByRole('region', { name: '产物详情' })).toBeNull();
+    if (mode === 'delete') {
+      expect(screen.queryByText('读取文本')).toBeNull();
+      expect(screen.queryByRole('button', { name: session.title })).toBeNull();
+      await user.click(screen.getByRole('button', { name: fixture.other.title }));
+      await screen.findByText('另一会话历史');
+    }
+    if (mode === 'switch') {
+      await user.click(screen.getByRole('button', { name: session.title }));
+      await screen.findByText('持久历史');
+    }
+    expect(screen.queryByTitle('产物预览')).toBeNull();
+    expect(fixture.requests.filter(item => item === request)).toHaveLength(1);
   });
   it.each(['delete', 'switch', 'roundtrip'] as const)('原生选择未返回时%s，迟到资料Ref不进入其它会话或下一次会话', async mode => {
     const fixture = deletionServer();
@@ -333,9 +413,10 @@ describe('删除与本地异步响应围栏', () => {
     expect(screen.queryByText('deleted-selected-notes.md')).toBeNull();
   });
   it('已显示的产物原文、选择资料与历史在删除后立即清理，已删除选择不保留', async () => {
-    const fixture = deletionServer();
+    const fixture = deletionServer('delivery');
+    const text = 'already-visible-content';
     fixture.hold(`GET /v3/artifacts/${fixture.artifact.id}/content?offset=0`).resolve(json({
-      text: 'already-visible-content', start: 0, end: 23, total_chars: 23, source_version: 'v1' }));
+      text, start: 0, end: text.length, total_chars: text.length, source_version: fixture.artifact.content_hash }));
     vi.mocked(invoke).mockResolvedValue({ resources: [{ id: secondId, version: 1,
       scope: { kind: 'session', workspace_id: id, session_id: id }, label: 'selected-original.md', kind: 'file', source_version: null }] });
     const user = userEvent.setup();
@@ -343,13 +424,14 @@ describe('删除与本地异步响应围栏', () => {
     await screen.findByText('本机事件流已连接');
     await user.click(screen.getByRole('button', { name: '选择文本文件' }));
     await screen.findByText('selected-original.md');
-    await user.click(screen.getByRole('button', { name: '产物' }));
-    await user.click(screen.getByRole('button', { name: '文本产物 1' }));
-    expect((await screen.findByTitle('产物预览')).getAttribute('srcdoc')).toContain('already-visible-content');
+    const delivery = within(await screen.findByLabelText('本轮产物'));
+    await user.click(await delivery.findByRole('button', { name: '文本产物 1' }));
+    expect((await screen.findByTitle('产物预览')).getAttribute('srcdoc')).toContain(text);
     await fixture.deleted();
     await waitFor(() => expect(screen.queryByTitle('产物预览')).toBeNull());
     expect(screen.queryByText('selected-original.md')).toBeNull();
     expect(screen.queryByText('持久历史')).toBeNull();
+    expect(screen.queryByLabelText('本轮产物')).toBeNull();
     expect(screen.queryByRole('heading', { name: session.title })).toBeNull();
   });
   it('删除工作区后迟到工作区分页不能恢复选项，本地资料/预览/会话选择一并清理', async () => {
@@ -408,7 +490,9 @@ describe('删除与本地异步响应围栏', () => {
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('本机事件流已连接');
-    await user.click(screen.getByRole('button', { name: '允许本次操作' }));
+    await user.click(await screen.findByRole('button', { name: '查看审批' }));
+    const review = within(await screen.findByRole('dialog', { name: '审批本次操作' }));
+    await user.click(review.getByRole('button', { name: '允许本次操作' }));
     await fixture.deleted();
     await act(async () => { decision.resolve(json({ ...fixture.approval, version: 2, status: 'approved' })); });
     await screen.findByText('另一会话历史');

@@ -1,1 +1,36 @@
-:root { color-scheme: light; --bg: #f5f6f3; --panel: #fff; --workspace: #fcfdfb; --sidebar: #f0f3ed; --detail: #f6f8f3; --ink: #25332f; --muted: #526059; --line: #dce3d9; --accent: #27664c; --accent-soft: #eaf2ec; --warning: #805719; --danger: #a33230; --radius: 10px; font-family: Inter, 'Segoe UI', 'Microsoft YaHei', sans-serif; }
+/* 与 M2 真实组件样稿共用中性阅读面和蓝紫强调色。 */
+@layer base {
+  :root {
+    color-scheme: light;
+    --background: #fff;
+    --foreground: #20252d;
+    --canvas: #f1f2f5;
+    --sidebar: #f6f7f9;
+    --muted: #f3f4f6;
+    --muted-foreground: #586372;
+    --border: #dce0e6;
+    --primary: #485ab0;
+    --primary-foreground: #fff;
+    --secondary: #edf0fc;
+    --warning: #805719;
+    --destructive: #a42d3c;
+    --destructive-foreground: #fff;
+  }
+
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+    --background: #181819;
+    --foreground: #f2f2f0;
+    --canvas: #1b1b1d;
+    --sidebar: #222224;
+    --muted: #28282c;
+    --muted-foreground: #b2b5bc;
+    --border: #38383b;
+    --primary: #b9c6ff;
+    --primary-foreground: #191d2c;
+    --secondary: #303442;
+    --warning: #d8b66d;
+    --destructive: #f28a98;
+    --destructive-foreground: #101010;
+  }
+}

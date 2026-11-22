@@ -3,9 +3,15 @@
 from collections import Counter
 
 from flowmate.api.contracts import ContextUsageSummary, PricingBasis, RunCostSummary
+from flowmate.contracts.base import DomainError
 from flowmate.contracts.execution import TERMINAL, ActivitySnapshot, Checkpoint, TaskSnapshot
 from flowmate.models.pricing import SCALE
-from flowmate.runtime.transitions import load
+from flowmate.runtime.transitions import check_scopes, load
+
+
+def model_cost_pending(activity_state, receipt_present, run_state, task_state):
+    return (activity_state == "dispatched" and not receipt_present
+            and run_state not in TERMINAL and task_state not in TERMINAL)
 
 
 def cost_summary(tx, run, budget):
@@ -16,8 +22,7 @@ def cost_summary(tx, run, budget):
         if (activity.intent.kind != "model" or activity.request_digest is None
                 or (activity.receipt is not None and activity.receipt.actual_units is not None)):
             continue
-        if (activity.state == "dispatched" and activity.receipt is None
-                and run.state not in TERMINAL and row["task_state"] not in TERMINAL):
+        if model_cost_pending(activity.state, activity.receipt is not None, run.state, row["task_state"]):
             pending += 1
         elif activity.state != "prepared":
             unknown += 1
@@ -46,9 +51,18 @@ def context_usage(tx, run):
     if compaction_state == "running" and task.state in {
             "interrupted", "blocked_incompatible", "failed", "cancelled", "waiting_user"}:
         compaction_state, compaction_reason = "blocked", task.reason or run.reason
-    if compaction_state == "committed" and (task.reason or run.reason) in {
-            "scope_revoked", "source_scope_changed", "source_version_conflict"}:
-        compaction_state, compaction_reason = "invalidated", "source_changed"
+    if compaction_state == "committed":
+        source_changed = (task.reason or run.reason) in {"scope_revoked", "source_scope_changed", "source_version_conflict"}
+        if not source_changed:
+            # 已完成运行不会因撤权改变状态，读取时仍须核对原请求的来源。
+            try:
+                check_scopes(tx, [*run.scope_dependencies, *(activity.intent.dependencies if activity else [])])
+            except DomainError as error:
+                if error.code != "scope_revoked":
+                    raise
+                source_changed = True
+        if source_changed:
+            compaction_state, compaction_reason = "invalidated", "source_changed"
     return ContextUsageSummary(activity_id=activity.id if activity else None, state=activity.state if activity else None,
         omitted_group_count=len(manifest.get("omissions", [])), omitted_message_count=sum(counts.values()), reason_counts=dict(counts),
         compaction_state=compaction_state,

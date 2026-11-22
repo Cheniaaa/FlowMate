@@ -1,0 +1,17 @@
+@reference "../../styles/ui.css";
+
+.message-attachments {
+  @apply my-0.5 flex flex-wrap gap-1;
+}
+
+.message-attachments:not(:last-child) {
+  @apply mb-1.5;
+}
+
+.message-attachment {
+  @apply inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-background px-1.5 py-px text-xs leading-4.5 wrap-anywhere;
+}
+
+.message-attachment svg {
+  @apply shrink-0 text-primary;
+}

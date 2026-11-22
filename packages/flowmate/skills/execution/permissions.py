@@ -1,10 +1,70 @@
 """版本级本机执行许可；与内容启用和资料发送授权分别保存。"""
 
 from flowmate.contracts.base import DomainError
-from flowmate.contracts.execution import RunSnapshot
+from flowmate.contracts.execution import RunSnapshot, TaskSnapshot
 from flowmate.contracts.scopes import ScopeRef
+from flowmate.processes.environments import discovered_environment_id
 from flowmate.runtime.transitions import load, stop_run
 from flowmate.skills.execution.contracts import SkillExecutionPermission
+
+
+def _scope_ids(tx, scope, skills):
+    yield skills._scope(tx, scope).scope_id
+    if scope.kind == "workspace":
+        yield skills._scope(tx, ScopeRef(kind="user_global")).scope_id
+
+
+def _effective(tx, scope, skills, skill_id, content_hash, environment_id, environment_revision):
+    for scope_id in _scope_ids(tx, scope, skills):
+        row = tx.execute("SELECT document FROM skill_execution_permissions WHERE skill_id=? "
+            "AND content_hash=? AND environment_id=? AND environment_revision=? AND scope_id=?",
+            (skill_id, content_hash, environment_id, environment_revision, scope_id)).fetchone()
+        if row is not None:
+            permission = SkillExecutionPermission.model_validate_json(row[0])
+            return permission if permission.status == "active" else None
+    return None
+
+
+def _for_call(tx, ctx, args, run, skills):
+    permission = _effective(tx, ScopeRef(kind="workspace", workspace_id=ctx.workspace_id), skills,
+        args.skill_id, args.content_hash, args.environment_id, args.environment_revision)
+    choices = run.sources.skill_execution_permissions
+    if permission is not None and choices.get(args.skill_id, permission.id) == permission.id:
+        return permission
+    return None
+
+
+def _matches_binding(tx, ctx, args, run, skills):
+    binding = skills._binding(tx, args.skill_id, ScopeRef(kind="workspace", workspace_id=ctx.workspace_id))
+    if binding is None or not binding.enabled:
+        return False
+    if args.skill_id in run.sources.skill_execution_permissions:
+        # 本轮固定的选择由许可记录校验；共享环境绑定只为未固定的任务提供默认。
+        return True
+    if binding.environment_id is not None:
+        return (binding.environment_id, binding.environment_revision) == (
+            args.environment_id, args.environment_revision)
+    row = tx.execute("SELECT kind,json_extract(document,'$.executable_path') FROM execution_environments "
+        "WHERE id=?", (args.environment_id,)).fetchone()
+    return row is not None and args.environment_id == discovered_environment_id(ctx.workspace_id, row[0], row[1])
+
+
+def selected_script(tx, ctx, args, skills, *, for_call_approval=False):
+    """按用户选定的版本和环境核对调用。托管成员的资料用途由独立授权覆盖。"""
+    run = load(tx, RunSnapshot, ctx.run_id)
+    task = load(tx, TaskSnapshot, ctx.task_id)
+    if run.kind != "user":
+        if run.kind != "managed" or not for_call_approval:
+            return False
+        pinned = run.sources.skill_execution_permissions.get(args.skill_id)
+        if pinned is None or task.binding.sources.skill_execution_permissions.get(args.skill_id) != pinned:
+            return False
+    if (task.kind != "agent"
+            or run.sources.skill_versions.get(args.skill_id) != args.content_hash
+            or task.binding.sources.skill_versions.get(args.skill_id) != args.content_hash
+            or args.skill_id in {*run.sources.excluded_source_ids, *task.binding.sources.excluded_source_ids}):
+        return False
+    return _matches_binding(tx, ctx, args, run, skills) and _for_call(tx, ctx, args, run, skills) is not None
 
 
 class SkillExecutionPermissions:
@@ -50,10 +110,28 @@ class SkillExecutionPermissions:
     def list(self, skill_id, content_hash, scope):
         with self.store.transaction(write=False) as tx:
             self.skills._version(tx, skill_id, content_hash, scope)
-            scope_id = self.skills._scope(tx, scope).scope_id
-            rows = tx.execute("SELECT document FROM skill_execution_permissions WHERE skill_id=? "
-                "AND content_hash=? AND scope_id=? ORDER BY id", (skill_id, content_hash, scope_id))
-            return [SkillExecutionPermission.model_validate_json(row[0]) for row in rows]
+            permissions = {}
+            for scope_id in _scope_ids(tx, scope, self.skills):
+                rows = tx.execute("SELECT document FROM skill_execution_permissions WHERE skill_id=? "
+                    "AND content_hash=? AND scope_id=? ORDER BY id", (skill_id, content_hash, scope_id))
+                for row in rows:
+                    permission = SkillExecutionPermission.model_validate_json(row[0])
+                    permissions.setdefault((permission.environment_id, permission.environment_revision), permission)
+            return list(permissions.values())
+
+    def choice(self, tx, ctx, skill_id, content_hash):
+        choices = load(tx, RunSnapshot, ctx.run_id).sources.skill_execution_permissions
+        if skill_id not in choices:
+            return None
+        row = tx.execute("SELECT document FROM skill_execution_permissions WHERE id=? "
+            "AND skill_id=? AND content_hash=?", (choices[skill_id], skill_id, content_hash)).fetchone()
+        if row is not None:
+            permission = SkillExecutionPermission.model_validate_json(row[0])
+            scope = ScopeRef(kind="workspace", workspace_id=ctx.workspace_id)
+            if permission == _effective(tx, scope, self.skills, skill_id, content_hash,
+                    permission.environment_id, permission.environment_revision):
+                return permission
+        raise DomainError("execution_permission_required", "此轮未选择有效的本机执行许可")
 
     def revoke(self, id, meta):
         def apply(tx):
@@ -75,23 +153,12 @@ class SkillExecutionPermissions:
             meta, SkillExecutionPermission, apply)
 
     def require(self, tx, ctx, args):
-        scope = ScopeRef(kind="workspace", workspace_id=ctx.workspace_id)
-        self.skills._scope(tx, scope)
-        binding = self.skills._binding(tx, args.skill_id, scope)
-        if binding is None or (binding.environment_id, binding.environment_revision) != (
-                args.environment_id, args.environment_revision):
+        run = load(tx, RunSnapshot, ctx.run_id)
+        if not _matches_binding(tx, ctx, args, run, self.skills):
             raise DomainError("skill_environment_binding_changed", "脚本环境不属于当前明确绑定")
-        scope_ids = [ctx.workspace_id, self.skills._scope(tx, ScopeRef(kind="user_global")).scope_id]
-        for scope_id in scope_ids:
-            row = tx.execute("SELECT document FROM skill_execution_permissions WHERE skill_id=? "
-                "AND content_hash=? AND environment_id=? AND environment_revision=? AND scope_id=?",
-                (args.skill_id, args.content_hash, args.environment_id, args.environment_revision,
-                 scope_id)).fetchone()
-            if row is not None:
-                permission = SkillExecutionPermission.model_validate_json(row[0])
-                if permission.status == "active":
-                    return permission
-                break
+        permission = _for_call(tx, ctx, args, run, self.skills)
+        if permission is not None:
+            return permission
         raise DomainError("execution_permission_required", "此 Skill 版本和环境尚无独立执行许可")
 
     @staticmethod

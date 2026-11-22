@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
@@ -9,6 +9,83 @@ import CapabilityLibrary from './CapabilityLibrary';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+
+it('长名单只显示名称和状态，搜索后原包描述及编辑正文来自选中项', async () => {
+  const items = Array.from({ length: 27 }, (_, index) => ({ ...skillView,
+    version: { ...skillView.version, skill_id: `00000000-0000-4000-8000-${String(200 + index).padStart(12, '0')}`,
+      name: `review-${String(index + 1).padStart(2, '0')}`, directory_name: `review-${String(index + 1).padStart(2, '0')}`,
+      description: `该包用于第 ${index + 1} 项审核` } }));
+  const selected = items[26].version;
+  const paths: string[] = [];
+  vi.stubGlobal('fetch', async (input: string) => {
+    const url = new URL(input), path = url.pathname;
+    paths.push(path);
+    if (path.endsWith('/skills')) return Response.json(page(items.filter(item => item.version.name.includes(url.searchParams.get('query') ?? ''))));
+    if (path.endsWith('/skill-exports')) return Response.json([]);
+    if (path.endsWith('/file')) {
+      const version = items.find(item => path.includes(item.version.skill_id))!.version;
+      const content = `固定说明 ${version.name}`;
+      return Response.json({ skill_id: version.skill_id, content_hash: skillHash, path: 'SKILL.md',
+        file_hash: skillHash, encoding: 'utf-8', content, start: 0, end: content.length, total: content.length });
+    }
+    if (path.endsWith(`/skills/${selected.skill_id}`)) return Response.json({
+      skill_id: selected.skill_id, current_hash: skillHash, scope: selected.scope, revision: 1, status: 'active',
+    });
+    throw new Error(path);
+  });
+  render(<CapabilityLibrary client={client()} workspaceId={id} onClose={() => {}} />);
+  const list = within(screen.getByRole('complementary', { name: 'Skill 列表' }));
+  await list.findByRole('button', { name: /review-27/ });
+  expect(list.getAllByRole('button')).toHaveLength(27);
+  expect(list.queryByText('该包用于第 27 项审核')).toBeNull();
+  fireEvent.change(screen.getByLabelText('搜索 Skills'), { target: { value: 'review-27' } });
+  const detail = within(await screen.findByRole('article', { name: 'Skill 详情' }));
+  await detail.findByRole('heading', { name: 'review-27' });
+  expect(list.getAllByRole('button')).toHaveLength(1);
+  expect(detail.getByText('该包用于第 27 项审核')).toBeTruthy();
+  await userEvent.click(detail.getByRole('button', { name: '编辑新版本' }));
+  expect(await screen.findByLabelText('SKILL.md 原文件')).toHaveProperty('value', '固定说明 review-27');
+  expect(paths).toContain(`/v3/capabilities/skills/${selected.skill_id}`);
+});
+
+it.each(['2026.11-preview+local', undefined])('打开脚本包详情时显示发布版和许可对应的解释器（%s）', async release => {
+  const executable = 'C:/Selected Tools/python.exe';
+  const binding = { ...skillView.binding!, environment_id: id, environment_revision: 1 };
+  const version = { ...skillView.version, metadata: release ? { version: release } : {},
+    files: [...skillView.version.files, { path: 'scripts/report.py', content_hash: skillHash, size_bytes: 5 }] };
+  vi.stubGlobal('fetch', async (url: string) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/skills')) return Response.json(page([{ ...skillView, version, binding }]));
+    if (path.endsWith('/skill-exports')) return Response.json([]);
+    if (path.endsWith('/script-settings')) return Response.json({
+      skill_id: version.skill_id, content_hash: skillHash, scope: skillScope, scripts: ['scripts/report.py'], binding,
+      permissions: [{ id, skill_id: version.skill_id, content_hash: skillHash, environment_id: id,
+        environment_revision: 1, scope: skillScope, revision: 1, status: 'active' }],
+    });
+    if (path.endsWith('/file')) return Response.json({ skill_id: version.skill_id, content_hash: skillHash, path: 'SKILL.md',
+      file_hash: skillHash, encoding: 'utf-8', content: '包说明', start: 0, end: 3, total: 3 });
+    if (path.endsWith(`/execution-environments/${id}`)) return Response.json({
+      id, revision: 1, kind: 'python', executable_path: executable, executable_identity: 'identity', version: 'Python 3.13',
+      cwd_mode: 'package_copy', env_keys: [], dependency_coverage: 'unverified', manifest_count: 0,
+      status: 'probed', checked_at: null, diagnostic_code: null,
+    });
+    throw new Error(path);
+  });
+  const user = userEvent.setup();
+  render(<CapabilityLibrary client={client()} workspaceId={id} onClose={() => {}} />);
+  const item = await screen.findByRole('button', { name: /release-note.*项目.*已启用/ });
+  await user.click(item);
+  const detail = await screen.findByRole('article', { name: 'Skill 详情' });
+  await user.click(within(detail).getByText('版本详情'));
+  expect((await within(detail).findByText(/此版本已有执行许可/)).closest('section')?.textContent).toContain(executable);
+  const decision = within(detail).getByRole('group', { name: '当前脚本许可' });
+  for (const value of ['release-note', release ?? '当前发布版', executable]) expect(decision.textContent).toContain(value);
+  expect(within(detail).getByRole('heading', { name: 'release-note' })).toBeTruthy();
+  expect(within(detail).getByText('用户创建')).toBeTruthy();
+  expect(detail.textContent).not.toMatch(new RegExp(`${id}|${skillHash.slice(0, 12)}`));
+  expect(item.getAttribute('aria-label') ?? item.textContent).not.toContain(skillHash.slice(0, 12));
+  expect(within(detail).getByText(release ?? '当前发布版').closest('details')?.open).toBe(true);
+});
 
 it('真实DTO默认显示Skills；创建先预览候选，再按明确hash发布并启用', { timeout: 15_000 }, async () => {
   const writes: { path: string; body: any }[] = [];

@@ -1,6 +1,6 @@
 """记忆审阅和策略 API；全部写操作转发至权威服务。"""
 
-from typing import Literal
+from typing import Literal, get_args
 
 from fastapi import APIRouter, Response
 
@@ -11,11 +11,14 @@ from flowmate.contracts.base import DomainError, Id
 from flowmate.contracts.execution import TaskHandle
 from flowmate.contracts.scopes import ScopeRef
 from flowmate.memory.contracts import (
+    DEFAULT_PROJECT_MEMORY_KINDS,
+    PERSONAL_PROFILE_MEMORY_KINDS,
     CreateMemory,
     MemoryDecision,
     MemoryEvidenceExcerpt,
     MemoryEvidenceView,
     MemoryGrantCommand,
+    MemoryKind,
     MemoryPolicy,
     MemoryRecord,
 )
@@ -44,9 +47,10 @@ def router(runtime):
     async def submit_maintenance(command=body(Command[MemoryMaintenanceRequest])):
         if command.meta.expected_version is None:
             raise DomainError("version_conflict", "整理须绑定已读取的策略版本")
-        return runtime.maintenance.submit(command.data.scope, command.data.source_boundary,
-            MemoryMaintenanceAuthorization(policy_version=command.meta.expected_version,
-                budget_confirmation=command.data.budget_confirmation), command.meta)
+        authorization = MemoryMaintenanceAuthorization(policy_version=command.meta.expected_version,
+            budget_confirmation=command.data.budget_confirmation)
+        return await runtime.maintenance.submit_authenticated(command.data.scope, command.data.source_boundary,
+            authorization, command.meta)
 
     def maintenance_page(tx, selected, record_id=None, *, limit=100, cursor=None):
         runtime.memory._scope(tx, selected)
@@ -77,28 +81,46 @@ def router(runtime):
             return maintenance_page(tx, runtime.memory._get(tx, id).scope, id, limit=limit, cursor=cursor)
 
     @route.get("/memory/records", response_model=Page[MemoryRecord])
-    async def records(scope_kind: Literal["user_global", "workspace"], workspace_id: Id | None = None,
+    async def records(scope_kind: Literal["user_global", "workspace"], response: Response, workspace_id: Id | None = None,
                       status: Literal["candidate", "confirmed", "rejected", "deleted"] | None = None,
-                      limit: int = 100, cursor: str | None = None):
+                      limit: int = 100, cursor: str | None = None, project_defaults: bool | None = None,
+                      profile_rules: bool | None = None):
+        response.headers["Cache-Control"] = "no-store"
         selected = scope(scope_kind, workspace_id)
         if not 1 <= limit <= 500:
             raise DomainError("invalid_query", "分页数量须在1至500之间")
+        filters = {"status": status}
+        key = f"memory:{selected.model_dump_json()}:{status}"
+        if project_defaults is not None:
+            if selected.kind != "workspace":
+                raise DomainError("invalid_query", "默认规则筛选只适用于项目记忆")
+            if profile_rules is not None:
+                raise DomainError("invalid_query", "只能指定一种记忆类型筛选")
+            key += f":project_defaults={project_defaults}"
+            profile_rules = project_defaults
+        elif profile_rules is not None:
+            key += f":profile_rules={profile_rules}"
+        if profile_rules is not None:
+            rules = PERSONAL_PROFILE_MEMORY_KINDS if selected.kind == "user_global" else DEFAULT_PROJECT_MEMORY_KINDS
+            filters["kinds"] = rules if profile_rules else tuple(kind for kind in get_args(MemoryKind) if kind not in rules)
         with runtime.store.transaction(write=False) as tx:
             runtime.memory._scope(tx, selected)
             provider = runtime.memory.provider.using(tx)
-            key = f"memory:{selected.model_dump_json()}:{status}"
             after = None
             if cursor:
                 upper, after = page_position(cursor, key)
                 upper, after = upper[0], after[0]
             else:
-                last = provider.list_records(selected, status=status, limit=1, descending=True)
+                last = provider.list_records(selected, **filters, limit=1, descending=True)
                 if not last:
                     return Page[MemoryRecord](items=[], watermark=watermark(tx))
                 upper = last[0].id
-            rows = provider.list_records(selected, status=status, after=after, upper=upper, limit=limit + 1)
+            rows = provider.list_records(selected, **filters, after=after, upper=upper, limit=limit + 1)
             next_cursor = page_cursor(key, [upper], [rows[limit - 1].id]) if len(rows) > limit else None
-            return Page[MemoryRecord](items=rows[:limit], next_cursor=next_cursor, watermark=watermark(tx))
+            items = rows[:limit]
+            if status == "confirmed" and profile_rules is not None:
+                items = [record for record in items if runtime.memory.previewable(tx, record)]
+            return Page[MemoryRecord](items=items, next_cursor=next_cursor, watermark=watermark(tx))
 
     @route.post("/memory/records", response_model=MemoryRecord, status_code=201)
     async def create(command=body(Command[CreateMemory])):

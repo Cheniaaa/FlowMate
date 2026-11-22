@@ -5,8 +5,10 @@ import { RuntimeClient } from '../../api/client';
 import { createDraftStore } from '../../state/draft-store';
 import { agent, connection, event, grant, id, model, page, run, secondId } from '../../test/fixtures';
 import { Conversation } from './Conversation';
+import { Toaster } from '../../components/ui/sonner';
+import { toast } from 'sonner';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { toast.dismiss(); vi.unstubAllGlobals(); });
 
 it.each(['allowed', 'revoked', 'revoked-after-grant', 'destination-changed-after-grant'] as const)(
   '发送前按原附件和接收方核对授权 %s', async scenario => {
@@ -62,8 +64,8 @@ it.each(['allowed', 'revoked', 'revoked-after-grant', 'destination-changed-after
     };
     return Response.json(values[path] ?? page([]));
   });
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321',
-    token: 'synthetic', protocol_version: 3 })} draftStore={drafts} />);
+  render(<><Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321',
+    token: 'synthetic', protocol_version: 3 })} draftStore={drafts} /><Toaster /></>);
   const send = await screen.findByRole('button', { name: /^发送$/ });
   await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
   await userEvent.click(send);

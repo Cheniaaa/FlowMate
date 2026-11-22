@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type EventCallback } from '@tauri-apps/api/event';
@@ -6,7 +6,9 @@ import { afterEach, expect, it, vi } from 'vitest';
 import App from '../App';
 import Settings from '../features/settings/Settings';
 import { RuntimeClient } from '../api/client';
+import type { PendingCounts } from '../api/windows';
 import type { Approval, ModelMessage, Question, RunDetail, RunSnapshot, StreamEvent } from '../generated/contracts';
+import { expectComposerModel } from '../test/composer-model';
 import { agent, connection, event, id, limits, model, page, run, runDetailSummary, secondId } from '../test/fixtures';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
@@ -19,6 +21,8 @@ const settings = { quick_pinned: false, ball_enabled: false, shortcut: null, sho
 const workspace = { id, version: 1, name: '工作笔记', directory_resource_id: null };
 const session = { id, version: 1, workspace_id: id, title: '原有会话', agent_profile_id: id, kind: 'interaction', archived: false };
 const profile = { ...agent, display_name: '笔记助理', default_model_profile_id: model.id };
+const noPending = { pending_questions: 0, pending_approvals: 0, pending_actions: 0, unviewed_results: 0 };
+const petName = 'FlowMate 折纸鸟，切换快捷小窗';
 
 function boundary(label = 'quick') {
   window.history.replaceState(null, '', `/?window=${label}`);
@@ -80,9 +84,12 @@ function businessServer() {
       throw new Error(`未定义命令 ${path}`);
     }
     if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }));
-    if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return json(page([]));
+    if (path.endsWith('/commands') || path.endsWith('/follow-ups') || path.endsWith('/results')) return json(page([]));
     if (path === `/workspaces/${id}/grants`) return json(page(savedGrant ? [savedGrant] : []));
     const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([profile]), '/models': page([model]), '/model-connections': page([connection]),
+      '/capabilities/mcp': page([]),
+      '/navigation': { default_workspace_id: id, workspaces: page([{ workspace, sessions: page([createdSession]), pending_count: 0 }]),
+        recent_sessions: page([createdSession]), pending_count: 0, watermark: event.event_id },
       [`/workspaces/${id}/snapshot`]: { workspace, sessions: page([createdSession]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id },
       [`/sessions/${id}/messages`]: page([]), [`/sessions/${id}/runs`]: page(state ? [state] : []),
       [`/sessions/${createdSession.id}/messages`]: page([]), [`/sessions/${createdSession.id}/runs`]: page(state ? [state] : []),
@@ -105,27 +112,29 @@ it('test_quick_completes_without_opening_main', { timeout: 15_000 }, async () =>
   render(<App />);
   await screen.findByRole('heading', { name: profile.display_name });
   expect(document.querySelector('.workbench--compact')).toBeTruthy();
-  const picker = document.querySelector<HTMLDetailsElement>('.workspace-picker')!;
-  expect(picker.open).toBe(false);
-  await user.click(screen.getByRole('button', { name: '新建会话' }));
+  expect(screen.queryByRole('dialog', { name: '项目导航' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: '打开项目导航' }));
+  const navigation = screen.getByRole('dialog', { name: '项目导航' });
+  await user.click(within(navigation).getByRole('button', { name: '新建会话' }));
   await user.type(screen.getByLabelText('新会话标题'), '小窗独立任务');
   await user.click(screen.getByRole('button', { name: '创建会话' }));
   await screen.findByRole('heading', { name: '小窗独立任务' });
   await user.type(screen.getByLabelText('消息'), '整理选中的笔记');
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
   await screen.findByText('notes.md');
-  expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(false);
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: '发送' }).disabled).toBe(false));
   expect(screen.getByText(/点击发送即同意本次读取/).textContent).toContain(connection.endpoint);
+  expect(screen.queryByRole('button', { name: /授权读取并发送/ })).toBeNull();
   await user.click(screen.getByRole('button', { name: '发送' }));
-  await user.click(await screen.findByRole('button', { name: '允许本次操作' }));
+  await user.click(await screen.findByRole('button', { name: '查看审批' }));
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '允许本次操作' }));
   await waitFor(() => expect(screen.queryByRole('button', { name: '允许本次操作' })).toBeNull());
   await server.ask();
   await user.type(await screen.findByLabelText('回答'), '全部笔记');
   await user.click(screen.getByRole('button', { name: '提交回答' }));
   await screen.findByText('已经完成笔记报告。');
   expect(screen.queryByLabelText('回答')).toBeNull();
-  await user.click(screen.getByText('任务交付摘要'));
-  expect(screen.getAllByText('笔记报告已交付').length).toBeGreaterThan(0);
+  expect(screen.getAllByText('笔记报告已交付')).toHaveLength(1);
   await user.click(screen.getByRole('button', { name: '产物' }));
   await user.click(screen.getByRole('button', { name: 'Markdown 文档 1' }));
   expect((await screen.findByTitle('产物预览')).getAttribute('srcdoc')).toContain('真实产物内容');
@@ -136,11 +145,13 @@ it('test_quick_completes_without_opening_main', { timeout: 15_000 }, async () =>
 });
 
 it('quick展开只传当前Run ID，展开和显式隐藏均保留本WebView草稿', async () => {
-  boundary(); businessServer(); const user = userEvent.setup(); render(<App />);
+  boundary(); const server = businessServer(); const user = userEvent.setup(); render(<App />);
   await screen.findByRole('heading', { name: profile.display_name });
   await user.type(screen.getByLabelText('消息'), '启动一个真实命令');
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: '发送' }).disabled).toBe(false));
   await user.click(screen.getByRole('button', { name: '发送' }));
-  await screen.findByRole('button', { name: '允许本次操作' });
+  await screen.findByRole('button', { name: '查看审批' });
+  expect(server.commands.map(command => command.path)).toEqual([`/sessions/${id}/runs`]);
   await user.type(screen.getByLabelText('消息'), '下次补充草稿');
   await user.click(screen.getByRole('button', { name: '展开工作台' }));
   expect(invoke).toHaveBeenCalledWith('show_workbench', { target: { kind: 'run', run_id: id } });
@@ -171,7 +182,11 @@ it('quick 打开模型设置先保留原小窗，section 必填且不在 quick �
   const held = new Promise<void>(resolve => { release = resolve; }); const original = vi.mocked(invoke).getMockImplementation()!;
   vi.mocked(invoke).mockImplementation(async (name, args) => name === 'set_quick_form_active' && (args as any).active ? held : original(name, args));
   const user = userEvent.setup(); render(<App />); await screen.findByRole('heading', { name: profile.display_name });
-  const input = screen.getByLabelText('消息'); await user.click(screen.getByRole('button', { name: '模型设置' }));
+  const input = screen.getByLabelText<HTMLTextAreaElement>('消息');
+  await user.click(screen.getByRole('button', { name: '运行配置' }));
+  const settingsDialog = screen.getByRole('dialog', { name: '运行配置' });
+  await user.click(within(settingsDialog).getByRole('button', { name: '模型设置' }));
+  expect(invoke).toHaveBeenCalledWith('set_quick_form_active', { active: true });
   expect(invoke).not.toHaveBeenCalledWith('open_settings', expect.anything());
   await act(async () => release()); await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_settings', { section: 'models' }));
   expect(screen.getByLabelText('消息')).toBe(input); expect(document.querySelector('.settings-shell')).toBeNull();
@@ -187,7 +202,7 @@ it('quick 新项目表单也参与原生 form-active 保留，不只保留聊天
 it.each(['main', 'quick'])('%s入口展示真实Profile、默认模型并保留未提交草稿', async label => {
   boundary(label); businessServer(); const user = userEvent.setup(); render(<App />);
   await screen.findByRole('heading', { name: profile.display_name });
-  expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe(model.id);
+  await expectComposerModel(user, model.id);
   await user.type(screen.getByLabelText('消息'), '尚未提交的草稿');
   if (label === 'quick') {
     await user.click(screen.getByRole('button', { name: '隐藏快捷小窗' }));
@@ -203,12 +218,15 @@ it('ball只读取Rust聚合，注册后读取初值且迟到初值不能覆盖�
   vi.mocked(invoke).mockImplementation(name => name === 'pending_counts' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(undefined));
   const view = render(<App />);
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('pending_counts'));
+  const pet = screen.getByRole('button', { name: petName });
+  expect(screen.getAllByRole('button')).toEqual([pet]);
+  expect(pet.getAttribute('data-pose')).toBe('syncing');
+  expect(screen.getByRole('status').textContent).toBe('待办同步中');
   expect(listen).toHaveBeenCalledWith('pending-counts', expect.any(Function), { target: 'ball' });
   await act(async () => { native.handlers.get('pending-counts')!({ event: 'pending-counts', id: 1, payload: { pending_questions: 2, pending_approvals: 1, pending_actions: 4, unviewed_results: 2 } }); finish(null); });
-  expect(await screen.findByText('4 项待处理 · 2 项未查看')).toBeTruthy();
-  const user = userEvent.setup(); await user.click(screen.getByRole('button', { name: '打开快捷小窗' }));
-  await user.click(screen.getByRole('button', { name: '打开工作台' }));
-  expect(invoke).toHaveBeenCalledWith('show_workbench', { target: null });
+  expect(pet.getAttribute('data-pose')).toBe('attention');
+  expect(pet.getAttribute('title')).toContain('4 项待处理 · 2 项未查看');
+  expect(pet.getAttribute('aria-describedby')).toContain(screen.getByRole('status').id);
   expect(invoke).not.toHaveBeenCalledWith('runtime_connection'); expect(fetch).not.toHaveBeenCalled();
   view.unmount(); expect(native.unlisten).toHaveBeenCalledOnce();
 });
@@ -230,7 +248,7 @@ it('原生设置回显真实快捷键冲突且不声称保存成功，pin/ball�
   expect(screen.queryByText('快捷键已保存')).toBeNull();
   await user.click(screen.getByLabelText('快捷小窗置顶'));
   expect(invoke).toHaveBeenCalledWith('set_quick_pinned', { pinned: true });
-  await user.click(screen.getByLabelText('启用悬浮球'));
+  await user.click(screen.getByLabelText('启用桌面折纸鸟'));
   expect(invoke).toHaveBeenCalledWith('set_ball_enabled', { enabled: true });
   expect(listen).toHaveBeenCalledWith('window-settings-changed', expect.any(Function), { target: 'main' });
 });
@@ -248,7 +266,7 @@ it('设置显示启动恢复冲突，事件更新真实配置，留空可注销�
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', '启动恢复失败：组合键被占用');
   current = { ...current, quick_pinned: true, shortcut: 'Control+Shift+Space' };
   await act(async () => { native.handlers.get('window-settings-changed')!({ id: 1, event: 'window-settings-changed', payload: null }); });
-  expect((screen.getByLabelText('快捷小窗置顶') as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByRole('checkbox', { name: '快捷小窗置顶' }).getAttribute('aria-checked')).toBe('true');
   expect((screen.getByLabelText('全局快捷键') as HTMLInputElement).value).toBe('Control+Shift+Space');
   await user.clear(screen.getByLabelText('全局快捷键'));
   await user.click(screen.getByRole('button', { name: '保存快捷键' }));
@@ -265,24 +283,23 @@ it('ball监听异步注册时卸载，注册完成立即unlisten且不再读取�
   expect(invoke).not.toHaveBeenCalled();
 });
 
-it('ball专用handle拖动不误开quick，普通单击仍打开quick且保留真实聚合角标', async () => {
-  const native = boundary('ball'); const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+it('ball从折纸鸟开始拖动，6px后仅交给原生移动，短按切换快捷窗', async () => {
+  boundary('ball');
   const user = userEvent.setup(); render(<App />);
-  const handle = await screen.findByRole('button', { name: '拖动悬浮球' });
-  await act(async () => { native.handlers.get('pending-counts')!({ id: 1, event: 'pending-counts', payload: { pending_questions: 1, pending_approvals: 2, pending_actions: 3, unviewed_results: 0 } }); });
-  await user.pointer([{ keys: '[MouseRight>]', target: handle }, { keys: '[/MouseRight]', target: handle }]);
+  const pet = screen.getByRole<HTMLButtonElement>('button', { name: petName });
+  pet.setPointerCapture = vi.fn();
+  await user.pointer([{ keys: '[MouseRight>]', target: pet }, { keys: '[/MouseRight]', target: pet }]);
   expect(vi.mocked(invoke).mock.calls.some(([name]) => name === 'start_ball_drag')).toBe(false);
-  await user.pointer([
-    { keys: '[MouseLeft>]', target: handle, coords: { clientX: 74, clientY: 10 } },
-    { target: handle, coords: { clientX: 120, clientY: 45 } },
-    { keys: '[/MouseLeft]', target: handle },
-  ]);
+  await user.pointer([{ keys: '[MouseLeft>]', target: pet, coords: { clientX: 40, clientY: 40 } },
+    { target: pet, coords: { clientX: 45, clientY: 40 } }]);
+  expect(vi.mocked(invoke).mock.calls.some(([name]) => name === 'start_ball_drag')).toBe(false);
+  await user.pointer([{ target: pet, coords: { clientX: 46, clientY: 40 } },
+    { target: pet, coords: { clientX: 55, clientY: 40 } }, { keys: '[/MouseLeft]', target: pet }]);
   expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'start_ball_drag')).toEqual([['start_ball_drag']]);
   expect(vi.mocked(invoke).mock.calls.some(([name]) => name === 'toggle_quick')).toBe(false);
-  expect(screen.getByText('3 项待处理 · 0 项未查看')).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: '打开快捷小窗' }));
+  await user.pointer([{ keys: '[MouseLeft>]', target: pet, coords: { clientX: 40, clientY: 40 } },
+    { target: pet, coords: { clientX: 43, clientY: 42 } }, { keys: '[/MouseLeft]', target: pet }]);
   expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'toggle_quick')).toEqual([['toggle_quick']]);
-  expect(invoke).not.toHaveBeenCalledWith('runtime_connection'); expect(fetch).not.toHaveBeenCalled();
 });
 
 it('ball原生拖动失败显示宿主错误且不降级为切换quick', async () => {
@@ -292,7 +309,70 @@ it('ball原生拖动失败显示宿主错误且不降级为切换quick', async (
     return original(name, args);
   });
   const user = userEvent.setup(); render(<App />);
-  await user.pointer({ keys: '[MouseLeft]', target: await screen.findByRole('button', { name: '拖动悬浮球' }) });
-  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'ball_drag_failed');
+  const pet = screen.getByRole<HTMLButtonElement>('button', { name: petName });
+  pet.setPointerCapture = vi.fn();
+  await user.pointer([{ keys: '[MouseLeft>]', target: pet, coords: { clientX: 20, clientY: 20 } },
+    { target: pet, coords: { clientX: 28, clientY: 20 } }, { keys: '[/MouseLeft]', target: pet }]);
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', '无法移动折纸鸟，请重试。');
+  expect(pet.getAttribute('title')).toContain('无法移动折纸鸟');
   expect(vi.mocked(invoke).mock.calls.some(([name]) => name === 'toggle_quick')).toBe(false);
+});
+
+it('ball如实更换收翅、衔信和展翅姿势，数量更新不重复触发同一姿势动画', async () => {
+  const native = boundary('ball');
+  vi.mocked(invoke).mockResolvedValue(null);
+  render(<App />);
+  const pet = screen.getByRole('button', { name: petName });
+  const update = (payload: PendingCounts | null) => act(async () => {
+    native.handlers.get('pending-counts')!({ event: 'pending-counts', id: 1, payload });
+  });
+  const art = () => pet.querySelector('.desktop-pet__art');
+  expect(pet.getAttribute('data-pose')).toBe('syncing');
+  await update(noPending);
+  expect(pet.getAttribute('data-pose')).toBe('idle');
+  const resting = art();
+  await update({ ...noPending, unviewed_results: 1 });
+  expect(pet.getAttribute('data-pose')).toBe('mail');
+  const messenger = art();
+  expect(messenger).not.toBe(resting);
+  expect(pet.querySelector('.desktop-pet__letter')).toBeTruthy();
+  await update({ ...noPending, unviewed_results: 2 });
+  expect(art()).toBe(messenger);
+  await update({ ...noPending, pending_actions: 1, unviewed_results: 2 });
+  expect(pet.getAttribute('data-pose')).toBe('attention');
+  expect(pet.querySelector('.desktop-pet__letter')).toBeNull();
+  await update({ ...noPending, unviewed_results: 2 });
+  expect(pet.getAttribute('data-pose')).toBe('mail');
+  await update(noPending);
+  expect(pet.getAttribute('data-pose')).toBe('idle');
+  await update(null);
+  expect(pet.getAttribute('data-pose')).toBe('syncing');
+  expect(screen.getByRole('status').textContent).toBe('待办同步中');
+});
+
+it('ball取消指针输入后忽略这次点击，显式键盘激活仍可切换', async () => {
+  boundary('ball'); render(<App />);
+  const pet = screen.getByRole<HTMLButtonElement>('button', { name: petName });
+  pet.setPointerCapture = vi.fn();
+  const user = userEvent.setup();
+  await user.pointer([{ keys: '[MouseLeft>]', target: pet, coords: { clientX: 30, clientY: 30 } }]);
+  fireEvent.pointerCancel(pet, { pointerId: 1 });
+  await user.pointer([{ keys: '[/MouseLeft]', target: pet }]);
+  expect(invoke).not.toHaveBeenCalledWith('toggle_quick');
+  pet.focus();
+  await user.keyboard('{Enter}');
+  expect(invoke).toHaveBeenCalledWith('toggle_quick');
+});
+
+it('quick从宿主接收同一真实聚合，并保留展开工作台入口', async () => {
+  const native = boundary(); businessServer(); render(<App />);
+  await screen.findByRole('heading', { name: profile.display_name });
+  expect(screen.queryByText(/未查看结果 \d/)).toBeNull();
+  await act(async () => {
+    native.handlers.get('pending-counts')!({ event: 'pending-counts', id: 1,
+      payload: { ...noPending, pending_actions: 2, unviewed_results: 3 } });
+  });
+  expect(await screen.findByText('待办 2 · 未查看结果 3')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: '展开工作台' }));
+  expect(invoke).toHaveBeenCalledWith('show_workbench', { target: null });
 });

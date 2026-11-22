@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validate } from './validation';
-import { event, id, limits, model, run } from '../test/fixtures';
+import { connection, event, id, limits, model, modelResolution, run } from '../test/fixtures';
 
 describe('真实生成 Schema 的边界校验', () => {
   it('拒绝同时缺少价格快照与unknown原因', () => {
@@ -14,6 +14,17 @@ describe('真实生成 Schema 的边界校验', () => {
     const command = { meta: { command_id: id }, data: { agent_profile_id: id, model_profile_id: id, text: 'hi' } };
     expect(validate('StartRunCommand', command)).toEqual(command);
     expect(command).not.toHaveProperty('data.resource_ids');
+  });
+  it('未知服务容量保留 null，本地预算独立，能力 false 与零单价不被改写', () => {
+    expect(validate('ModelResolution', modelResolution)).toEqual(modelResolution);
+    expect(validate('RunSnapshot', run).config.model_profile).toMatchObject({
+      context_window_tokens: 8192, max_input_tokens: null, max_supported_output_tokens: null,
+    });
+    const command = { meta: { command_id: id }, data: { connection_id: connection.id, model_id: 'custom',
+      context_window_tokens: null, capabilities: { vision: false }, pricing: { input_per_million: '0', output_per_million: '0' } } };
+    expect(validate('SaveModelCommand', command)).toEqual(command);
+    expect(command.data).not.toHaveProperty('max_input_tokens');
+    expect(() => validate('ModelResolution', { ...modelResolution, max_input_tokens: 0 })).toThrow();
   });
   it('拒绝 kind/payload 不匹配与额外/内部字段，不删除或改写输入', () => {
     expect(() => validate('PublicEvent', { ...event, kind: 'workspace.created' })).toThrow();

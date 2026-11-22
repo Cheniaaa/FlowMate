@@ -1,0 +1,221 @@
+@reference "../styles/ui.css";
+
+/* 折纸形状、渐变和动作属于桌宠插画。窗口与控件使用共享主题。 */
+@layer components {
+html:has(.desktop-pet),
+body:has(.desktop-pet) {
+  background: transparent;
+}
+
+.desktop-pet {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+}
+
+.desktop-pet .desktop-pet__button {
+  position: relative;
+  width: min(100vw, 100vh, 88px);
+  aspect-ratio: 1;
+  cursor: grab;
+}
+
+.desktop-pet .desktop-pet__button:active { cursor: grabbing; }
+.desktop-pet .desktop-pet__button:focus-visible {
+  @apply rounded-2xl outline-offset-[-4px];
+}
+
+.desktop-pet__feedback {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.desktop-pet__art {
+  position: absolute;
+  inset: 3%;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 1px #211950b3) drop-shadow(0 3px 2px #29224b40);
+}
+
+.desktop-pet__art span,
+.desktop-pet__art span::before,
+.desktop-pet__art span::after {
+  position: absolute;
+}
+
+.desktop-pet__tail {
+  inset: 0;
+  background: linear-gradient(132deg, #94a9fc 10%, #5c67cc 46%, #493990 64%);
+  clip-path: polygon(7% 50%, 39% 53%, 39% 67%, 22% 69%);
+}
+.desktop-pet__tail::before {
+  content: '';
+  inset: 0;
+  background: #4c419d;
+  clip-path: polygon(7% 50%, 37% 60%, 22% 69%);
+}
+
+.desktop-pet__body {
+  inset: 0;
+  background: linear-gradient(140deg, #acc7ff 19%, #7585f3 54%, #6452ca 74%, #493291 86%);
+  clip-path: polygon(23% 59%, 41% 40%, 60% 38%, 75% 48%, 64% 69%, 46% 77%, 32% 73%);
+}
+.desktop-pet__body::before {
+  content: '';
+  inset: 0;
+  background: linear-gradient(127deg, #8985ef 38%, #5545ae 71%);
+  clip-path: polygon(23% 59%, 56% 58%, 64% 69%, 46% 77%, 32% 73%);
+}
+.desktop-pet__body::after {
+  content: '';
+  inset: 0;
+  background: #adacff;
+  clip-path: polygon(60% 38%, 75% 48%, 65% 57%, 56% 58%);
+}
+
+.desktop-pet__wing {
+  inset: 0;
+  background: linear-gradient(144deg, #bccdff 20%, #7b91fb 46%, #5d51b7 67%);
+  clip-path: polygon(27% 57%, 50% 42%, 60% 51%, 48% 64%, 34% 68%);
+}
+.desktop-pet__wing::before {
+  content: '';
+  inset: 0;
+  background: linear-gradient(123deg, #7063cf 35%, #484097 70%);
+  clip-path: polygon(27% 57%, 48% 57%, 60% 51%, 48% 64%, 34% 68%);
+}
+.desktop-pet__wing::after {
+  content: '';
+  inset: 0;
+  background: #c1ccff;
+  clip-path: polygon(27% 57%, 50% 42%, 54% 46%);
+}
+
+.desktop-pet__head {
+  inset: 0;
+  transform-origin: 64% 45%;
+}
+.desktop-pet__face {
+  inset: 0;
+  background: linear-gradient(145deg, #aeccff 32%, #8197fa 56%, #6c5ec9 73%);
+  clip-path: polygon(51% 42%, 62% 28%, 74% 25%, 82% 32%, 81% 43%, 70% 53%, 60% 50%);
+}
+.desktop-pet__face::before {
+  content: '';
+  inset: 0;
+  background: #becdff;
+  clip-path: polygon(62% 28%, 74% 25%, 82% 32%, 69% 35%);
+}
+.desktop-pet__face::after {
+  content: '';
+  inset: 0;
+  background: #6556bc;
+  clip-path: polygon(51% 42%, 61% 40%, 70% 53%, 60% 50%);
+}
+.desktop-pet__beak {
+  inset: 0;
+  background: linear-gradient(#f8dfb7 32%, #d1a2ae 43%);
+  clip-path: polygon(79% 34%, 92% 38%, 80% 43%);
+}
+.desktop-pet__eye {
+  left: 72.5%;
+  top: 33.5%;
+  width: 4.7%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: #22204d;
+  box-shadow: 0 0 0 0.6px #c9d7ffc2;
+}
+.desktop-pet__eye::after {
+  content: '';
+  width: 30%;
+  aspect-ratio: 1;
+  top: 15%;
+  left: 20%;
+  border-radius: 50%;
+  background: #edf2ff;
+}
+
+.desktop-pet__button[data-pose='syncing'] .desktop-pet__art {
+  opacity: .82;
+  filter: saturate(.35) drop-shadow(0 1px 1px #211950a3);
+}
+
+.desktop-pet__button[data-pose='mail'] .desktop-pet__head {
+  transform: translateY(2%) rotate(7deg);
+}
+.desktop-pet__letter {
+  left: 73%;
+  top: 43%;
+  width: 21%;
+  height: 16%;
+  overflow: hidden;
+  border: 1px solid #8a7cc1;
+  border-radius: 2px;
+  background: #eee7ff;
+  transform: rotate(-11deg);
+  transform-origin: 78% 0;
+}
+.desktop-pet__letter::before {
+  content: '';
+  inset: 0;
+  background: #d7c9f9;
+  clip-path: polygon(0 100%, 49% 34%, 100% 100%);
+}
+.desktop-pet__letter::after {
+  content: '';
+  inset: 0;
+  background: linear-gradient(#fdfaff 50%, #b29bdc 100%);
+  clip-path: polygon(0 0, 100% 0, 50% 69%);
+}
+
+.desktop-pet__button[data-pose='attention'] .desktop-pet__far-wing {
+  inset: 0;
+  background: linear-gradient(148deg, #b6b7fb 30%, #7463dc 45%, #5041a0 61%);
+  clip-path: polygon(46% 50%, 59% 24%, 73% 10%, 70% 32%, 58% 55%);
+  transform-origin: 53% 52%;
+}
+.desktop-pet__button[data-pose='attention'] .desktop-pet__wing {
+  background: linear-gradient(144deg, #b8cdff 13%, #7d92f9 38%, #6253c5 64%);
+  clip-path: polygon(8% 18%, 37% 32%, 53% 55%, 40% 63%, 22% 50%, 15% 37%);
+  transform-origin: 46% 54%;
+}
+.desktop-pet__button[data-pose='attention'] .desktop-pet__wing::before {
+  clip-path: polygon(8% 18%, 29% 41%, 53% 55%, 40% 63%, 22% 50%, 15% 37%);
+}
+.desktop-pet__button[data-pose='attention'] .desktop-pet__wing::after {
+  clip-path: polygon(8% 18%, 37% 32%, 42% 40%);
+}
+.desktop-pet__button[data-pose='attention'] .desktop-pet__head {
+  transform: translateY(-5%) rotate(-11deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .desktop-pet__button[data-pose='idle'] .desktop-pet__art { animation: pet-settle 280ms ease-out; }
+  .desktop-pet__button[data-pose='mail'] .desktop-pet__letter { animation: pet-carry 380ms ease-out; }
+  .desktop-pet__button[data-pose='attention'] .desktop-pet__wing { animation: pet-unfold 360ms ease-out; }
+}
+
+@keyframes pet-settle {
+  0% { transform: translateY(-1px); }
+  55% { transform: translateY(2px); }
+  100% { transform: translateY(0); }
+}
+@keyframes pet-carry {
+  0% { transform: rotate(9deg) scale(.78); }
+  70% { transform: rotate(-16deg); }
+  100% { transform: rotate(-11deg); }
+}
+@keyframes pet-unfold {
+  0% { transform: rotate(-18deg); }
+  66% { transform: rotate(4deg); }
+  100% { transform: rotate(0); }
+}
+}

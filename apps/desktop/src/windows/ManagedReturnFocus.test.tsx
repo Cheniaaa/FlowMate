@@ -55,7 +55,8 @@ function boundary() {
   };
 }
 const returnButton = () => screen.getByRole('button', { name: '返回对话与草稿' });
-const taskEntry = () => within(document.querySelector<HTMLElement>('.conversation-header')!).getByRole('button', { name: '任务' });
+const taskEntry = () => within(screen.getByRole('navigation', { name: '会话详情入口' })).getByRole('button', { name: '任务' });
+const taskCenterEntry = () => within(screen.getByRole('complementary', { name: '项目导航' })).getByTitle('任务');
 
 it('quick 展开 managed Run 后显式返回本对话任务入口且保留主窗草稿', async () => {
   const native = boundary(), user = userEvent.setup(), main = render(<App />);
@@ -92,11 +93,20 @@ it('本地后台任务来源只在对话 inert 移除后恢复', async () => {
 it('本地任务中心经详情和返回中心后仍回本次侧栏来源', async () => {
   boundary(); const user = userEvent.setup(); render(<App />);
   await screen.findByRole('heading', { name: session.title });
-  const trigger = screen.getByTitle('任务');
+  const trigger = taskCenterEntry();
   await user.click(trigger);
-  await user.click(await screen.findByRole('button', { name: '查看任务详情' }));
+  expect(screen.queryByRole('button', { name: '返回任务中心' })).toBeNull();
+  expect(returnButton().getAttribute('data-icon-action')).toBe('back');
+  const detailEntry = await screen.findByRole('button', { name: '查看任务详情' });
+  await user.click(detailEntry);
   await screen.findByRole('heading', { name: '任务详情' });
-  await user.click(screen.getByRole('button', { name: '返回任务中心' }));
+  const back = screen.getByRole('button', { name: '返回任务中心' });
+  expect(back.getAttribute('data-icon-action')).toBe('back');
+  expect(screen.queryByRole('button', { name: '返回对话与草稿' })).toBeNull();
+  await user.click(back);
+  expect(await screen.findByRole('heading', { name: '任务中心' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: '返回任务中心' })).toBeNull();
+  expect(document.activeElement).toBe(detailEntry);
   await user.click(returnButton());
   expect(document.activeElement).toBe(trigger);
 });
@@ -104,7 +114,7 @@ it('本地任务中心经详情和返回中心后仍回本次侧栏来源', asyn
 it.each(['tasks', 'task', 'run'] as const)('外部 %s 新入口没有本地来源时不复用前次任务中心来源', async kind => {
   const native = boundary(), user = userEvent.setup(); render(<App />);
   await screen.findByRole('heading', { name: session.title });
-  await user.click(screen.getByTitle('任务'));
+  await user.click(taskCenterEntry());
   await user.click(returnButton());
   await user.click(screen.getByRole('heading', { name: session.title }));
   expect(document.activeElement).toBe(document.body);

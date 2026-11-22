@@ -17,6 +17,7 @@ describe('独立根 Schema 生成', () => {
     expect(validators.First({ item: { value: 2 } })).toBe(false);
     expect(validators.First({ item: { value: 'ab' } })).toBe(false);
     expect(validators.Second({ item: null, extra: true })).toBe(false);
+    expect(generated['validators.js'].match(/keyword: "minLength"/g)).toHaveLength(1);
     expect(generated['validators.js']).not.toMatch(/\bnew Function\b|\beval\(/);
   });
   it('拒绝旧 Schema 代际，不生成兼容层', async () => {
@@ -40,5 +41,26 @@ describe('独立根 Schema 生成', () => {
     expect(validators.TextTree({ left: { value: 'a' }, right: {} })).toBe(false);
     expect(validators.TextTree({ left: { value: 'a', extra: true }, right: { value: 'b' } })).toBe(false);
     expect(generated['validators.js']).not.toMatch(/\bnew Function\b|\beval\(/);
+  });
+  it.each(['#/$defs/Item', '#/$defs/Item/properties/value'])('同名异构定义保留各自作用域 (%s)', async ref => {
+    const roots = Object.fromEntries([['Text', { type: 'string' }], ['Number', { type: 'integer' }]]
+      .map(([name, value]) => [name, { mode: 'serialization', schema: {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        $defs: { Item: { type: 'object', properties: { value }, required: ['value'] } },
+        type: 'object',
+        properties: { item: { $ref: '#/$defs/Item' }, value: { $ref: ref },
+          literal: { const: { $ref: '#/$defs/Item' } } },
+        required: ['item', 'value'],
+      } }]));
+    const generated = await generateContracts({ schema_version: 3, roots });
+    const validators = await import(/* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(generated['validators.js']).toString('base64')}`);
+    const atRoot = ref === '#/$defs/Item';
+    const text = { item: { value: 'ok' }, value: atRoot ? { value: 'ok' } : 'ok',
+      literal: { $ref: '#/$defs/Item' } };
+    const number = { item: { value: 1 }, value: atRoot ? { value: 2 } : 2 };
+    expect(validators.Text(text)).toBe(true);
+    expect(validators.Number(number)).toBe(true);
+    expect(validators.Text({ ...text, value: number.value })).toBe(false);
+    expect(validators.Number({ ...number, item: text.item })).toBe(false);
   });
 });

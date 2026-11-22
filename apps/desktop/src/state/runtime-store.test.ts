@@ -231,7 +231,7 @@ describe('RuntimeStore真实客户端边界', () => {
       if (init.method === 'POST' || init.method === 'DELETE') {
         writes++; return Response.json({ error: { code: 'version_conflict', safe_message: '请重新决定', retryable: false, related_ids: [] } }, { status: 409 });
       }
-      if (url.endsWith(`/tasks/${secondId}`)) return Response.json({ id: secondId, version: 1, run_id: id, binding: { agent_work: null, input_artifacts: [], input_result: null, execution_session_id: run.execution_session_id, interaction_session_id: run.interaction_session_id, config: run.config, sources: run.sources, delegation_depth: 0 }, parent_task_id: null, origin_task_id: null,
+      if (url.endsWith(`/tasks/${secondId}`)) return Response.json({ id: secondId, version: 1, run_id: id, binding: { agent_work: null, input_artifacts: [], input_result: null, additional_result_inputs: [], file_inputs: {}, execution_session_id: run.execution_session_id, interaction_session_id: run.interaction_session_id, config: run.config, sources: run.sources, delegation_depth: 0 }, parent_task_id: null, origin_task_id: null,
         kind: 'agent', executor_id: 'builtin.agent', state: 'completed', created_seq: 1, deadline_at: null, result_version: 1, reason: null });
       if (url.endsWith(`/sessions/${id}`)) return Response.json({ id, version: 2, workspace_id: id, title: '更新会话', agent_profile_id: id, kind: 'interaction', archived: false });
       if (url.endsWith('/snapshot')) return Response.json({ workspace: { id, version: 2, name: '更新项目', directory_resource_id: null }, sessions: page([]),

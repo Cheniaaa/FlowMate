@@ -61,6 +61,9 @@ it.each(['python', 'node', 'powershell', 'bash'])('登记 %s 的用户绝对路�
   const api = mockApi([]); const user = userEvent.setup();
   render(<Settings client={client()} section="environments" />);
   await user.click(await screen.findByRole('button', { name: '登记运行环境' }));
+  const save = screen.getByRole('button', { name: '保存运行环境' });
+  const actions = screen.getByRole('group', { name: '运行环境操作' });
+  expect(actions.contains(save) && actions.contains(screen.getByRole('button', { name: '取消编辑' }))).toBe(true);
   await user.selectOptions(screen.getByLabelText('解释器类别'), kind);
   const path = `C:\\用户选择\\${kind} environment\\interpreter.exe`;
   await user.type(screen.getByLabelText('解释器绝对路径'), path);

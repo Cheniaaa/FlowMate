@@ -4,6 +4,7 @@ import type { RuntimeClient } from '../../api/client';
 import { validate } from '../../api/validation';
 import { windowError } from '../../api/windows';
 import type { Workspace, WorkspaceDirectoryView } from '../../generated/contracts';
+import { Button } from '../../components/ui/button';
 export default function ProjectDirectory({ client, workspace, onLink, blocked }: {
   client: RuntimeClient; workspace: Workspace; onLink: (id: string | null, version: number) => Promise<unknown>;
   blocked?: boolean;
@@ -37,6 +38,10 @@ export default function ProjectDirectory({ client, workspace, onLink, blocked }:
   return <section className="project-directory" aria-label="项目目录"><p>目录：{directory?.resource?.label ?? (directory?.state === 'unlinked' ? '未关联' : '正在查询')}</p>
     {directory?.state === 'unavailable' && <p>目录失效：{directory.reason}</p>}
     <p className="muted">关联目录不会授权读取，也不会加入本次附件。</p>
-    {error && <p role="alert">{error}</p>}{blocked && <p>目录命令待核对或同步，请使用原命令入口。</p>}<button disabled={busy || blocked || !directory} onClick={() => void link(true)}>关联/更换目录</button><button disabled={busy || blocked || !directory || directory.state === 'unlinked'} onClick={() => void link(false)}>解除关联</button>
+    {error && <p role="alert">{error}</p>}{blocked && <p>目录命令待核对或同步，请使用原命令入口。</p>}
+    <div className="flex flex-wrap gap-2">
+      <Button variant="outline" disabled={busy || blocked || !directory} onClick={() => void link(true)}>关联/更换目录</Button>
+      <Button variant="outline" disabled={busy || blocked || !directory || directory.state === 'unlinked'} onClick={() => void link(false)}>解除关联</Button>
+    </div>
   </section>;
 }

@@ -1,4 +1,5 @@
 import { Fragment, useId, type KeyboardEvent } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { ActivityView, JoinFact, ResultConsumption, TaskSnapshot, WaitRecord } from '../../generated/contracts';
 import { buildTaskGraph, graphStateLabels } from './graph-layout';
 
@@ -18,6 +19,9 @@ export function TaskGraph({ tasks, activities, waits, consumptions, joins, colla
   const markerId = useId();
   const model = buildTaskGraph(tasks, activities, waits, consumptions, joins, collapsedIds);
   const nodeById = new Map(model.nodes.map(node => [node.id, node]));
+  const labelCounts = new Map<string, number>();
+  for (const node of model.nodes) labelCounts.set(node.label, (labelCounts.get(node.label) ?? 0) + 1);
+  const labelOrder = new Map<string, number>();
   const expandable = new Set([
     ...tasks.flatMap(task => task.parent_task_id === null ? [] : [task.parent_task_id]),
     ...activities.map(activity => activity.task_id),
@@ -31,7 +35,7 @@ export function TaskGraph({ tasks, activities, waits, consumptions, joins, colla
     }
   }
   return <section className="task-graph" aria-label="任务图">
-    <details className="graph-order-note"><summary>图例与排列说明</summary><p>任务按创建序排列；过程按所属任务内 ID 稳定展示，不表示发生时间。成员名称来自 Task 固定配置；独立后台仅有来源关联，不是父子取消关系。</p>
+    <details className="graph-order-note"><summary>图例</summary>
     <ul className="graph-legend" aria-label="任务图图例">
       <li>父关系：实线</li><li>等待：虚线 → 等待目标</li>
       <li>结果消费：虚线 → 消费任务</li><li>结果合流：虚线 → 根任务</li>
@@ -61,13 +65,17 @@ export function TaskGraph({ tasks, activities, waits, consumptions, joins, colla
             fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray={edge.kind === 'parent' ? undefined : '6 4'}
             markerEnd={`url(#${markerId})`} aria-hidden="true" />;
         })}
-        {model.nodes.map(node => <Fragment key={node.id}>
+        {model.nodes.map(node => {
+          const order = (labelOrder.get(node.label) ?? 0) + 1;
+          labelOrder.set(node.label, order);
+          const label = labelCounts.get(node.label)! > 1 ? `${node.label} · 第 ${order} 项` : node.label;
+          return <Fragment key={node.id}>
           <g role="button" tabIndex={0} data-entity-id={node.id} data-entity-kind={node.entity_kind}
             className={`graph-node graph-node--${node.entity_kind}${selectedId === node.id ? ' graph-node--selected' : ''}`}
-            aria-label={`${node.entity_kind === 'task' ? '任务' : '过程'} ${node.id}，${node.label}，${graphStateLabels[node.state]}`}
+            aria-label={`${node.entity_kind === 'task' ? '任务' : '过程'} · ${label} · ${graphStateLabels[node.state]}`}
             aria-pressed={selectedId === node.id} onClick={() => onSelect(node.id, node.entity_kind)}
             onKeyDown={event => activate(event, () => onSelect(node.id, node.entity_kind))} transform={`translate(${node.x}, ${node.y})`}>
-            <title>{node.label} · {node.id} · {graphStateLabels[node.state]}</title>
+            <title>{label} · {graphStateLabels[node.state]}</title>
             <rect x={-118} y={-30} width={236} height={60} rx={node.entity_kind === 'task' ? 12 : 24} />
             <svg x={-104} y={-24} width={196} height={25} viewBox="0 0 196 25" aria-hidden="true">
               <text x={0} y={18}>{node.label}</text>
@@ -75,13 +83,15 @@ export function TaskGraph({ tasks, activities, waits, consumptions, joins, colla
             <text x={-104} y={20} className="graph-node-state">{graphStateLabels[node.state]}</text>
           </g>
           {node.entity_kind === 'task' && expandable.has(node.id) && <g role="button" tabIndex={0}
-            className="graph-toggle" aria-label={`${collapsedIds.has(node.id) ? '展开' : '折叠'}任务 ${node.id}`}
+            className="graph-toggle" aria-label={`${collapsedIds.has(node.id) ? '展开' : '折叠'}任务 · ${label}`}
             aria-expanded={!collapsedIds.has(node.id)} transform={`translate(${node.x + 101}, ${node.y - 11})`}
             onClick={() => onToggle(node.id)} onKeyDown={event => activate(event, () => onToggle(node.id))}>
             <rect x={-13} y={-13} width={26} height={26} rx={6} />
-            <text x={0} y={5} textAnchor="middle" aria-hidden="true">{collapsedIds.has(node.id) ? '+' : '−'}</text>
+            {collapsedIds.has(node.id)
+              ? <ChevronRight x={-8} y={-8} size={16} strokeWidth={1.75} aria-hidden="true" />
+              : <ChevronDown x={-8} y={-8} size={16} strokeWidth={1.75} aria-hidden="true" />}
           </g>}
-        </Fragment>)}
+        </Fragment>; })}
       </svg>
     </div>}
   </section>;

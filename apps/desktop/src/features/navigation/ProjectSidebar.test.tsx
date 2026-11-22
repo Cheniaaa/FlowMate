@@ -37,19 +37,25 @@ it('默认项目按身份导航，最近创建与待办保持真实 owner；折�
   expect(localStorage.length).toBe(1);
 });
 it('从目录创建响应丢失后只核对/原命令重试，不重开 picker', async () => {
-  server(); vi.mocked(invoke).mockRejectedValueOnce(new Error('响应丢失')).mockResolvedValueOnce({ status: 'not_found', result: null })
+  server(); vi.mocked(invoke).mockResolvedValueOnce('目录研究')
+    .mockRejectedValueOnce(new Error('响应丢失')).mockResolvedValueOnce({ status: 'not_found', result: null })
     .mockResolvedValueOnce({ workspace, directory: { ...resource, kind: 'directory' } });
   const created = vi.fn(); const user = userEvent.setup();
   render(<ProjectSidebar client={client} onNavigate={() => {}} onCreated={created} onSettings={() => {}} />);
   await user.click(await screen.findByRole('button', { name: '新建项目' }));
-  await user.type(screen.getByLabelText('项目名称'), '目录研究');
-  await user.click(screen.getByRole('button', { name: '从目录创建' }));
+  await user.click(screen.getByRole('button', { name: '选择项目目录' }));
+  await waitFor(() => expect((screen.getByLabelText('项目名称') as HTMLInputElement).value).toBe('目录研究'));
+  expect(invoke).toHaveBeenCalledTimes(1);
+  await user.clear(screen.getByLabelText('项目名称'));
+  await user.type(screen.getByLabelText('项目名称'), '我的目录研究');
+  await user.click(screen.getByRole('button', { name: '创建项目' }));
   await screen.findByText(/响应丢失/);
-  const args = vi.mocked(invoke).mock.calls[0][1];
+  const { name, meta } = vi.mocked(invoke).mock.calls[1][1] as { name: string; meta: unknown };
+  expect(name).toBe('我的目录研究');
   await user.click(screen.getByRole('button', { name: '核对目录创建' }));
   expect(created).not.toHaveBeenCalled();
   await user.click(screen.getByRole('button', { name: '重试目录创建' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('retry_workspace_from_directory', args));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('retry_workspace_from_directory', { name, meta }));
   expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'create_workspace_from_directory')).toHaveLength(1);
   expect(created).toHaveBeenCalledWith(workspace);
 });
@@ -57,7 +63,35 @@ it('quick 不提供 main-only 从目录创建命令', async () => {
   server(); const user = userEvent.setup();
   render(<ProjectSidebar client={client} onNavigate={() => {}} onCreated={() => {}} onSettings={() => {}} allowDirectoryCreation={false} />);
   await user.click(await screen.findByRole('button', { name: '新建项目' }));
-  expect(screen.queryByRole('button', { name: '从目录创建' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '选择项目目录' })).toBeNull();
+});
+
+it('选中的目录失效时保留手填名称并允许重新选择', async () => {
+  server();
+  vi.mocked(invoke).mockResolvedValueOnce('目录研究').mockRejectedValueOnce('file_not_found');
+  const onCreated = vi.fn();
+  const user = userEvent.setup();
+  render(<ProjectSidebar client={client} onNavigate={() => {}} onCreated={onCreated} onSettings={() => {}} />);
+  await user.click(screen.getByRole('button', { name: '新建项目' }));
+  await user.type(screen.getByLabelText('项目名称'), '手填名称');
+  await user.click(screen.getByRole('button', { name: '选择项目目录' }));
+  await user.click(await screen.findByRole('button', { name: '创建项目' }));
+  await screen.findByText('所选目录已不可用，请重新选择。');
+  expect((screen.getByLabelText('项目名称') as HTMLInputElement).value).toBe('手填名称');
+  expect((screen.getByRole('button', { name: '选择项目目录' }) as HTMLButtonElement).disabled).toBe(false);
+  expect(onCreated).not.toHaveBeenCalled();
+});
+
+it('最近创建的列表优先呈现已接收的手动名称，同一行不会恢复旧标题', async () => {
+  server();
+  const props = { client, onNavigate: vi.fn(), onCreated: vi.fn(), onSettings: vi.fn() };
+  const view = render(<ProjectSidebar {...props} />);
+  await userEvent.click(screen.getByRole('button', { name: '最近创建' }));
+  const row = await screen.findByRole('button', { name: session.title });
+  const renamed = { ...session, kind: 'interaction' as const, title: '本人确认的名称', version: session.version + 2 };
+  view.rerender(<ProjectSidebar {...props} sessionVersions={{ [session.id]: renamed }} />);
+  expect(screen.getByRole('button', { name: renamed.title })).toBe(row);
+  expect(screen.queryByRole('button', { name: session.title })).toBeNull();
 });
 it('新建会话入口与项目创建分开，移动抽屉可以明确关闭', async () => {
   server(); const create = vi.fn(); const user = userEvent.setup();
@@ -67,16 +101,48 @@ it('新建会话入口与项目创建分开，移动抽屉可以明确关闭', a
   await user.click(screen.getByRole('button', { name: '关闭项目导航' }));
   expect(document.querySelector('.sidebar--open')).toBeNull();
 });
+it('从导航抽屉打开设置时关闭抽屉，返回后可使用窗口控件', async () => {
+  server();
+  const settings = vi.fn();
+  const user = userEvent.setup();
+  render(<ProjectSidebar client={client} onNavigate={() => {}} onCreated={() => {}} onSettings={settings} />);
+  await user.click(screen.getByRole('button', { name: '打开项目导航' }));
+  const drawer = screen.getByRole('dialog', { name: '项目导航' });
+  await user.click(within(drawer).getByRole('button', { name: '设置' }));
+  expect(settings).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('dialog', { name: '项目导航' })).toBeNull();
+});
 it('永久删除围栏过滤导航缓存与迟到全局查询，不恢复项目/会话/待办私有标题', async () => {
   server(); const user = userEvent.setup();
+  const originalFetch = globalThis.fetch;
+  let deferInbox = false;
+  let finishInbox!: (value: Response) => void;
+  const lateInbox = new Promise<Response>(resolve => { finishInbox = resolve; });
+  const fetch = vi.fn((url: string) => deferInbox && new URL(url).pathname === '/v3/inbox' ? lateInbox : originalFetch(url));
+  vi.stubGlobal('fetch', fetch);
   const props = { client, onNavigate: vi.fn(), onCreated: vi.fn(), onSettings: vi.fn() };
   const view = render(<ProjectSidebar {...props} />); await screen.findByRole('button', { name: '真实会话' });
-  view.rerender(<ProjectSidebar {...props} deletedSessionIds={[secondId]} />);
-  await user.click(screen.getByRole('button', { name: '最近创建' })); expect(screen.queryByRole('button', { name: '真实会话' })).toBeNull();
-  await user.click(screen.getByRole('button', { name: /待办/ })); expect(screen.queryByRole('button', { name: '确认范围' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: '最近创建' }));
+  await screen.findByRole('button', { name: '真实会话' });
+  const trigger = screen.getByRole('button', { name: /待办/ });
+  await user.click(trigger);
+  const dialog = screen.getByRole('dialog', { name: '待办' });
+  await within(dialog).findByRole('button', { name: '确认范围' });
+  deferInbox = true;
+  view.rerender(<ProjectSidebar {...props} deletedSessionIds={[secondId]} refreshKey="session-deleted" />);
+  await waitFor(() => expect(fetch.mock.calls.filter(([url]) => new URL(url).pathname === '/v3/inbox')).toHaveLength(2));
+  expect(within(dialog).queryByRole('button', { name: '确认范围' })).toBeNull();
+  const staleResponse = await originalFetch('http://127.0.0.1:54321/v3/inbox?limit=50');
+  await act(async () => { finishInbox(staleResponse); });
+  expect(within(dialog).queryByRole('button', { name: '确认范围' })).toBeNull();
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+  expect(screen.queryByRole('button', { name: '真实会话' })).toBeNull();
   view.rerender(<ProjectSidebar {...props} deletedWorkspaceIds={[id]} deletedSessionIds={[secondId]} />);
   await user.click(screen.getByRole('button', { name: '刷新导航' })); await user.click(screen.getByRole('button', { name: '项目' }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: '刷新导航' }).disabled).toBe(false));
   expect(screen.queryByText(/研究项目/)).toBeNull(); expect((screen.getByRole('button', { name: '日常助理' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(props.onNavigate).not.toHaveBeenCalled();
 });
 
 it('重投事件水位推进后待办4→3自动刷新，保留已加载项目/会话尾页与续页位置，不抢当前选择/焦点', async () => {
@@ -161,10 +227,11 @@ it('导航旧水位响应不把已更新的待办3回退成4，也不切换当�
   expect(screen.getByRole('button', { name: '研究项目' }).textContent).toContain('3');
 });
 
-it('全局待办复用导航已知名称，跨项目相同问题/恢复原因仍显示准确Task并操作原对象，未知项目不额外查询', async () => {
+it('居中待办按可读名称区分同名问题，并把操作交给原目标和版本', async () => {
   server(); const previous = globalThis.fetch, paths: string[] = [];
   const otherTask = '00000000-0000-4000-8000-000000000031';
   const question = (workspace_id: string): InboxPage['items'][number] => ({ id: workspace_id, kind: 'question', workspace_id, session_id: workspace_id, run_id: workspace_id,
+    session_title: workspace_id === id ? '研究会话' : '第二项目会话', task_goal: workspace_id === id ? '开始整理' : '继续核对',
     question: { id: workspace_id, version: 1, run_id: workspace_id, task_id: workspace_id === id ? run.root_task_id : otherTask,
       call_id: 'ask', message_id: workspace_id, question: '同文案问题', answer_schema: { type: 'string' }, status: 'pending', answer_message_id: null, dependencies: [] } });
   const recovery: InboxPage['items'][number] = { id: secondId, kind: 'recovery', workspace_id: secondId, session_id: secondId,
@@ -174,20 +241,22 @@ it('全局待办复用导航已知名称，跨项目相同问题/恢复原因仍
     const path = new URL(url).pathname; paths.push(path);
     return path === '/v3/inbox' ? Response.json(page(items)) : previous(url, init);
   });
-  const onPendingOpen = vi.fn(), onPendingAction = vi.fn().mockResolvedValue(undefined);
+  const onPendingOpen = vi.fn((_item, reopen: () => void) => reopen()), onPendingAction = vi.fn().mockResolvedValue(undefined);
   render(<ProjectSidebar client={client} onNavigate={vi.fn()} onCreated={vi.fn()} onSettings={vi.fn()} onPendingOpen={onPendingOpen} onPendingAction={onPendingAction} />);
   await screen.findByRole('button', { name: '真实会话' });
   await userEvent.click(screen.getByTitle('待办'));
-  const cards = await screen.findAllByRole('article');
+  const dialog = await screen.findByRole('dialog', { name: '待办' });
+  const cards = await within(dialog).findAllByRole('article');
   expect(within(cards[0]).getByText('研究项目')).toBeTruthy();
-  expect(within(cards[0]).getByText(id)).toBeTruthy();
-  expect(within(cards[0]).getByText(run.root_task_id)).toBeTruthy();
-  expect(within(cards[1]).getByText(secondId)).toBeTruthy();
-  expect(within(cards[1]).getByText(otherTask)).toBeTruthy();
+  expect(within(cards[0]).getByText('研究会话')).toBeTruthy();
+  expect(within(cards[0]).getByText('开始整理')).toBeTruthy();
+  expect(within(cards[1]).getByText('第二项目会话')).toBeTruthy();
+  expect(within(cards[1]).getByText('继续核对')).toBeTruthy();
   expect(within(cards[1]).queryByText('研究项目')).toBeNull();
+  for (const card of cards) expect(card.textContent).not.toMatch(/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}/i);
   await userEvent.click(within(cards[1]).getByRole('button', { name: '同文案问题' }));
-  expect(onPendingOpen).toHaveBeenCalledWith(items[1]);
-  await userEvent.click(within(cards[2]).getByRole('button', { name: '停止此任务' }));
-  expect(onPendingAction).toHaveBeenCalledWith(recovery, { kind: 'cancel_run', target_id: secondId, expected_version: 3 });
+  expect(onPendingOpen).toHaveBeenCalledWith(items[1], expect.any(Function));
+  await userEvent.click(await screen.findByRole('button', { name: '停止此任务' }));
+  expect(onPendingAction).toHaveBeenCalledWith(recovery, { kind: 'cancel_run', target_id: secondId, expected_version: 3 }, expect.any(Function));
   expect(paths.every(path => path === '/v3/navigation' || path === '/v3/inbox')).toBe(true);
 });

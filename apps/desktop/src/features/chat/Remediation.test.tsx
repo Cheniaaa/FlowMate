@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { RuntimeClient } from '../../api/client';
+import { expectComposerModel } from '../../test/composer-model';
 import { mergeMessages, mergeSessions, mergeWorkspaces } from '../../api/events';
 import { createRuntimeStore } from '../../state/runtime-store';
 import { agent, connection, event, id, model, page, resultEntry, secondId } from '../../test/fixtures';
@@ -26,7 +27,7 @@ it('授权设置查看另一个项目不会更换聊天快照、历史和当前�
   const runtime = client(), store = createRuntimeStore(runtime), other = { ...workspace, id: secondId, name: '授权查询项目' };
   const message: ModelMessage = { id, run_id: id, activity_id: null, event_id: event.event_id, event_index: 0, role: 'user', origin: 'conversation',
     private_ref: null, parts: [{ kind: 'text', text: '原历史' }], source_dependencies: [] };
-  store.update(state => mergeMessages(mergeSessions(mergeWorkspaces(state, [workspace]), [session]), id, [message]));
+  store.update(state => mergeMessages(mergeSessions(mergeWorkspaces(state, [workspace]), [session]), id, page([message])));
   const before = store.getSnapshot();
   vi.spyOn(runtime, 'workspaces').mockResolvedValue(page([other, workspace]));
   vi.spyOn(runtime, 'workspaceSnapshot').mockResolvedValue({ ...snapshot, workspace: other, sessions: page([]) });
@@ -78,7 +79,7 @@ it('Skill子页保存在途及回执丢失期间不能关闭，核对保留同�
   await act(async () => reject(new Error('合成回执丢失')));
   expect(returnButton.disabled).toBe(true);
   const frozen = save.mock.calls[0][0];
-  await userEvent.click(screen.getByRole('button', { name: '查询原保存命令' }));
+  await userEvent.click(screen.getByRole('button', { name: '查询保存结果' }));
   expect(check).toHaveBeenCalledWith(frozen.meta.command_id, { scope_kind: 'workspace', workspace_id: id });
   await waitFor(() => expect(returnButton.disabled).toBe(false));
 });
@@ -111,5 +112,5 @@ it('会话绑定默认助理和模型，不选择排序靠前的新成员', asyn
   vi.spyOn(runtime, 'workspaceDirectory').mockResolvedValue({ workspace_id: id, workspace_version: 1, state: 'unlinked', reason: null, resource: null });
   render(<Conversation client={runtime} />);
   await screen.findByRole('heading', { name: '正确的默认助理' });
-  expect((screen.getByLabelText('模型') as HTMLSelectElement).value).toBe(model.id);
+  await expectComposerModel(userEvent.setup(), model.id);
 });

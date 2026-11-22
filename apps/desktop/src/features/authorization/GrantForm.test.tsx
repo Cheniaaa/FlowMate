@@ -54,9 +54,10 @@ it.each(['file', 'memory'] as const)('可达授权表单将%s发送到真实tool
   if (kind === 'memory') await user.selectOptions(screen.getByLabelText('授权来源'), 'memory');
   else await user.click(screen.getByLabelText(resource.label));
   await user.selectOptions(screen.getByLabelText('发送用途'), 'tool_send');
-  await screen.findByRole('option', { name: /真实笔记服务.*修订 4/ });
+  await screen.findByRole('option', { name: /真实笔记服务.*notes\.example\.invalid/ });
   await user.selectOptions(screen.getByLabelText('实际接收目的地'), remoteSnapshot.destination);
-  expect(screen.getByText(remoteSnapshot.destination)).toBeTruthy();
+  expect(screen.getByText('服务地址：https://notes.example.invalid/mcp')).toBeTruthy();
+  expect(screen.queryByText(remoteSnapshot.destination)).toBeNull();
   await user.click(screen.getByRole('button', { name: '确认创建用途授权' }));
   await waitFor(() => expect(writes).toHaveLength(1));
   expect(writes[0].data).toMatchObject({
@@ -88,7 +89,7 @@ it('local_process_send保留实际Skill/hash/环境修订目的地，发送许�
   await user.click(screen.getByLabelText(resource.label));
   await user.selectOptions(screen.getByLabelText('发送用途'), 'local_process_send');
   const target = `skill:${skillView.version.skill_id}:${skillView.version.content_hash}:environment:${serverId}:2`;
-  await screen.findByRole('option', { name: /release-note.*环境修订 2/ });
+  await screen.findByRole('option', { name: /release-note.*python\.exe/ });
   await user.selectOptions(screen.getByLabelText('实际接收目的地'), target);
   await user.click(screen.getByRole('button', { name: '确认创建用途授权' }));
   await waitFor(() => expect(writes).toHaveLength(1));
@@ -166,7 +167,7 @@ it.each([
   render(<ResourcePanel client={client()} workspaceId={id} sessionId={null} onRevoke={async () => {}} />);
   await user.click(await screen.findByRole('button', { name: '新增用途授权' }));
   await user.selectOptions(screen.getByLabelText('授权来源'), 'mcp');
-  await screen.findByRole('option', { name: /真实笔记服务.*修订 4/ });
+  await screen.findByRole('option', { name: '真实笔记服务' });
   await user.selectOptions(await screen.findByLabelText('返回资料的 MCP 配置'), serverId);
   await user.selectOptions(screen.getByLabelText('发送用途'), purpose);
   const target = screen.getByLabelText('实际接收目的地') as HTMLSelectElement;
@@ -189,7 +190,7 @@ it('个人记忆可以单独授权给当前项目的实际MCP目的地', async (
   await user.selectOptions(screen.getByLabelText('授权来源'), 'memory');
   await user.selectOptions(screen.getByLabelText('授权范围'), 'personal');
   await user.selectOptions(screen.getByLabelText('发送用途'), 'tool_send');
-  await screen.findByRole('option', { name: /真实笔记服务.*修订 4/ });
+  await screen.findByRole('option', { name: /真实笔记服务.*notes\.example\.invalid/ });
   await user.selectOptions(screen.getByLabelText('实际接收目的地'), remoteSnapshot.destination);
   await user.click(screen.getByRole('button', { name: '确认创建用途授权' }));
   await waitFor(() => expect(writes).toHaveLength(1));

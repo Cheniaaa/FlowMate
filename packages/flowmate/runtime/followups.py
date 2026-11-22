@@ -11,15 +11,24 @@ from flowmate.contracts.execution import (
     PendingUserCommand,
     RunSnapshot,
     RuntimeChange,
+    SessionInboxEntry,
     SourceSelection,
     StartRun,
     TaskSnapshot,
 )
 from flowmate.runtime.budget import DIMENSIONS
+from flowmate.runtime.delivery import (
+    delivery_available,
+    managed_deliveries,
+    publish_managed_report,
+    unavailable_delivery,
+    unconsumed_delivery,
+)
 from flowmate.runtime.leases import acquire_session
 from flowmate.runtime.tasks import result_input
 from flowmate.runtime.transitions import (
     bump,
+    context_for,
     emit,
     load,
     pending_outbox,
@@ -42,9 +51,57 @@ def create_intent(tx, entry):
     if tx.execute("SELECT 1 FROM follow_up_intents WHERE source_result_id=? AND target_session_id=? AND policy_version=1",
             (entry.id, entry.target_session_id)).fetchone():
         return
+    if submission.lifetime == "managed" and tx.execute(
+            "SELECT 1 FROM follow_up_intents f JOIN delivery_outbox d ON d.id=f.source_result_id "
+            "WHERE json_extract(f.document,'$.origin_run_id')=? "
+            "AND json_extract(d.document,'$.result.lifetime')='managed'",
+            (origin.id,)).fetchone():
+        return
     intent = FollowUpIntent(source_result=entry.id, target_session_id=entry.target_session_id,
         budget_group_id=origin.budget_group_id, origin_run_id=origin.id)
     emit(tx, origin, origin.root_task_id, "follow_up.changed", RuntimeChange(follow_up_intents=[intent]))
+
+
+def is_managed_intent(tx, intent):
+    return tx.execute("SELECT 1 FROM delivery_outbox WHERE id=? "
+        "AND json_extract(document,'$.result.lifetime')='managed'", (intent.source_result,)).fetchone() is not None
+
+
+def revoked_managed_follow_up_before_dispatch(tx, run, source_id):
+    if run.kind != "follow_up" or run.state not in {"queued", "running"}:
+        return False
+    binding = load(tx, TaskSnapshot, run.root_task_id).binding
+    if not any(dep.scope_id == source_id
+            for pin in [binding.input_result, *binding.additional_result_inputs] if pin is not None
+            for dep in pin.dependencies):
+        return False
+    row = tx.execute("SELECT document FROM follow_up_intents WHERE json_extract(document,'$.run_id')=? "
+        "AND json_extract(document,'$.status')='active'", (run.id,)).fetchone()
+    # 模型请求额度在取得派发许可时持久化，晚于准备且早于实际出站。
+    return (row is not None and is_managed_intent(tx, FollowUpIntent.model_validate_json(row[0]))
+            and load(tx, BudgetSnapshot, run.budget_id).model_requests == 0)
+
+
+def finish_managed_follow_up(tx, intent, run):
+    """为确认的终态补齐实际交付，继续服从原任务的发布围栏。"""
+    if not is_managed_intent(tx, intent):
+        return run
+    origin = load(tx, RunSnapshot, intent.origin_run_id)
+    if run.state == "failed":
+        if run.reason == "scope_revoked":
+            publish_managed_report(tx, origin, fallback_reason="scope_revoked")
+        elif run.reason == "deadline_exceeded":
+            publish_managed_report(tx, origin, fallback_reason="deadline")
+        elif run.reason in {"budget_exceeded", "request_limit", "step_limit", "task_limit", "token_limit"}:
+            publish_managed_report(tx, origin, fallback_reason="budget")
+    if run.state == "completed" and run.output is not None:
+        rows = [row for row in managed_deliveries(tx, origin) if row["policy"] != "notify_each"]
+        unavailable = [unavailable_delivery(position) for position, row in enumerate(rows, 1)
+            if unconsumed_delivery(tx, row) and not delivery_available(tx, SessionInboxEntry.model_validate_json(row["document"]))]
+        if unavailable:
+            output = run.output.model_copy(update={"unresolved": [*run.output.unresolved, *unavailable]})
+            return run.model_copy(update={"output": output})
+    return run
 
 
 def request_yield(tx, run_id, reason):
@@ -122,7 +179,7 @@ class FollowUpService:
                 continue
             tx.execute("SAVEPOINT apply_user")
             try:
-                run = self.service._start_tx(tx, pending)
+                run = self.service._start_tx(tx, pending, queued=True)
             except DomainError as error:
                 tx.execute("ROLLBACK TO apply_user")
                 pending = pending.model_copy(update={"state": "cancelled", "reason": error.code})
@@ -176,24 +233,59 @@ class FollowUpService:
                         "SELECT 1 FROM pending_user_commands WHERE session_id=? AND state='queued'",
                         (intent.target_session_id,)).fetchone()):
                     continue
+                entry_ids = [intent.source_result]
+                unavailable = []
+                managed = intent.run_id is None and is_managed_intent(tx, intent)
+                if managed:
+                    if origin.state not in TERMINAL:
+                        continue
+                    rows = [row for row in managed_deliveries(tx, origin) if row["policy"] != "notify_each"]
+                    if any(row["state"] not in {"delivered", "invalidated"} for row in rows):
+                        continue
+                    # 一项撤权只影响该项。先按送达记录核对范围，之后只加载可用正文。
+                    outstanding = [row for row in rows if unconsumed_delivery(tx, row)]
+                    if not any(row["policy"] == "follow_up" for row in outstanding):
+                        emit(tx, origin, origin.root_task_id, "follow_up.changed", RuntimeChange(follow_up_intents=[
+                            intent.model_copy(update={"status": "closed"})]))
+                        continue
+                    entry_ids = []
+                    synthesis_needed = False
+                    for position, row in enumerate(rows, 1):
+                        if not unconsumed_delivery(tx, row):
+                            continue
+                        entry = SessionInboxEntry.model_validate_json(row["document"])
+                        if delivery_available(tx, entry):
+                            entry_ids.append(entry.id)
+                            synthesis_needed |= row["policy"] == "follow_up"
+                        else:
+                            unavailable.append(unavailable_delivery(position))
+                    if not synthesis_needed:
+                        publish_managed_report(tx, origin, fallback_reason="scope_revoked")
+                        emit(tx, origin, origin.root_task_id, "follow_up.changed", RuntimeChange(follow_up_intents=[
+                            intent.model_copy(update={"status": "closed", "reason": "scope_revoked"})]))
+                        continue
                 tx.execute("SAVEPOINT activate_follow_up")
                 try:
                     if intent.run_id:
                         self._resume(tx, intent, load(tx, RunSnapshot, intent.run_id))
                     else:
-                        selected = result_input(tx, intent.source_result, intent.target_session_id)
                         from flowmate.policy.service import PolicyService
-                        sources = PolicyService.resource_closure(tx, selected.dependencies,
-                            source_run_id=selected.handle.run_id, source_task_id=selected.handle.task_id)
-                        source_run = load(tx, RunSnapshot, selected.handle.run_id)
-                        source_task = load(tx, TaskSnapshot, selected.handle.task_id)
-                        dependency_ids = {item.scope_id for item in selected.dependencies}
-                        # 记忆身份及修订已固定在 input_result，不能转成整个范围的选择。
-                        selection = SourceSelection(resource_ids=sources,
-                            skill_versions={id: version for id, version in source_task.binding.sources.skill_versions.items()
-                                if id in dependency_ids},
-                            excluded_source_ids=sorted(set(source_run.sources.excluded_source_ids)
-                                | set(source_task.binding.sources.excluded_source_ids)))
+                        selected, *additional = [result_input(tx, id, intent.target_session_id) for id in entry_ids]
+                        sources, versions, pins = set(), {}, {}
+                        for pin in [selected, *additional]:
+                            source_run = load(tx, RunSnapshot, pin.handle.run_id)
+                            source_task = load(tx, TaskSnapshot, pin.handle.task_id)
+                            self.service.policy.check_run_sources(tx, context_for(tx, source_task.id), pin.dependencies)
+                            resources = PolicyService.resource_closure(tx, pin.dependencies,
+                                source_run_id=source_run.id, source_task_id=source_task.id)
+                            sources.update(resources)
+                            dependency_ids = {item.scope_id for item in pin.dependencies}
+                            versions.update((id, version) for id, version in source_task.binding.sources.skill_versions.items()
+                                if id in dependency_ids)
+                            pins.update((id, value) for id, value in source_task.binding.file_inputs.items()
+                                if id in resources and source_run.file_inputs.get(id) == value)
+                        selection = SourceSelection(resource_ids=sorted(sources), skill_versions=versions,
+                            excluded_source_ids=origin.sources.excluded_source_ids)
                         group = load(tx, BudgetGroupSnapshot, origin.budget_group_id)
                         # 仅申请组内未占用额度；既有allocate在同事务核验并转拨。
                         limits = group.limits.model_dump()
@@ -209,7 +301,9 @@ class FollowUpService:
                                     if not BudgetAllocation.model_validate_json(item["document"]).returned
                                     and ledger.run_id != origin.id)
                                 limits[field] = max(0, cap - sum(getattr(group, key) for key in counters) - occupied)
-                        if limits["max_tasks"] < 1 or limits["max_model_requests"] < 1 or self.clock() >= group.deadline_at:
+                        if self.clock() >= group.deadline_at:
+                            raise DomainError("deadline_exceeded", "原授权组的总结期限已到")
+                        if limits["max_tasks"] < 1 or limits["max_steps"] < 2 or limits["max_model_requests"] < 1:
                             raise DomainError("allocation_exceeded", "原授权组无可用总结额度")
                         config = origin.config.model_copy(update={"members": {},
                             "catalog": origin.config.catalog.model_copy(update={"tools": {
@@ -217,21 +311,27 @@ class FollowUpService:
                                 if name in {"run.finish", "artifacts.read"}}})})
                         command = StartRun(session_id=intent.target_session_id,
                             agent_profile_id=config.agent_profile.id, model_profile_id=config.model_profile.id,
-                            text="总结指定后台任务的明确交付，引用依据；不要执行新任务。",
-                             sources=selection, limits=group.limits.model_validate(limits),
-                            source_result=intent.source_result)
+                             text="\n".join(["总结指定后台任务的明确交付，引用依据；不要执行新任务。", *unavailable]),
+                             sources=selection, limits=group.limits.model_validate(limits), source_result=selected.inbox_entry_id)
                         pending = PendingUserCommand(command_id=identifier(), session_id=command.session_id,
                             start=command, created_seq=1, config=config,
+                             file_inputs=pins,
                             scope_dependencies=origin.scope_dependencies,
                             admission_generations=origin.admission_generations, deadline_at=group.deadline_at,
                             input_result=selected)
-                        run = self.service._start_tx(tx, pending, kind="follow_up", origin=origin)
+                        run = self.service._start_tx(tx, pending, kind="follow_up", origin=origin,
+                            additional_result_inputs=additional)
                         emit(tx, run, run.root_task_id, "follow_up.changed", RuntimeChange(follow_up_intents=[
                             intent.model_copy(update={"run_id": run.id, "status": "active", "reason": None})]))
                     count += 1
                 except DomainError as error:
                     tx.execute("ROLLBACK TO activate_follow_up")
-                    if intent.reason != error.code:
+                    if managed and error.code in {"allocation_exceeded", "deadline_exceeded"}:
+                        publish_managed_report(tx, origin,
+                            fallback_reason="deadline" if error.code == "deadline_exceeded" else "budget")
+                        emit(tx, origin, origin.root_task_id, "follow_up.changed", RuntimeChange(follow_up_intents=[
+                            intent.model_copy(update={"status": "closed", "reason": error.code})]))
+                    elif intent.reason != error.code:
                         emit(tx, origin, origin.root_task_id, "follow_up.changed", RuntimeChange(
                             follow_up_intents=[intent.model_copy(update={"reason": error.code})]))
                 tx.execute("RELEASE activate_follow_up")

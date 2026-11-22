@@ -1,14 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
+import { installDocumentAppearance } from './components/documentAppearance';
 import { RuntimeClient } from './api/client';
 import QuickAssistant from './windows/QuickAssistant';
 import FloatingBall from './windows/FloatingBall';
 import WorkbenchWindow from './windows/WorkbenchWindow';
 import { Toaster } from './components/ui/sonner';
-import './styles/ui.css';
-import './styles/tokens.css';
-import './styles/app.css';
 
 export default function App() {
+  useLayoutEffect(installDocumentAppearance, []);
   const label = new URLSearchParams(window.location.search).get('window');
   if (label !== null && !['main', 'quick', 'ball'].includes(label)) return <main><p role="alert">未知或已移除的产品窗口</p></main>;
   // 球在连接组件之外分流，永不领取Runtime凭据或业务事实。

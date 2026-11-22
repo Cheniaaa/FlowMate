@@ -1,12 +1,18 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import type { RuntimeClient } from '../../api/client';
 import AssistantSettings from '../settings/AssistantSettings';
 import { windowError } from '../../api/windows';
 import type { WorkspacePage } from '../../generated/contracts';
 import { mergeVersioned } from '../../api/events';
+import IconButton from '../../components/IconButton';
+import { Button } from '../../components/ui/button';
+import { Field, FieldDescription, FieldLabel } from '../../components/ui/field';
+import { NativeSelect, NativeSelectOption } from '../../components/ui/native-select';
+import { cn } from '../../lib/utils';
 
-export default function AssistantsPage({ client, refreshKey, skillsRevision, onClose, onReturnToQuick }: {
+export default function AssistantsPage({ client, refreshKey, skillsRevision, onClose, onReturnToQuick, navigationGuard }: {
   client: RuntimeClient; refreshKey?: string; skillsRevision?: number; onClose: () => void; onReturnToQuick?: () => Promise<void>;
+  navigationGuard?: Ref<(action: () => void) => void>;
 }) {
   const dirty = useRef(new Set<HTMLFormElement>());
   const continuation = useRef<(() => void) | undefined>(undefined);
@@ -28,39 +34,50 @@ export default function AssistantsPage({ client, refreshKey, skillsRevision, onC
     for (const form of dirty.current) if (!form.isConnected) dirty.current.delete(form);
     if (dirty.current.size) { continuation.current = action; setConfirming(true); } else action();
   }
+  useImperativeHandle(navigationGuard, () => guard);
   function complete(form: HTMLFormElement) {
     dirty.current.delete(form); setHasChanges(dirty.current.size > 0);
     if (continuation.current) { const action = continuation.current; continuation.current = undefined; setConfirming(false); action(); }
   }
-  return <section ref={root} className="assistants-page" role="dialog" aria-modal="true" aria-label="我的助理" onKeyDown={event => {
-    if (event.key === 'Escape' && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); guard(onClose); }
-    if (event.key === 'Tab') {
+  return <section ref={root} className={cn('assistants-page', navigationGuard && 'workbench-page ui-page-motion')}
+    role={navigationGuard ? undefined : 'dialog'} aria-modal={navigationGuard ? undefined : true} aria-label="我的助理" onKeyDown={event => {
+    if (event.defaultPrevented || !root.current!.contains(event.target as Node)) return;
+    if (event.key === 'Escape' && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
+      event.preventDefault();
+      if (confirming) { continuation.current = undefined; setConfirming(false); }
+      else guard(onClose);
+    }
+    if (!navigationGuard && event.key === 'Tab') {
       const controls = [...root.current!.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)')].filter(element => element.getClientRects().length);
       const first = controls[0], last = controls.at(-1);
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }
   }}>
-    <header className="panel-header"><h1>我的助理</h1><button ref={close} disabled={busy} onClick={() => guard(onClose)}>返回对话与草稿</button></header>
+    <header className="panel-header"><h1>我的助理</h1><IconButton ref={close} icon={navigationGuard ? 'back' : 'close'} size="icon-sm" label="返回对话与草稿" disabled={busy} onClick={() => guard(onClose)} /></header>
     <p>这里管理稳定的助理 Profile；任务详情中的成员和模型取自执行时固定快照。</p>
-    <label>能力所属项目 <select value={workspaceId} disabled={busy} onChange={event => {
-      const id = event.target.value; guard(() => setWorkspaceId(id));
-    }}>
-      <option value="">仅个人能力</option>
-      {workspaces?.items.map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-    </select></label>
-    <p>选择项目后列出个人及该项目中已启用的能力；其他项目的原选择仅保留 ID。</p>
-    {workspaces?.next_cursor && <button type="button" disabled={busy} onClick={async () => {
+    <Field><FieldLabel htmlFor="assistant-project">能力所属项目</FieldLabel>
+      <NativeSelect id="assistant-project" value={workspaceId} disabled={busy} onChange={event => {
+        const id = event.target.value; guard(() => setWorkspaceId(id));
+      }}>
+      <NativeSelectOption value="">仅个人能力</NativeSelectOption>
+      {workspaces?.items.map(workspace => <NativeSelectOption key={workspace.id} value={workspace.id}>{workspace.name}</NativeSelectOption>)}
+      </NativeSelect>
+      <FieldDescription>选择项目后列出个人及该项目中已启用的能力。</FieldDescription>
+    </Field>
+    {workspaces?.next_cursor && <Button variant="outline" size="sm" disabled={busy} onClick={async () => {
       try {
         const next = await client.workspaces({ cursor: workspaces.next_cursor! });
         setWorkspaces(current => ({ ...next, items: Object.values(mergeVersioned(
           Object.fromEntries(current!.items.map(item => [item.id, item])), next.items)) }));
       } catch (error) { setError(windowError(error)); }
-    }}>更多能力项目</button>}
-    {confirming && <section aria-label="未保存助理"><h2>有未保存的助理配置</h2>
-      <button disabled={busy} onClick={() => { continuation.current = undefined; setConfirming(false); }}>继续编辑</button>
-      <button disabled={busy} onClick={() => { for (const form of dirty.current) form.reset(); dirty.current.clear(); setHasChanges(false); const action = continuation.current; continuation.current = undefined; setConfirming(false); action?.(); }}>放弃更改</button>
-      <button disabled={busy} onClick={() => dirty.current.values().next().value?.requestSubmit()}>保存后继续</button>
+    }}>更多能力项目</Button>}
+    {confirming && <section aria-label="未保存助理" className="my-3 rounded-control border border-border p-3"><h2>有未保存的助理配置</h2>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" disabled={busy} onClick={() => { continuation.current = undefined; setConfirming(false); }}>继续编辑</Button>
+        <Button variant="outline" disabled={busy} onClick={() => { for (const form of dirty.current) form.reset(); dirty.current.clear(); setHasChanges(false); const action = continuation.current; continuation.current = undefined; setConfirming(false); action?.(); }}>放弃更改</Button>
+        <Button disabled={busy} onClick={() => dirty.current.values().next().value?.requestSubmit()}>保存后继续</Button>
+      </div>
     </section>}
     <div onChangeCapture={event => { const form = (event.target as HTMLElement).closest('form'); if (form) { dirty.current.add(form); setHasChanges(true); } }}>
       <AssistantSettings client={client} manageMembers workspaceId={workspaceId || undefined} skillsRevision={skillsRevision} deferSkillRefresh={hasChanges || busy}
@@ -69,6 +86,6 @@ export default function AssistantsPage({ client, refreshKey, skillsRevision, onC
         }} onDiscard={form => { dirty.current.delete(form); setHasChanges(dirty.current.size > 0); }} />
     </div>
     {error && <p role="alert">{error}</p>}
-    {onReturnToQuick && <button disabled={busy} onClick={() => guard(() => { void onReturnToQuick().catch(error => setError(windowError(error))); })}>返回快捷小窗</button>}
+    {onReturnToQuick && <IconButton icon="quick" label="返回快捷小窗" disabled={busy} onClick={() => guard(() => { void onReturnToQuick().catch(error => setError(windowError(error))); })} />}
   </section>;
 }

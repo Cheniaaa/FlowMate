@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { invoke } from '@tauri-apps/api/core';
 import { afterEach, expect, it, vi } from 'vitest';
 import { RuntimeClient } from '../../api/client';
-import { agent, connection, page, model, id, grant, resource } from '../../test/fixtures';
+import { agent, connection, page, model, modelResolution, id, grant, resource } from '../../test/fixtures';
 import Settings from './Settings';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
@@ -73,9 +73,7 @@ it.each(['assistant', 'model'] as const)('%s保存重建后仍可键盘关闭设
   vi.spyOn(document, 'hasFocus').mockReturnValue(true);
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     if (init.method === 'PUT') return Response.json({ ...JSON.parse(init.body as string).data, version: 2 });
-    if (url.endsWith('/resolved')) return Response.json({ ...model, connection_version: 1,
-      protocol: connection.protocol, endpoint: connection.endpoint, secret_ref: null, provider_preset_id: null,
-      metadata_sources: {}, model_pricing: null, pricing_unknown_reason: '离线未知价格', blockers: [] });
+    if (url.endsWith('/resolved')) return Response.json(modelResolution);
     return Response.json(url.endsWith('/provider-presets') ? [] : url.includes('/model-connections') ? page([connection])
       : url.endsWith('/profiles') ? page([agent]) : page([model]));
   });
@@ -117,7 +115,11 @@ it('官方预设使用 API 地址/协议及来源，修改目的地转自定义�
   await user.click(await screen.findByRole('button', { name: '新建连接' }));
   await user.selectOptions(await screen.findByLabelText('提供商预设'), 'test-provider');
   expect((screen.getByLabelText('Endpoint') as HTMLInputElement).value).toBe('https://provider.invalid/api');
-  expect(screen.getByText(/test-v1/)).toBeTruthy();
+  const source = screen.getByText('预设来源详情');
+  await user.click(source);
+  expect(source.closest('details')).toHaveProperty('open', true);
+  expect(screen.getByText(/https:\/\/provider\.invalid\/docs.*2026-11-12/)).toBeTruthy();
+  expect(source.closest('details')?.textContent).not.toContain('test-v1');
   await user.type(screen.getByLabelText('API Key（仅保存到系统凭据）'), 'synthetic-key');
   await user.click(screen.getByRole('button', { name: '保存连接' }));
   await waitFor(() => expect(writes).toHaveLength(1)); expect(writes[0].data.provider_preset_id).toBe('test-provider');

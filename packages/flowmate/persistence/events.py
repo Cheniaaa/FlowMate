@@ -19,9 +19,9 @@ def apply_event(tx: "UnitOfWork", event: RunEvent) -> None:
             tx.execute("INSERT INTO scopes(id,kind,workspace_id) VALUES (?,'workspace',?)", (value.id,value.id))
             if event.kind == "workspace.default_created":
                 tx.execute("INSERT INTO workspace_identity VALUES (1,?)", (value.id,))
-        case "workspace.directory_changed":
-            tx.execute("UPDATE workspaces SET version=?,directory_resource_id=? WHERE id=?",
-                       (value.version, value.directory_resource_id, value.id))
+        case "workspace.directory_changed" | "workspace.renamed":
+            tx.execute("UPDATE workspaces SET version=?,name=?,directory_resource_id=? WHERE id=?",
+                       (value.version, value.name, value.directory_resource_id, value.id))
         case "session.created":
             tx.execute(
                 "INSERT INTO sessions(id, version, workspace_id, title, agent_profile_id,kind,archived,document) "
@@ -32,8 +32,8 @@ def apply_event(tx: "UnitOfWork", event: RunEvent) -> None:
             tx.execute("INSERT INTO scopes(id,kind,workspace_id,session_id) VALUES (?,'session',?,?)",
                        (value.id,value.workspace_id,value.id))
         case "session.updated":
-            tx.execute("UPDATE sessions SET version=?,archived=?,document=? WHERE id=?",
-                       (value.version,value.archived,value.model_dump_json(),value.id))
+            tx.execute("UPDATE sessions SET version=?,title=?,archived=?,document=? WHERE id=?",
+                       (value.version,value.title,value.archived,value.model_dump_json(),value.id))
             if value.archived:
                 tx.execute("UPDATE delivery_reservations SET released=1,document=json_set(document,'$.released',json('true')) "
                            "WHERE target_session_id=?", (value.id,))
@@ -46,7 +46,7 @@ def apply_event(tx: "UnitOfWork", event: RunEvent) -> None:
             tx.save_profile("model", value)
         case "connection.saved":
             tx.save_connection(value)
-        case "memory.changed" | "memory.policy_changed" | "memory.maintenance_changed" | "skill.changed" | "environment.changed" | "mcp.changed":
+        case "memory.changed" | "memory.policy_changed" | "memory.maintenance_changed" | "skill.changed" | "environment.changed" | "mcp.changed" | "naming.policy_saved":
             # 事实由事务内 MemoryProvider 写入；事件只保留不含正文的失效通知。
             pass
         case _:
@@ -103,6 +103,11 @@ def apply_runtime_change(tx: "UnitOfWork", event: RunEvent) -> None:
                    "state=excluded.state, document=excluded.document",
                    (activity.id, activity.run_id, activity.task_id, activity.state,
                     activity.model_dump_json()))
+        if activity.mcp_source is not None:
+            # 使用既有 MCP 来源范围，以实际 Activity 身份区分每次调用，无需迁移表。
+            tx.execute("INSERT OR IGNORE INTO scopes(id,epoch,status,kind,workspace_id,session_id) "
+                "SELECT ?,1,'active','mcp',workspace_id,interaction_session_id FROM runs WHERE id=?",
+                (activity.id, activity.run_id))
     for checkpoint in change.checkpoints:
         tx.execute("INSERT INTO checkpoints VALUES (?, ?) ON CONFLICT(task_id) DO UPDATE SET "
                    "document=excluded.document", (checkpoint.task_id, checkpoint.model_dump_json()))

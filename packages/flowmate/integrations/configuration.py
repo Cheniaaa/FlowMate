@@ -25,6 +25,7 @@ from flowmate.integrations.configuration_contracts import (
 )
 from flowmate.integrations.contracts import McpCatalog, McpServerConfig
 from flowmate.integrations.public import public_catalog
+from flowmate.policy.lifecycle import invalidate_mcp_sources
 from flowmate.policy.service import _scope
 
 
@@ -61,6 +62,7 @@ class McpConfiguration:
         self.manager = manager
         self.changed = changed
         self._operations = asyncio.Lock()
+        self._discoveries = {}
         self._failures = {}
 
     @staticmethod
@@ -191,6 +193,8 @@ class McpConfiguration:
                     (config.id, config.revision, _StoredServer(**config.model_dump(),
                         selection=old.selection if old else None,
                         connection_identity=identity).model_dump_json()))
+                if old is not None:
+                    invalidate_mcp_sources(tx, config.id, causation_id=meta.command_id)
                 tx.execute("INSERT INTO commands VALUES (?,?,?,?,?)", (
                     meta.command_id, fingerprint, config.model_dump_json(), config.scope.workspace_id, None,
                 ))
@@ -250,6 +254,26 @@ class McpConfiguration:
             return [_StoredServer.model_validate_json(row[0])
                 for row in tx.execute("SELECT document FROM mcp_servers ORDER BY id")]
 
+    def effective_tool_names(self, tx, stored, catalog):
+        """恢复与发现发布共用有效名单；同名定义变化不能继承已有选择。"""
+        available = {tool.name: tool for tool in catalog.tools
+            if tool.unavailable_reason is None}
+        selected = stored.selection
+        if selected is None:
+            return list(available)
+        if selected.config_revision != stored.revision:
+            return None
+        if selected.catalog_hash != catalog.content_hash:
+            row = tx.execute("SELECT document FROM mcp_catalogs WHERE server_id=? AND catalog_hash=?",
+                (stored.id, selected.catalog_hash)).fetchone()
+            if row is None:
+                raise DomainError("mcp_catalog_invalid", "已选工具的原始目录不存在")
+            previous = {tool.name: tool for tool in McpCatalog.model_validate_json(row[0]).tools}
+            if any(name not in available or previous.get(name) != available[name]
+                    for name in selected.selected_names):
+                return None
+        return selected.selected_names
+
     async def reconnect(self, *, publisher, configs=None):
         """只连接启动时已受信且证据未变的配置；显式连接优先且不会被重复发现。"""
         configs = self.reconnect_snapshot() if configs is None else configs
@@ -276,9 +300,9 @@ class McpConfiguration:
             if self.changed is not None:
                 self.changed(tx, config)
 
-    async def discover(self, server_id, meta, *, publisher=None, automatic=False):
+    async def discover(self, server_id, meta, *, publisher=None, automatic=False, trusted_identity=None):
         fingerprint = self._fingerprint("mcp.discover", {"server_id": server_id}, meta)
-        async with self._operations:
+        async with self._discoveries.setdefault(server_id, asyncio.Lock()):
             with self.store.transaction(write=False) as tx:
                 config = self._get(tx, server_id)
                 previous = self._replay(tx, meta, fingerprint, McpServerView)
@@ -288,6 +312,8 @@ class McpConfiguration:
                     raise DomainError("version_conflict", "连接前须核对当前配置修订")
                 if not config.enabled:
                     raise DomainError("mcp_disabled", "MCP 配置已停用")
+                if trusted_identity is not None and connection_identity(config) != trusted_identity:
+                    raise DomainError("mcp_connection_trust_changed", "所选连接已改变，请重新确认")
                 if automatic and self.manager is not None and self.manager.status(server_id) == "connected":
                     return self._view(tx, config)
             if self.manager is None:
@@ -304,6 +330,8 @@ class McpConfiguration:
                 current = self._get(tx, server_id)
                 if current.revision != config.revision:
                     raise DomainError("version_conflict", "发现期间配置已改变")
+                if trusted_identity is not None and connection_identity(current) != trusted_identity:
+                    raise DomainError("mcp_connection_trust_changed", "等待期间所选连接已改变，本次输入未提交")
                 if result.catalog is not None:
                     # 重复发现同一 hash 也推进当前目录的位置，拒绝 A→B→A 后的旧 B 选择。
                     tx.execute("INSERT OR REPLACE INTO mcp_catalogs VALUES (?,?,?)",
@@ -319,13 +347,12 @@ class McpConfiguration:
                 ))
                 if self.changed is not None:
                     self.changed(tx, config)
-                fixed = result.selection
-                if (publisher is not None and result.catalog is not None and fixed is not None
-                        and fixed.config_revision == config.revision
-                        and fixed.catalog_hash == catalog.content_hash):
-                    # 显式发现相同目录后恢复已确认选择；目录变化须由用户重新确认。
-                    publisher.publish(McpServerConfig.model_validate(config.model_dump(
-                        include=McpServerConfig.model_fields.keys())), catalog, fixed.selected_names, tx=tx)
+                if publisher is not None and result.catalog is not None:
+                    names = self.effective_tool_names(tx, stored, catalog)
+                    if names is not None:
+                        # 不保存默认名单，后续发现可继续纳入新增的受支持工具。
+                        publisher.publish(McpServerConfig.model_validate(config.model_dump(
+                            include=McpServerConfig.model_fields.keys())), catalog, names, tx=tx)
             return result
 
     async def select_tools(self, server_id, request, meta, *, publisher):
@@ -353,25 +380,18 @@ class McpConfiguration:
                 if row is None or row["catalog_hash"] != request.catalog_hash:
                     raise DomainError("blocked_incompatible", "发现目录已改变，请重新确认工具选择")
                 catalog = McpCatalog.model_validate_json(row["document"])
-                content = json.dumps(catalog.model_dump(mode="json", exclude={"content_hash"}),
-                    ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
                 if (catalog.server_id != server_id or catalog.config_revision != config.revision
-                        or catalog.content_hash != request.catalog_hash
-                        or hashlib.sha256(content).hexdigest() != request.catalog_hash):
+                        or catalog.content_hash != request.catalog_hash):
                     raise DomainError("mcp_catalog_invalid", "存储目录与固定摘要不一致")
-                definitions = {tool.name: tool for tool in catalog.tools}
-                names = request.selected_names
-                if (len(set(names)) != len(names) or any(
-                    name not in definitions or definitions[name].unavailable_reason is not None for name in names
-                )):
-                    raise DomainError("mcp_tool_unavailable", "所选工具必须属于当前可用目录")
                 if publisher is None:
                     raise DomainError("mcp_unavailable", "MCP 工具发布器尚未装配")
+                names = request.selected_names
                 result = McpToolSelection(server_id=server_id, version=(
                     stored.selection.version + 1 if stored.selection else 1
                 ), **request.model_dump())
                 stored = stored.model_copy(update={"selection": result})
                 tx.execute("UPDATE mcp_servers SET document=? WHERE id=?", (stored.model_dump_json(), server_id))
+                invalidate_mcp_sources(tx, server_id, retained_names=names, causation_id=meta.command_id)
                 tx.execute("INSERT INTO commands VALUES (?,?,?,?,?)", (
                     meta.command_id, fingerprint, result.model_dump_json(), config.scope.workspace_id, None,
                 ))

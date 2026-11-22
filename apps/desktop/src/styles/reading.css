@@ -1,0 +1,103 @@
+/* 聊天和沙箱报告共用。报告将主题变量随 srcDoc 一并内联。 */
+.markdown-body {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body :where(p, ul, ol, pre, blockquote, table) {
+  margin-block: 0 calc(var(--spacing) * 1.5);
+}
+
+.markdown-body :where(h1, h2, h3, h4, h5, h6) {
+  margin-block: calc(var(--spacing) * 2.5) var(--spacing);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.markdown-body h1 { font-size: var(--text-lg); }
+.markdown-body h2 { font-size: var(--text-base); }
+.markdown-body :where(h3, h4, h5, h6) { font-size: var(--text-reading); }
+.markdown-body > :first-child { margin-block-start: 0; }
+.markdown-body > :last-child,
+.markdown-body li > :last-child { margin-block-end: 0; }
+
+.markdown-body :where(ul, ol) {
+  padding-inline-start: calc(var(--spacing) * 5.5);
+  list-style-position: outside;
+}
+
+.markdown-body ul { list-style-type: disc; }
+.markdown-body li > ul { list-style-type: circle; }
+.markdown-body ol { list-style-type: decimal; }
+.markdown-body .task-list-item { list-style-type: none; }
+.markdown-body li + li,
+.markdown-body li > :where(ul, ol) { margin-block-start: calc(var(--spacing) * 0.5); }
+
+.markdown-body a {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: calc(var(--spacing) * 0.75);
+}
+
+.markdown-body blockquote {
+  margin-inline: 0;
+  padding-inline-start: calc(var(--spacing) * 2.5);
+  border-inline-start: 2px solid var(--color-border);
+  color: var(--color-muted-foreground);
+}
+
+.markdown-body table {
+  display: block;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.markdown-body :where(th, td) {
+  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5);
+  border-block-end: 1px solid var(--color-border);
+  text-align: start;
+}
+
+.markdown-body :where(pre, code) {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.markdown-body :not(pre) > code {
+  border-radius: var(--spacing);
+  background: var(--color-muted);
+  padding: calc(var(--spacing) * 0.25) var(--spacing);
+}
+
+.markdown-body pre {
+  margin-inline: 0;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  border-radius: calc(var(--spacing) * 2);
+  background: var(--color-muted);
+  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5);
+  white-space: pre;
+}
+
+.artifact-reading {
+  margin: 0;
+  padding: calc(var(--spacing) * 3) calc(var(--spacing) * 4);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  font-size: var(--text-reading);
+  line-height: var(--text-reading--line-height);
+}
+
+.artifact-reading pre { white-space: pre-wrap; }
+.artifact-reading > .artifact-text {
+  background: transparent;
+  padding: 0;
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.artifact-reading > .artifact-prose {
+  font: inherit;
+}

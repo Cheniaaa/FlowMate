@@ -1,5 +1,6 @@
 """两阶段整理：明确来源边界，复用单 Scheduler 和 MemoryService。"""
 
+import asyncio
 import json
 from uuid import UUID, uuid5
 
@@ -69,9 +70,11 @@ def permits_source(tx, ctx, run_id, event_id):
 
 
 class MemoryMaintenance:
-    def __init__(self, store, memory, policy, service, *, clock=utc_now, strategy_version=1):
+    def __init__(self, store, memory, policy, service, *, settings, clock=utc_now, strategy_version=1):
         self.store, self.memory, self.policy, self.service = store, memory, policy, service
+        self.settings = settings
         self.clock, self.strategy_version = clock, strategy_version
+        self._activation_lock = asyncio.Lock()
 
     def boundary(self, run_id, *, tx=None):
         if tx is None:
@@ -174,7 +177,21 @@ class MemoryMaintenance:
             raise DomainError("allocation_exceeded", "原因果预算组没有可用整理额度")
         return requested.model_validate(limits)
 
-    def submit(self, scope, source_boundary, authorization, meta):
+    async def submit_authenticated(self, scope, source_boundary, authorization, meta):
+        """手动与自动入口共用凭据作用域，写事务仍拥有重放及最终配置核对。"""
+        with self.store.transaction(write=False) as tx:
+            previous = tx.previous_command(meta.command_id)
+            if previous is None:
+                setting = self.memory.get_policy(scope, tx=tx)
+                model = tx.get_profile("model", setting.model_profile_id) if setting.model_profile_id else None
+                connection = tx.get_connection(model.connection_id) if model else None
+        if previous is not None or model is None or setting.version != authorization.policy_version:
+            return self.submit(scope, source_boundary, authorization, meta)
+        async with self.settings.model_resolution_scope(model.id):
+            return self.submit(scope, source_boundary, authorization, meta,
+                expected_binding=(setting, model, connection))
+
+    def submit(self, scope, source_boundary, authorization, meta, *, expected_binding=None):
         source_boundary = MemorySourceBoundary.model_validate(source_boundary.model_dump())
         authorization = MemoryMaintenanceAuthorization.model_validate(authorization.model_dump())
         fingerprint = digest(json.dumps({"scope": scope.model_dump(mode="json"),
@@ -190,6 +207,12 @@ class MemoryMaintenance:
                 return TaskHandle.model_validate_json(previous["response"])
             self.memory._scope(tx, scope)
             setting = self.memory.get_policy(scope, tx=tx)
+            if expected_binding is not None:
+                prepared_setting, prepared_model, prepared_connection = expected_binding
+                if (setting != prepared_setting
+                        or tx.get_profile("model", prepared_model.id) != prepared_model
+                        or tx.get_connection(prepared_connection.id) != prepared_connection):
+                    raise DomainError("version_conflict", "整理策略、型号或连接在凭据核验期间已改变，请重新读取")
             if setting.version != authorization.policy_version:
                 raise DomainError("version_conflict", "整理策略版本已改变")
             if authorization.automatic and not setting.auto_organize:
@@ -329,51 +352,62 @@ class MemoryMaintenance:
                 checkpoint=checkpoint.model_copy(update={"phase": "waiting_user", "output": None}))
         return None
 
-    def activate_ready(self):
-        submitted = 0
+    def _ready_automatic(self):
+        """只读候选来源的 ID/完成边界；不装载整份历史 Run 或扫描所有连接。"""
+        ready = []
         with self.store.transaction(write=False) as tx:
             policies = [self.memory.get_policy(ScopeRef.model_validate(json.loads(row[0])["scope"]), tx=tx)
                 for row in tx.execute("SELECT document FROM memory_policies WHERE json_extract(document,'$.auto_organize')=1")]
-            if not policies:
-                return 0
-            sources = [RunSnapshot.model_validate_json(row[0]) for row in tx.execute(
-                "SELECT document FROM runs WHERE kind IN ('user','managed') AND state='completed'")]
-        for setting in policies:
-            with self.store.transaction(write=False) as tx:
+            for setting in policies:
                 enabled_at = tx.execute("SELECT max(e.event_id) FROM events e,"
                     "json_each(e.document,'$.payload.policies') p WHERE "
                     "json_extract(e.document,'$.kind')='memory.policy_changed' AND "
                     "json_extract(p.value,'$.version')=? AND json_extract(p.value,'$.scope.kind')=? "
                     "AND json_extract(p.value,'$.scope.workspace_id') IS ?",
                     (setting.version, setting.scope.kind, setting.scope.workspace_id)).fetchone()[0]
-            if enabled_at is None:
-                continue
-            for source in sources:
-                if setting.scope.workspace_id not in {None, source.workspace_id}:
+                if enabled_at is None:
                     continue
-                with self.store.transaction(write=False) as tx:
-                    completed_at = tx.execute("SELECT max(e.event_id) FROM events e,"
-                        "json_each(e.document,'$.payload.runs') r WHERE e.run_id=? AND "
-                        "json_extract(r.value,'$.id')=? AND json_extract(r.value,'$.state')='completed'",
-                        (source.id, source.id)).fetchone()[0]
-                if completed_at is None or completed_at <= enabled_at:
-                    continue
-                boundary = MemorySourceBoundary(run_id=source.id, event_id=completed_at)
-                command_id = str(uuid5(UUID(source.id), f"memory:{setting.scope.model_dump_json()}:{setting.version}:{self.strategy_version}"))
-                with self.store.transaction(write=False) as tx:
-                    if tx.execute("SELECT 1 FROM events WHERE json_extract(document,'$.kind')='memory.maintenance_changed' "
-                            "AND json_extract(document,'$.causation_id')=?", (command_id,)).fetchone():
-                        continue
+                handled = {row[0] for row in tx.execute(
+                    "SELECT json_extract(document,'$.causation_id') FROM events WHERE "
+                    "json_extract(document,'$.kind')='memory.maintenance_changed' AND "
+                    "json_extract(document,'$.payload.policy_version')=? AND "
+                    "json_extract(document,'$.payload.scope.kind')=? AND "
+                    "json_extract(document,'$.payload.scope.workspace_id') IS ?",
+                    (setting.version, setting.scope.kind, setting.scope.workspace_id))}
+                workspace_filter = " AND r.workspace_id=?" if setting.scope.workspace_id is not None else ""
+                parameters = (enabled_at, setting.scope.workspace_id) if workspace_filter else (enabled_at,)
+                for row in tx.execute(
+                    "SELECT r.id,max(e.event_id) FROM runs r JOIN events e ON e.run_id=r.id "
+                    "JOIN json_each(e.document,'$.payload.runs') completed WHERE "
+                    "r.kind IN ('user','managed') AND r.state='completed' AND e.event_id>? AND "
+                    "json_extract(completed.value,'$.id')=r.id AND "
+                    "json_extract(completed.value,'$.state')='completed'" + workspace_filter + " GROUP BY r.id",
+                    parameters):
+                    source_id, completed_at = row
+                    command_id = str(uuid5(UUID(source_id), f"memory:{setting.scope.model_dump_json()}:{setting.version}:{self.strategy_version}"))
+                    if command_id not in handled:
+                        ready.append((setting, MemorySourceBoundary(run_id=source_id, event_id=completed_at),
+                            CommandMeta(command_id=command_id)))
+        return ready
+
+    async def activate_ready(self):
+        # 同一 Runtime 的并发唤醒串行消费已完成/失败通知，避免重复凭据读取和失败通知。
+        async with self._activation_lock:
+            submitted = 0
+            for setting, boundary, meta in self._ready_automatic():
                 try:
-                    self.submit(setting.scope, boundary, MemoryMaintenanceAuthorization(
-                        policy_version=setting.version, automatic=True), CommandMeta(command_id=command_id))
+                    await self.submit_authenticated(setting.scope, boundary, MemoryMaintenanceAuthorization(
+                        policy_version=setting.version, automatic=True), meta)
                     submitted += 1
                 except DomainError as error:
                     with self.store.transaction() as tx:
-                        if tx.execute("SELECT 1 FROM runs WHERE id=?", (source.id,)).fetchone():
-                            self._notice(tx, MemoryMaintenanceNotice(id=command_id, scope=setting.scope,
+                        if (tx.execute("SELECT 1 FROM runs WHERE id=?", (boundary.run_id,)).fetchone()
+                                and not tx.execute("SELECT 1 FROM events WHERE "
+                                    "json_extract(document,'$.kind')='memory.maintenance_changed' AND "
+                                    "json_extract(document,'$.causation_id')=?", (meta.command_id,)).fetchone()):
+                            self._notice(tx, MemoryMaintenanceNotice(id=meta.command_id, scope=setting.scope,
                                 source_boundary=boundary, policy_version=setting.version, reason=error.code))
-        return submitted
+            return submitted
 
 
 def register_maintenance_tools(catalog, maintenance):

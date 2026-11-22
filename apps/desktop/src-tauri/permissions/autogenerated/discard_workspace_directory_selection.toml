@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-discard-workspace-directory-selection"
+description = "Enables the discard_workspace_directory_selection command without any pre-configured scope."
+commands.allow = ["discard_workspace_directory_selection"]
+
+[[permission]]
+identifier = "deny-discard-workspace-directory-selection"
+description = "Denies the discard_workspace_directory_selection command without any pre-configured scope."
+commands.deny = ["discard_workspace_directory_selection"]

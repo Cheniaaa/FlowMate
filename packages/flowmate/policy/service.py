@@ -6,6 +6,7 @@ import ntpath
 import re
 from pathlib import PureWindowsPath
 from urllib.parse import urlsplit
+from uuid import UUID, uuid5
 
 from flowmate.contracts.base import CommandMeta, DomainError
 from flowmate.contracts.events import NewEvent
@@ -15,15 +16,18 @@ from flowmate.contracts.execution import (
     ArtifactRef,
     Checkpoint,
     ExecutionContext,
+    McpResultSource,
     RunSnapshot,
     ScopeDependency,
     SourceObservation,
     TaskSnapshot,
 )
 from flowmate.contracts.scopes import ScopeRef
+from flowmate.contracts.settings import ModelConnection
 from flowmate.persistence.store import Store, UnitOfWork
 from flowmate.policy.contracts import (
     DataUseGrant,
+    FilePinInvalidReason,
     GrantCommand,
     NativeSelection,
     PolicyChange,
@@ -83,9 +87,19 @@ def _owner(tx, ctx):
     return run, task
 
 
+def _unique_dependencies(dependencies):
+    unique = {}
+    for item in dependencies:
+        previous = unique.get(item.scope_id)
+        if previous is not None and previous.epoch != item.epoch:
+            raise DomainError("source_version_conflict", "同一来源包含冲突的授权版本")
+        unique[item.scope_id] = item
+    return list(unique.values())
+
+
 def _dependencies(tx, ctx, dependencies, *, artifact_id=None):
     """只校验归属和 epoch，不把任何依赖解释为用途许可。"""
-    values = [*ctx.scope_dependencies, *dependencies]
+    values = _unique_dependencies([*ctx.scope_dependencies, *dependencies])
     skill_provenance = set()
     for item in list(values):
         if tx.execute("SELECT 1 FROM scopes WHERE id=? AND kind='skill'", (item.scope_id,)).fetchone():
@@ -95,10 +109,10 @@ def _dependencies(tx, ctx, dependencies, *, artifact_id=None):
     artifact_sources = set()
     task = load(tx, TaskSnapshot, ctx.task_id)
     if task.binding.input_result is not None:
-        from flowmate.runtime.tasks import selected_result
-        selected = selected_result(tx, ctx)
-        values.extend(selected.dependencies)
-        artifact_sources.update(item.scope_id for item in selected.dependencies)
+        from flowmate.runtime.tasks import selected_results
+        for selected in selected_results(tx, ctx, task.binding):
+            values.extend(selected.dependencies)
+            artifact_sources.update(item.scope_id for item in selected.dependencies)
     # 已读取内容的消息/派生产物/私有续接仍沿固定Artifact关系核验，不退化为scope白名单。
     for selected in task.binding.input_artifacts:
         current = _document(tx, "artifacts", ArtifactRef, selected.id)
@@ -110,12 +124,17 @@ def _dependencies(tx, ctx, dependencies, *, artifact_id=None):
         if PolicyService.artifact_input(tx, ctx, artifact):
             values.extend(artifact.dependencies)
             artifact_sources = {item.scope_id for item in artifact.dependencies}
+    values = _unique_dependencies(values)
     check_scopes(tx, values)
     result = {}
     for item in values:
         if item.scope_id not in {ctx.workspace_id, ctx.session_id,ctx.interaction_session_id}:
             memory_scope = tx.execute("SELECT kind FROM scopes WHERE id=?", (item.scope_id,)).fetchone()
             if memory_scope is not None and memory_scope[0] == "mcp":
+                if tx.execute("SELECT 1 FROM activities WHERE id=? "
+                        "AND json_extract(document,'$.mcp_source') IS NOT NULL", (item.scope_id,)).fetchone():
+                    result[item.scope_id] = item
+                    continue
                 from flowmate.integrations.tools import configured_server
                 server = configured_server(tx, item.scope_id)
                 if not server.enabled or item.epoch != server.revision:
@@ -136,7 +155,19 @@ def _dependencies(tx, ctx, dependencies, *, artifact_id=None):
                 targets = tx.execute("SELECT t.id FROM tasks t JOIN sessions s ON s.id=t.execution_session_id "
                     "WHERE s.id=? AND s.kind='execution' AND s.workspace_id=?", (item.scope_id,ctx.workspace_id))
                 ancestors = task_ancestors(tx,ctx.task_id)
-                if not any(row[0] in ancestors or ctx.task_id in task_ancestors(tx,row[0]) for row in targets):
+                # 新委派可引用父任务已收件且已固定在目标上的交付来源，私有会话仍按任务隔离。
+                if not any(row[0] in ancestors or ctx.task_id in task_ancestors(tx,row[0]) for row in targets) and not (
+                        task.binding.agent_work is not None and tx.execute(
+                            "SELECT 1 FROM consumptions c JOIN tasks delivered ON delivered.id=c.target_task_id "
+                            "JOIN messages goal ON goal.task_id=? AND goal.id=(SELECT id FROM messages "
+                            "WHERE task_id=? ORDER BY event_id,event_index LIMIT 1) "
+                            "WHERE c.consumer_task_id=? AND delivered.parent_task_id=c.consumer_task_id "
+                            "AND delivered.run_id=? AND delivered.execution_session_id=? "
+                            "AND c.result_version=json_extract(delivered.document,'$.result_version') "
+                            "AND EXISTS(SELECT 1 FROM json_each(goal.document,'$.source_dependencies') d "
+                            "WHERE json_extract(d.value,'$.scope_id')=? AND json_extract(d.value,'$.epoch')=?)",
+                            (task.id, task.id, task.parent_task_id, task.run_id, item.scope_id,
+                             item.scope_id, item.epoch)).fetchone()):
                     raise DomainError("scope_mismatch", "私有执行依赖不属于授权任务链")
             elif value is not None and not (
                      isinstance(value, DataUseGrant) and (value.memory_scopes or value.mcp_versions or value.mcp_queries)
@@ -234,6 +265,34 @@ def _local_destination(tx, destination):
     return destination
 
 
+def _mcp_configuration(tx, server_id):
+    from flowmate.integrations.configuration_contracts import McpToolSelection
+    from flowmate.integrations.contracts import McpServerConfig
+
+    row = tx.execute("SELECT document FROM mcp_servers WHERE id=?", (server_id,)).fetchone()
+    if row is None:
+        raise DomainError("mcp_server_unavailable", "MCP 配置不存在")
+    stored = json.loads(row[0])
+    config = McpServerConfig.model_validate({key: value for key, value in stored.items()
+        if key in McpServerConfig.model_fields})
+    selection = McpToolSelection.model_validate(stored["selection"]) if stored.get("selection") is not None else None
+    return config, selection, stored.get("connection_identity") is not None
+
+
+def _mcp_binding_current(config, selection, binding, workspace_id):
+    from flowmate.integrations.tools import mcp_destination
+
+    return (config.enabled and config.scope.workspace_id in {None, workspace_id}
+        and config.revision == binding.config_revision and mcp_destination(config) == binding.destination
+        and (selection is None or selection.config_revision == binding.config_revision
+            and binding.original_name in selection.selected_names))
+
+
+def _same_mcp_tool(first, second):
+    return (first.server_id, first.config_revision, first.original_name, first.destination) == (
+        second.server_id, second.config_revision, second.original_name, second.destination)
+
+
 def _policy_event(tx, kind, change, scope, *, ctx=None, causation_id=None):
     tx.append_event(NewEvent(kind=kind, payload=change, workspace_id=scope.workspace_id,
                              session_id=scope.session_id, run_id=ctx.run_id if ctx else None,
@@ -253,9 +312,9 @@ class PolicyService:
         """核验实际Task的固定输入；Agent委派与用户export分别使用各自持久事实。"""
         task = load(tx, TaskSnapshot, ctx.task_id)
         if task.binding.input_result is not None:
-            from flowmate.runtime.tasks import selected_result
-            selected = selected_result(tx, ctx)
-            chosen = next((ref for ref in selected.artifacts if ref.id == artifact.id), None)
+            from flowmate.runtime.tasks import selected_results
+            chosen = next((ref for selected in selected_results(tx, ctx, task.binding)
+                           for ref in selected.artifacts if ref.id == artifact.id), None)
             if chosen is not None:
                 if chosen != artifact:
                     raise DomainError("source_version_conflict", "交付产物与固定输入不一致")
@@ -490,10 +549,15 @@ class PolicyService:
                 resources.update(candidates)
         return sorted(resources)
 
-    @staticmethod
-    def check_run_sources(tx: UnitOfWork, ctx: ExecutionContext,
+    def check_run_sources(self, tx: UnitOfWork, ctx: ExecutionContext,
                           dependencies: list[ScopeDependency], *, source_run_id=None,
                           source_task_id=None, selection=None) -> None:
+        self._check_run_sources(tx, ctx, dependencies, source_run_id=source_run_id,
+            source_task_id=source_task_id, selection=selection, memory_provider=self.memory_provider)
+
+    @staticmethod
+    def _check_run_sources(tx, ctx, dependencies, *, source_run_id=None, source_task_id=None,
+                           selection=None, memory_provider=None):
         run = load(tx, RunSnapshot, ctx.run_id)
         task = load(tx, TaskSnapshot, ctx.task_id)
         selections = (run.sources, task.binding.sources, *([selection] if selection is not None else []))
@@ -514,22 +578,59 @@ class PolicyService:
             scope = ScopeRef(kind="workspace", workspace_id=row["workspace_id"]) if row["workspace_id"] else ScopeRef(kind="user_global")
             if run.kind == "follow_up":
                 selected = task.binding.input_result
-                if (scope.workspace_id not in {None, ctx.workspace_id} or selected is None
-                        or dependency not in selected.dependencies):
+                if (scope.workspace_id not in {None, ctx.workspace_id} or selected is None or
+                        not any(dependency in pin.dependencies
+                                for pin in [selected, *task.binding.additional_result_inputs])):
                     raise DomainError("outside_run_scope", "自动总结只能使用明确交付的记忆身份与修订")
                 continue
-            if scope.workspace_id not in {None, ctx.workspace_id} or any(
-                    scope not in chosen.memory_scopes for chosen in selections):
+            if scope.workspace_id not in {None, ctx.workspace_id}:
                 raise DomainError("outside_run_scope", "记忆不在 Run 与 Task 的固定交集范围")
+            if any(scope not in chosen.memory_scopes for chosen in selections):
+                if memory_provider is None or not PolicyService._default_memory_profile(
+                    run, task, memory_provider.using(tx).get(dependency.scope_id),
+                    personal=selection is None,
+                ):
+                    raise DomainError("outside_run_scope", "记忆不在 Run 与 Task 的固定交集范围")
         source_run = load(tx,RunSnapshot,source_run_id) if source_run_id is not None else run
         source_task_id = (source_task_id if source_task_id is not None else
                           task.id if source_run.id == run.id else source_run.root_task_id)
-        if task.binding.input_result is not None and source_run.id == run.id:
-            source_run = load(tx, RunSnapshot, task.binding.input_result.handle.run_id)
-            source_task_id = task.binding.input_result.handle.task_id
-        for resource_id in PolicyService.resource_closure(tx, dependencies,
-                source_run_id=source_run.id,source_task_id=source_task_id):
+        selected = task.binding.input_result
+        if selected is not None and source_run.id == run.id:
+            resources = set()
+            remaining = list(dependencies)
+            for pin in [selected, *task.binding.additional_result_inputs]:
+                scoped = [dependency for dependency in dependencies if dependency in pin.dependencies]
+                remaining = [dependency for dependency in remaining if dependency not in scoped]
+                resources.update(PolicyService.resource_closure(tx, scoped,
+                    source_run_id=pin.handle.run_id, source_task_id=pin.handle.task_id))
+            resources.update(PolicyService.resource_closure(tx, remaining,
+                source_run_id=source_run.id, source_task_id=source_task_id))
+        else:
+            resources = PolicyService.resource_closure(tx, dependencies,
+                source_run_id=source_run.id, source_task_id=source_task_id)
+        for resource_id in resources:
             resource = _document(tx, "resources", ResourceRecord, resource_id)
+            source_pin = source_run.file_inputs.get(resource_id)
+            current_pin = run.file_inputs.get(resource_id)
+            if source_pin is not None and PolicyService.file_pin_invalid_reason(tx, resource_id, source_pin):
+                raise DomainError("source_version_conflict", "固定文件版本已失效，请重新选择文件")
+            if (source_run.id != run.id and run.kind == "user" and task.kind == "agent"
+                    and resource.kind == "file"):
+                if not PolicyService.same_model_recipient(
+                        source_run.config.model_profile, task.binding.config.model_profile):
+                    raise DomainError("outside_run_scope", "历史文件不属于本轮接收方")
+                if source_pin is not None and (current_pin is None
+                        or source_pin.file_identity != current_pin.file_identity
+                        or source_pin.source_version != current_pin.source_version):
+                    raise DomainError("outside_run_scope", "历史文件不属于本轮所选版本")
+            if (current_pin is not None and run.attached_file_ids is not None
+                    and resource_id not in run.attached_file_ids):
+                if (task.id != run.root_task_id or selection is not None
+                        or not PolicyService.file_inheritance_grants(tx, ctx.workspace_id,
+                            ctx.interaction_session_id, resource_id, current_pin,
+                            task.binding.config.model_profile.endpoint,
+                            excluded=excluded)):
+                    raise DomainError("outside_run_scope", "文件续读授权已撤回或不适用于此任务")
             lineage = {resource.id}
             while resource.parent_resource_id is not None:
                 resource = _document(tx,"resources",ResourceRecord,resource.parent_resource_id)
@@ -582,7 +683,8 @@ class PolicyService:
                     or activity.intent.operation not in task.binding.config.catalog.tools
                     or config.scope.workspace_id not in {None, ctx.workspace_id}):
                 raise DomainError("invalid_destination", "工具发送与真实任务或 MCP 配置不一致")
-        return self._check_sources_tx(tx, ctx, dependencies, purpose, destination, artifact_id=artifact_id)
+        return self._check_sources_tx(tx, ctx, dependencies, purpose, destination,
+            artifact_id=artifact_id, selected_process=purpose == "local_process_send")
 
     def check_script_submission(self, tx, ctx, arguments, dependencies):
         """只接纳固定脚本参数的来源用途；不构造 Activity，也不授予派发资格。"""
@@ -593,7 +695,56 @@ class PolicyService:
             args.environment_id, args.environment_revision))
         return self._check_sources_tx(tx, ctx, dependencies, "local_process_send", destination)
 
-    def _check_sources_tx(self, tx, ctx, dependencies, purpose, destination, *, artifact_id=None):
+    def mcp_call_permission(self, tx, ctx, binding):
+        """本次用户任务消费已确认的连接与工具选择，不扩大资料外发许可。"""
+        run, task = _owner(tx, ctx)
+        config, selection, trusted = _mcp_configuration(tx, binding.server_id)
+        if (binding not in task.binding.config.catalog.mcp_tools.values()
+                or not _mcp_binding_current(config, selection, binding, ctx.workspace_id)):
+            raise DomainError("tool_unavailable", "MCP 工具配置已改变或已被用户停用")
+        if run.kind == "user" and trusted and run.state not in TERMINAL and task.state not in TERMINAL:
+            return PolicyDecision(allowed=True)
+        dependencies = []
+        for row in tx.execute("SELECT document FROM grants WHERE status='active' "
+                "AND (workspace_id IS NULL OR workspace_id=?) AND json_extract(document,'$.destination')=? "
+                "AND EXISTS(SELECT 1 FROM json_each(grants.document,'$.mcp_queries') q "
+                "WHERE json_extract(q.value,'$.server_id')=?) ORDER BY id",
+                (ctx.workspace_id, task.binding.config.model_profile.endpoint, binding.server_id)):
+            grant = DataUseGrant.model_validate_json(row[0])
+            granted = next((item for item in grant.mcp_queries if _same_mcp_tool(item, binding)), None)
+            if granted is None:
+                continue
+            if config.scope != grant.scope or config.transport == "stdio" and not trusted:
+                raise DomainError("blocked_incompatible", "公共查询许可不再对应当前工具选择")
+            if granted.catalog_hash != binding.catalog_hash:
+                from flowmate.integrations.tools import compatible_tool, stored_catalog
+                compatible_tool(config, stored_catalog(tx, config.id, binding.catalog_hash),
+                    stored_catalog(tx, config.id, granted.catalog_hash), binding.original_name)
+            dependencies.append(ScopeDependency(scope_id=grant.id, epoch=grant.epoch))
+            break
+        return PolicyDecision(allowed=bool(dependencies), dependencies=dependencies)
+
+    @staticmethod
+    def check_user_artifact_sources(tx, workspace_id, dependencies):
+        """本地历史按已实际使用的 MCP 查询许可及来源核验，无需重新申请模型发送许可。"""
+        for dependency in dependencies:
+            row = tx.execute("SELECT kind FROM scopes WHERE id=?", (dependency.scope_id,)).fetchone()
+            if row is None:
+                continue
+            if row[0] in {"memory", "mcp"}:
+                check_scopes(tx, [dependency])
+            elif row[0] == "grant":
+                grant = _document(tx, "grants", DataUseGrant, dependency.scope_id)
+                if not grant.mcp_queries:
+                    continue
+                check_scopes(tx, [dependency])
+                for binding in grant.mcp_queries:
+                    config, selection, _ = _mcp_configuration(tx, binding.server_id)
+                    if config.scope != grant.scope or not _mcp_binding_current(config, selection, binding, workspace_id):
+                        raise DomainError("scope_revoked", "MCP 查询授权已失效")
+
+    def _check_sources_tx(self, tx, ctx, dependencies, purpose, destination, *, artifact_id=None,
+            selected_process=False):
         run, task = _owner(tx, ctx)
         if run.state in TERMINAL or task.state in TERMINAL:
             return PolicyDecision(allowed=False, reason="owner_inactive")
@@ -614,25 +765,52 @@ class PolicyService:
                 if grant:
                     grant_dependencies.append(grant)
         all_dependencies = {item.scope_id: item for item in checked}
-        missing_memories = self._check_memory(tx, ctx, checked, purpose, destination, all_dependencies)
+        missing_memories = self._check_memory(tx, ctx, run, task, checked, purpose, destination, all_dependencies)
         missing_remote = []
         remote_dependencies = [item for item in checked if tx.execute(
             "SELECT 1 FROM scopes WHERE id=? AND kind='mcp'", (item.scope_id,)).fetchone()]
-        remote_grants = [DataUseGrant.model_validate_json(row[0]) for row in tx.execute(
-            "SELECT document FROM grants WHERE (workspace_id IS NULL OR workspace_id=?) AND status='active'",
-            (ctx.workspace_id,))] if remote_dependencies or any(grant.mcp_queries for grant in grant_dependencies) else []
-        from flowmate.integrations.permissions import check_query_binding
+        result_sources, configurations = {}, {}
+        for item in remote_dependencies:
+            row = tx.execute("SELECT run_id,task_id,state,json_extract(document,'$.content_committed'),"
+                "json_extract(document,'$.mcp_source') FROM activities WHERE id=?", (item.scope_id,)).fetchone()
+            if row is not None and row[4] is not None:
+                result_sources[item.scope_id] = (row, McpResultSource.model_validate_json(row[4]))
+        return_destination = purpose == "model_send" and destination == task.binding.config.model_profile.endpoint
+        if result_sources and purpose == "tool_send":
+            target = task.binding.config.catalog.mcp_tools[load(tx, ActivitySnapshot, ctx.activity_id).intent.operation]
+            return_destination = self.mcp_call_permission(tx, ctx, target).allowed
+        candidates = None
+
+        def remote_grants():
+            nonlocal candidates
+            if candidates is None:
+                candidates = [DataUseGrant.model_validate_json(row[0]) for row in tx.execute(
+                    "SELECT document FROM grants WHERE (workspace_id IS NULL OR workspace_id=?) AND status='active'",
+                    (ctx.workspace_id,))]
+            return candidates
+
         for grant in grant_dependencies:
             for binding in grant.mcp_queries:
-                check_query_binding(tx, binding, grant.scope)
+                if binding.server_id not in configurations:
+                    configurations[binding.server_id] = _mcp_configuration(tx, binding.server_id)
+                config, selection, _ = configurations[binding.server_id]
+                if config.scope != grant.scope or not _mcp_binding_current(config, selection, binding, ctx.workspace_id):
+                    missing_remote.append(grant.id)
+                    continue
                 permitted = (purpose == "read"
                     or purpose == "model_send" and grant.destination == destination
+                    or purpose == "model_send" and return_destination
+                    and any(source_row[0] == run.vision_source_run_id
+                        and source_row[1] == task.origin_task_id
+                        and _same_mcp_tool(source.binding, binding)
+                        and any(ref.activity_id == activity_id for ref in task.binding.input_artifacts)
+                        for activity_id, (source_row, source) in result_sources.items())
                     or purpose == "tool_send" and binding.destination == destination
-                    and ctx.activity_id is not None and task.binding.config.catalog.mcp_tools.get(
-                        load(tx, ActivitySnapshot, ctx.activity_id).intent.operation) == binding)
+                    and ctx.activity_id is not None and _same_mcp_tool(task.binding.config.catalog.mcp_tools[
+                        load(tx, ActivitySnapshot, ctx.activity_id).intent.operation], binding))
                 if not permitted:
                     # 查询许可本身是具体结果的来源；不能据此放行同服务器的其它工具回执。
-                    covering = next((value for value in remote_grants if value.mcp_versions.get(
+                    covering = next((value for value in remote_grants() if value.mcp_versions.get(
                         binding.server_id) == binding.config_revision and purpose in value.purposes
                         and value.destination == destination
                         and (value.scope.kind == "user_global" or _compatible(
@@ -642,10 +820,35 @@ class PolicyService:
                     else:
                         all_dependencies[covering.id] = ScopeDependency(scope_id=covering.id, epoch=covering.epoch)
         for item in remote_dependencies:
+            server_id, revision = item.scope_id, item.epoch
+            if item.scope_id in result_sources:
+                row, source = result_sources[item.scope_id]
+                binding = source.binding
+                server_id, revision = binding.server_id, binding.config_revision
+                if server_id not in configurations:
+                    configurations[server_id] = _mcp_configuration(tx, server_id)
+                config, selection, _ = configurations[server_id]
+                check_scopes(tx, [ScopeDependency(scope_id=server_id, epoch=revision)])
+                if (not _mcp_binding_current(config, selection, binding, ctx.workspace_id)
+                        or server_id in {*run.sources.excluded_source_ids, *task.binding.sources.excluded_source_ids}):
+                    missing_remote.append(item.scope_id)
+                    continue
+                if purpose != "read" and not row[3]:
+                    missing_remote.append(item.scope_id)
+                    continue
+                if (row[0], row[1]) == (ctx.run_id, ctx.task_id) and return_destination and (
+                        purpose != "model_send" or destination == source.model_destination):
+                    continue
+                if (purpose == "model_send" and return_destination
+                        and run.vision_source_run_id == row[0] and task.origin_task_id == row[1]
+                        and any(item.scope_id in {dependency.scope_id for dependency in ref.dependencies}
+                            for ref in task.binding.input_artifacts)):
+                    # 用户本次选择的接收方只消费明确保存的原调用图片，不扩大其它回执范围。
+                    continue
             # 接收本次回执不授予向其它目的地转交资料的许可。
             if purpose == "read":
                 continue
-            covering = next((grant for grant in remote_grants if grant.mcp_versions.get(item.scope_id) == item.epoch
+            covering = next((grant for grant in remote_grants() if grant.mcp_versions.get(server_id) == revision
                 and (grant.scope.kind == "user_global" or _compatible(grant.scope, ctx.workspace_id, ctx.interaction_session_id))
                 and purpose in grant.purposes
                 and (purpose not in {"model_send", "tool_send", "local_process_send"}
@@ -685,6 +888,22 @@ class PolicyService:
         missing = [*missing_memories, *missing_remote]
         missing_resources, grants = self._cover_resources(tx, ctx.workspace_id, ctx.interaction_session_id,
             lineages, purpose, destination)
+        if run.attached_file_ids is not None:
+            for id in (lineages.keys() & run.file_inputs.keys()) - set(run.attached_file_ids):
+                grants.extend(run.file_inputs[id].inheritance_grants)
+        if selected_process:
+            from flowmate.skills.execution.contracts import RunSkillScript
+            from flowmate.skills.execution.permissions import selected_script
+            from flowmate.skills.service import SkillService
+
+            activity = load(tx, ActivitySnapshot, ctx.activity_id)
+            args = RunSkillScript.model_validate(ToolInvocation.model_validate(activity.intent.arguments).arguments)
+            if selected_script(tx, ctx, args, SkillService(self.store)):
+                chosen = set(run.sources.resource_ids).intersection(task.binding.sources.resource_ids)
+                if run.attached_file_ids is not None:
+                    chosen.difference_update(run.file_inputs.keys() - set(run.attached_file_ids))
+                missing_resources = [id for id in missing_resources
+                    if id not in args.input_refs or not chosen.intersection(lineages[id])]
         missing.extend(missing_resources)
         all_dependencies.update({item.scope_id: item for item in grants})
         try:
@@ -695,23 +914,163 @@ class PolicyService:
                               missing_grants=missing, dependencies=list(all_dependencies.values()))
 
     @staticmethod
-    def _cover_resources(tx, workspace_id, session_id, lineages, purpose, destination):
-        candidates = [DataUseGrant.model_validate_json(row[0]) for row in tx.execute(
-            "SELECT g.document FROM grants g JOIN scopes s ON s.id=g.id "
-            "WHERE g.workspace_id=? AND g.status='active' AND s.status='active' "
-            "AND s.epoch=json_extract(g.document,'$.epoch') ORDER BY g.id", (workspace_id,))]
-        missing, dependencies = [], []
+    def matching_resource_grants(tx, workspace_id, session_id, lineages, purpose, destination):
+        resource_ids = {resource_id for lineage in lineages.values() for resource_id in lineage}
+        if not resource_ids:
+            return
+        candidates = {}
+        grants_by_resource = {}
+        for row in tx.execute(
+                "SELECT g.id, g.document, resource.value AS resource_id FROM grants g "
+                "JOIN scopes s ON s.id=g.id JOIN json_each(g.document,'$.resource_ids') resource "
+                "WHERE g.workspace_id=? AND (g.session_id IS NULL OR g.session_id=?) "
+                "AND g.status='active' AND s.status='active' AND s.epoch=json_extract(g.document,'$.epoch') "
+                "AND resource.value IN (SELECT value FROM json_each(?)) "
+                "AND EXISTS (SELECT 1 FROM json_each(g.document,'$.purposes') WHERE value=?) "
+                "AND (?=0 OR json_extract(g.document,'$.destination') IS ?) ORDER BY g.id",
+                (workspace_id, session_id, json.dumps(list(resource_ids)), purpose,
+                 purpose in {"model_send", "tool_send", "local_process_send"}, destination)):
+            grant_id = row["id"]
+            if grant_id not in candidates:
+                candidates[grant_id] = DataUseGrant.model_validate_json(row["document"])
+            grants_by_resource.setdefault(row["resource_id"], set()).add(grant_id)
         for id, lineage in lineages.items():
-            covering = next((grant for grant in candidates
-                if _compatible(grant.scope, workspace_id, session_id) and purpose in grant.purposes
-                and (purpose not in {"model_send", "tool_send", "local_process_send"}
-                    or grant.destination == destination)
-                and set(grant.resource_ids).intersection(lineage)), None)
+            covering = {grant_id for resource_id in lineage for grant_id in grants_by_resource.get(resource_id, ())}
+            yield id, (candidates[grant_id] for grant_id in sorted(covering))
+
+    @staticmethod
+    def _cover_resources(tx, workspace_id, session_id, lineages, purpose, destination):
+        missing, dependencies = [], []
+        for id, grants in PolicyService.matching_resource_grants(
+                tx, workspace_id, session_id, lineages, purpose, destination):
+            covering = next(grants, None)
             if covering is None:
                 missing.append(id)
             else:
                 dependencies.append(ScopeDependency(scope_id=covering.id, epoch=covering.epoch))
         return missing, dependencies
+
+    @staticmethod
+    def same_model_recipient(first, second):
+        from flowmate.models.endpoints import resolve_model_endpoint
+
+        def binding(profile):
+            address = resolve_model_endpoint(profile.protocol, profile.endpoint)
+            connection_id = profile.id if isinstance(profile, ModelConnection) else profile.connection_id
+            return connection_id, address.protocol, address.sdk_operation_url, profile.secret_ref
+
+        return binding(first) == binding(second)
+
+    @staticmethod
+    def file_pin_invalid_reason(tx, resource_id, pin, *, admitted_event_id=None):
+        """查询已确认的失效事实，以及接纳后的现行来源观察。"""
+        resource = _document(tx, "resources", ResourceRecord, resource_id, required=False)
+        if resource is None:
+            return None
+        if (hashlib.sha256(resource.file_identity.encode()).hexdigest() != pin.file_identity
+                or "file_identity_changed" in resource.file_pin_invalidations.values()):
+            return "file_identity_changed"
+        if pin.source_version in resource.file_pin_invalidations:
+            return "file_source_changed"
+        if admitted_event_id is not None and resource.source_version not in {None, pin.source_version}:
+            observed = tx.execute(
+                "SELECT e.event_id FROM events e "
+                "JOIN json_each(e.document,'$.payload.resources') observed "
+                "WHERE e.workspace_id=? AND json_extract(e.document,'$.kind')='resource.updated' "
+                "AND json_extract(observed.value,'$.id')=? AND json_extract(observed.value,'$.version')=? "
+                "ORDER BY e.event_id LIMIT 1",
+                (resource.scope.workspace_id, resource.id, resource.version),
+            ).fetchone()
+            if observed is not None and observed[0] > admitted_event_id:
+                return "file_source_changed"
+        return None
+
+    def record_file_pin_invalid(self, ctx, resource_id, reason: FilePinInvalidReason):
+        """本机工具已派发并确认变更时记事实，即使其回执只允许结算。"""
+        with self.store.transaction() as tx:
+            activity = _document(tx, "activities", ActivitySnapshot, ctx.activity_id, required=False)
+            if activity is None:
+                return  # 删除已清理活动，不重建已删除资料。
+            if ((activity.run_id, activity.task_id) != (ctx.run_id, ctx.task_id)
+                    or activity.intent.kind != "tool" or activity.request_digest is None):
+                raise DomainError("tool_binding", "文件失效观察不属于已派发工具")
+            invocation = ToolInvocation.model_validate(activity.intent.arguments)
+            if invocation.name == "files.inspect_batch":
+                requested = invocation.arguments["resource_ids"]
+            elif invocation.name == "files.read_text":
+                requested = [invocation.arguments["resource_id"]]
+            else:
+                raise DomainError("tool_binding", "文件失效观察不属于本机读取工具")
+            pin = load(tx, TaskSnapshot, ctx.task_id).binding.file_inputs.get(resource_id)
+            if pin is None or resource_id not in requested:
+                raise DomainError("tool_binding", "文件失效观察不属于固定工具输入")
+            resource = _document(tx, "resources", ResourceRecord, resource_id, required=False)
+            if resource is None or not tx.execute("SELECT 1 FROM scopes WHERE id=? AND status='active'",
+                    (resource_id,)).fetchone():
+                return
+            if (reason == resource.file_pin_invalidations.get(pin.source_version)
+                    or "file_identity_changed" in resource.file_pin_invalidations.values()):
+                return
+            updated = resource.model_copy(update={"file_pin_invalidations": {
+                **resource.file_pin_invalidations, pin.source_version: reason}})
+            # 未采用新文件，因此不推进已观察正文的 epoch。
+            _policy_event(tx, "resource.updated", PolicyChange(resources=[updated]), resource.scope, ctx=ctx)
+
+    @staticmethod
+    def session_file_message_id(run_id):
+        return str(uuid5(UUID(run_id), "context.session_files"))
+
+    @staticmethod
+    def available_session_files(tx, ctx, run, task, destination):
+        if task.id != run.root_task_id or run.attached_file_ids is None:
+            return []
+        attached = set(run.attached_file_ids)
+        excluded = {*run.sources.excluded_source_ids, *task.binding.sources.excluded_source_ids}
+        return [id for id, pin in task.binding.file_inputs.items()
+            if id not in attached and run.file_inputs.get(id) == pin
+            and not PolicyService.file_pin_invalid_reason(tx, id, pin)
+            and PolicyService.file_inheritance_grants(
+                tx, ctx.workspace_id, ctx.interaction_session_id, id, pin, destination, excluded=excluded)]
+
+    @staticmethod
+    def file_inheritance_grants(tx, workspace_id, session_id, id, pin, destination, *,
+                                admitted_event_id=None, excluded=()):
+        """续读仍需同一文件身份、有效父链和最初覆盖的授权版本。"""
+        resource = _document(tx, "resources", ResourceRecord, id, required=False)
+        if (resource is None or resource.kind != "file"
+                or hashlib.sha256(resource.file_identity.encode()).hexdigest() != pin.file_identity):
+            return []
+        lineage = []
+        current = resource
+        while current is not None:
+            if (current.id in excluded or not _compatible(current.scope, workspace_id, session_id)
+                    or not tx.execute("SELECT 1 FROM scopes WHERE id=? AND epoch=? AND status='active'",
+                        (current.id, current.version)).fetchone()):
+                return []
+            lineage.append(current.id)
+            current = (_document(tx, "resources", ResourceRecord, current.parent_resource_id)
+                if current.parent_resource_id is not None else None)
+        fixed = pin.inheritance_grants
+        grants = []
+        for purpose, target in (("read", None), ("model_send", destination)):
+            (_, covering), = PolicyService.matching_resource_grants(
+                tx, workspace_id, session_id, {id: lineage}, purpose, target)
+            for grant in covering:
+                dependency = ScopeDependency(scope_id=grant.id, epoch=grant.epoch)
+                if fixed is not None and dependency not in fixed:
+                    continue
+                if fixed is None and admitted_event_id is not None and not tx.execute(
+                    "SELECT 1 FROM events e JOIN json_each(e.document,'$.payload.grants') g "
+                    "WHERE e.workspace_id=? AND e.event_id<? AND json_extract(e.document,'$.kind')='grant.created' "
+                    "AND json_extract(g.value,'$.id')=?",
+                    (workspace_id, admitted_event_id, grant.id),
+                ).fetchone():
+                    continue
+                grants.append(dependency)
+                break
+            else:
+                return []
+        return _unique_dependencies(grants)
 
     def resource_coverage(self, session_id, request):
         """草稿覆盖与派发策略共用用途匹配；查询结果不授予执行资格。"""
@@ -740,7 +1099,12 @@ class PolicyService:
             return ResourceCoverage(allowed=not read and not send, destination=model.endpoint,
                 missing_read=read, missing_model_send=send)
 
-    def _check_memory(self, tx, ctx, dependencies, purpose, destination, all_dependencies):
+    @staticmethod
+    def _default_memory_profile(run, task, record, *, personal=True):
+        return record.project_preference or (
+            personal and run.kind == "user" and task.id == run.root_task_id and record.personal_preference)
+
+    def _check_memory(self, tx, ctx, run, task, dependencies, purpose, destination, all_dependencies):
         from flowmate.memory.contracts import MemoryPolicy
         from flowmate.memory.provider import scope_id
         missing = []
@@ -773,6 +1137,11 @@ class PolicyService:
             if not setting.read_profile or purpose == "export":
                 missing.append(record.id)
                 continue
+            selected = all(record.scope in selection.memory_scopes for selection in (run.sources, task.binding.sources))
+            if not selected and run.kind != "follow_up":
+                if not self._default_memory_profile(run, task, record) or purpose not in {"model_send", "read"}:
+                    missing.append(record.id)
+                    continue
             if purpose == "read":
                 continue
             grants = [DataUseGrant.model_validate_json(row[0]) for row in tx.execute(
@@ -796,6 +1165,8 @@ class PolicyService:
             revoked = bump(saved, epoch=saved.epoch + 1, status="revoked")
             _policy_event(tx, "grant.revoked", PolicyChange(grants=[revoked]), saved.scope,
                           causation_id=meta.command_id)
+            from flowmate.memory.lifecycle import notify_personal_source_revocation
+            notify_personal_source_revocation(tx, self.memory_provider.using(tx), revoked)
             return revoked
 
         return _command(self.store, "grant.revoke", {"grant_id": grant_id}, meta, DataUseGrant, apply)

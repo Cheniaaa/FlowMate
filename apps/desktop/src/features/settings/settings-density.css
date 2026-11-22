@@ -1,0 +1,108 @@
+.settings-shell .settings-content:is([data-section='models'], [data-section='assistant']) {
+  container-type: inline-size;
+  padding: 16px 20px;
+}
+
+.settings-content :is(section[aria-labelledby='connection-settings-title'],
+                      section[aria-labelledby='model-settings-title'],
+                      section[aria-labelledby='assistant-settings-title']) {
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.settings-content :is(section[aria-labelledby='connection-settings-title'],
+                      section[aria-labelledby='model-settings-title'],
+                      section[aria-labelledby='assistant-settings-title']) :is(h2, h3, p) {
+  margin: 0;
+}
+
+/* 空的 live region 继续接收更新，但不占 flex 行。 */
+.settings-content:is([data-section='models'], [data-section='assistant']) .status-message:empty {
+  position: absolute;
+}
+
+.settings-content section[aria-labelledby='assistant-settings-title'] > p,
+.settings-content section[aria-labelledby='connection-settings-title'] > div > p {
+  font-size: var(--text-sm);
+}
+
+.connection-toolbar {
+  width: 100%;
+  align-items: end;
+}
+
+.connection-toolbar > label {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.settings-content :is(.connection-toolbar, .settings-grid) select {
+  width: 100%;
+  text-overflow: ellipsis;
+}
+
+.settings-content:is([data-section='models'], [data-section='assistant']) .settings-form {
+  margin-top: 4px;
+  gap: 8px;
+}
+
+.settings-content:is([data-section='models'], [data-section='assistant']) .settings-grid {
+  gap: 8px 12px;
+  padding: 8px 12px 12px;
+}
+
+.settings-content:is([data-section='models'], [data-section='assistant']) .settings-grid > p {
+  font-size: var(--text-xs);
+}
+
+.settings-content:is([data-section='models'], [data-section='assistant']) .settings-form-actions {
+  padding-block: 6px;
+}
+
+.settings-content:is([data-section='models'], [data-section='assistant']):has(.settings-form-actions) {
+  scroll-padding-block-end: 60px;
+}
+
+.settings-content[data-section='assistant'] .settings-form textarea {
+  min-height: 76px;
+}
+
+.settings-content .model-heading {
+  margin-top: 4px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-content .model-settings-list > button {
+  min-width: 0;
+}
+
+.settings-content .resolved-model {
+  display: grid;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  gap: 6px 16px;
+  font-size: var(--text-sm);
+}
+
+.settings-content :is(.resolved-model, .advanced-settings) summary {
+  width: fit-content;
+  min-height: 32px;
+  align-content: center;
+  cursor: pointer;
+}
+
+@container (min-width: 520px) {
+  .settings-content[data-section='assistant'] textarea[name='instructions'] {
+    block-size: 92px;
+  }
+
+  .settings-content :is(.model-settings-list, .resolved-model) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-content .resolved-model > :is(h3, details) {
+    grid-column: 1 / -1;
+  }
+}

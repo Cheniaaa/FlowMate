@@ -51,7 +51,7 @@ fn t13_components_reach_product_api_and_real_private_credentials() {
     let runtime = DevelopmentRuntime::new(root.join(".venv/Scripts/python.exe"), root.to_owned()).unwrap();
     let data = directory.join("runtime");
     let mut host = RuntimeHost::start_command(&data, &runtime.python, runtime.command(&data),
-        false, true, store.clone(), Some(&runtime)).unwrap();
+        true, store.clone(), Some(&runtime)).unwrap();
     let config = json!({
         "id":wire["server_id"],"revision":1,"display_name":"Native authenticated MCP",
         "scope":{"kind":"user_global","workspace_id":null,"session_id":null},

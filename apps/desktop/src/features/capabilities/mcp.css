@@ -1,1 +1,21 @@
-.mcp-panel,.mcp-form{min-width:0;display:grid;gap:14px}.mcp-toolbar,.mcp-actions{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.mcp-toolbar label,.mcp-form label{display:grid;gap:6px;min-width:0}.mcp-form label:has(input[type=checkbox]){display:flex;align-items:center}.mcp-form input[type=checkbox]{width:auto}.mcp-form fieldset{display:grid;gap:12px;min-width:0}.mcp-form input:not([type=checkbox]),.mcp-form textarea,.mcp-form select{max-width:100%;box-sizing:border-box}.mcp-form textarea{width:100%;resize:vertical}.mcp-layout{display:grid;grid-template-columns:minmax(180px,260px) minmax(0,1fr);gap:20px}.mcp-layout>aside,.mcp-layout>section{min-width:0}.mcp-server{display:grid;gap:6px;width:100%;text-align:left;padding:14px;margin-bottom:8px}.mcp-panel pre,.mcp-form pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto}.mcp-panel code,.mcp-form code{overflow-wrap:anywhere}.mcp-panel button,.mcp-form button{min-height:34px}.mcp-form article{padding:12px 0;border-bottom:1px solid var(--line,#dfe4df)}@media(max-width:760px){.mcp-layout{grid-template-columns:1fr}.mcp-toolbar{align-items:stretch}.mcp-toolbar label{flex:1 1 180px}.mcp-layout>aside{max-height:240px;overflow:auto}}
+@reference "../../styles/ui.css";
+
+/* MCP 工具列表和详情的宽窄视口排列。 */
+@layer components {
+  .mcp-panel, .mcp-form { @apply grid min-w-0 gap-3.5; }
+  .mcp-toolbar, .mcp-actions { @apply flex flex-wrap items-end gap-2.5; }
+  .mcp-form fieldset { @apply grid min-w-0 gap-3; }
+  .mcp-layout { @apply grid grid-cols-[minmax(180px,260px)_minmax(0,1fr)] gap-5; }
+  .mcp-layout > :is(aside, section) { @apply min-w-0; }
+  .mcp-server { @apply mb-2 grid w-full gap-1.5 p-3.5 text-start; }
+  :is(.mcp-panel, .mcp-form) pre { @apply max-h-70 overflow-auto whitespace-pre-wrap wrap-anywhere; }
+  :is(.mcp-panel, .mcp-form) code { @apply wrap-anywhere; }
+  .mcp-form article { @apply border-b border-border py-3; }
+
+  @media (max-width: 760px) {
+    .mcp-layout { @apply grid-cols-1; }
+    .mcp-toolbar { @apply items-stretch; }
+    .mcp-toolbar label { @apply flex-[1_1_180px]; }
+    .mcp-layout > aside { @apply max-h-60 overflow-auto; }
+  }
+}

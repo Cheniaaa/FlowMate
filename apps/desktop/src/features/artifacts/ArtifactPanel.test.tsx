@@ -43,10 +43,9 @@ describe('产物预览', () => {
     const document = new DOMParser().parseFromString(preview().srcdoc, 'text/html');
     expect(document.querySelector('a[href],script')).toBeNull();
     expect(document.querySelector('meta[http-equiv="Content-Security-Policy"]')).not.toBeNull();
-    expect(screen.getByText(artifact.content_hash)).toBeTruthy();
-    expect(screen.getByText(artifact.content_hash).closest('details')?.open).toBe(false);
-    expect(screen.getByText(artifact.task_id)).toBeTruthy();
-    expect(screen.getByText(artifact.activity_id)).toBeTruthy();
+    expect(screen.queryByText(artifact.content_hash)).toBeNull();
+    expect(screen.queryByText(artifact.task_id)).toBeNull();
+    expect(screen.queryByText(artifact.activity_id)).toBeNull();
     await user.click(screen.getByRole('button', { name: '定位来源' }));
     expect(selectSource).toHaveBeenCalledExactlyOnceWith(artifact.task_id, artifact.activity_id);
     await user.click(screen.getByRole('button', { name: '打开外部链接：资料' }));
@@ -70,6 +69,34 @@ describe('产物预览', () => {
     await user.click(screen.getByRole('button', { name: '前文' }));
     await waitFor(() => expect(preview().srcdoc).toContain('前段'));
     expect(offsets).toEqual([0, 2, 0]);
+  });
+
+  it('结构化数据预览保留缩进和业务键，而不把字符串当 Markdown', async () => {
+    const text = '{\n  "server_id": "业务编号",\n  "texts": ["# 业务字段"]\n}';
+    vi.stubGlobal('fetch', async () => json(slice(text)));
+    render(<ArtifactPanel artifact={{ ...artifact, media_type: 'application/json' }} client={client} />);
+    await waitFor(() => expect(preview().srcdoc).toContain('业务字段'));
+    const document = new DOMParser().parseFromString(preview().srcdoc, 'text/html');
+    expect(document.querySelector('pre')?.textContent).toBe(JSON.stringify(JSON.parse(text), null, 2));
+    expect(document.querySelector('h1')).toBeNull();
+  });
+
+  it('精确识别的旧回执可分别读正文和业务 JSON，保留整数原值', async () => {
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(url);
+      return json({ ...slice(url.endsWith('&view=structured') ? '{"id":9007199254740993}' : '2026-11-21\n\n回执正文'),
+        has_structured_content: true });
+    });
+    const user = userEvent.setup();
+    render(<ArtifactPanel artifact={{ ...artifact, media_type: 'text/plain' }} client={client} />);
+    await user.click(await screen.findByRole('button', { name: '查看历史回执的业务 JSON' }));
+    await waitFor(() => expect(new DOMParser().parseFromString(preview().srcdoc, 'text/html').querySelector('pre')?.textContent)
+      .toContain('"id": 9007199254740993'));
+    expect(preview().srcdoc).not.toContain('回执正文');
+    await user.click(screen.getByRole('button', { name: '返回历史回执正文' }));
+    await waitFor(() => expect(preview().srcdoc).toContain('回执正文'));
+    expect(urls.map(url => new URL(url).search)).toEqual(['?offset=0', '?offset=0&view=structured', '?offset=0']);
   });
 
   it('A→B→A 与删除均隔离旧请求，迟到正文不能进入新选择', async () => {

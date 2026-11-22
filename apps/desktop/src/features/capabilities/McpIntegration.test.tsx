@@ -42,18 +42,18 @@ it('D 能力库接入 MCP 页签，并在 MCP 编辑时保持用户确认流程'
 it('外窗通知刷新 MCP 列表，编辑未确认内容跨失效保留且取消后取新版本', async () => {
   let revision = 1;
   vi.stubGlobal('fetch', vi.fn(async () => Response.json(mcpPage([{
-    ...mcpView, config: { ...mcpView.config, revision },
+    ...mcpView, config: { ...mcpView.config, revision, display_name: revision === 1 ? '个人笔记' : '项目笔记' },
   }]))));
   const client = new McpClient(mcpConnection);
   const view = render(<McpPanel client={client} refreshKey={0} />);
-  await screen.findByText('配置修订 1');
+  await screen.findByRole('heading', { name: '个人笔记' });
   fireEvent.click(screen.getByRole('button', { name: '编辑配置' }));
   fireEvent.change(screen.getByLabelText('名称'), { target: { value: '未确认本机草稿' } });
   revision = 2;
   await act(async () => view.rerender(<McpPanel client={client} refreshKey={1} />));
   expect(screen.getByLabelText('名称')).toHaveProperty('value', '未确认本机草稿');
   fireEvent.click(screen.getByRole('button', { name: '取消配置' }));
-  await screen.findByText('配置修订 2');
+  await screen.findByRole('heading', { name: '项目笔记' });
 });
 
 it('能力库已打开时接收新的 MCP 导航仍定位页签，当前编辑先明确取消', async () => {

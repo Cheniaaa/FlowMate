@@ -4,6 +4,7 @@ import hashlib
 import json
 import unicodedata
 
+from flowmate.artifacts.tool_results import receipt_json, tool_result_projection
 from flowmate.contracts.base import CommandMeta, DomainError, identifier
 from flowmate.contracts.events import NewEvent
 from flowmate.contracts.execution import (
@@ -18,6 +19,9 @@ from flowmate.contracts.execution import (
     ToolResultPart,
 )
 from flowmate.memory.contracts import (
+    DEFAULT_PROJECT_MEMORY_KINDS,
+    OTHER_PROJECT_MEMORY_KINDS,
+    PERSONAL_PROFILE_MEMORY_KINDS,
     MemoryCandidate,
     MemoryChange,
     MemoryEvidence,
@@ -88,6 +92,21 @@ class MemoryService:
         self._scope(tx, record.scope)
         return record
 
+    def _check_sources(self, tx, record):
+        check_scopes(tx, record.dependencies)
+        for evidence in record.evidence:
+            self._evidence(tx, evidence, record_id=record.id)
+
+    def previewable(self, tx, record):
+        if (record.status != "confirmed" or record.owner_id != self._owner_id(tx)
+                or record.expires_at and record.expires_at <= self.clock()):
+            return False
+        try:
+            self._check_sources(tx, record)
+        except DomainError:
+            return False
+        return True
+
     def _command(self, operation, parameters, meta, apply, model=MemoryRecord):
         meta = CommandMeta.model_validate(meta.model_dump())
         fingerprint = digest(json.dumps({"operation": operation, "parameters": parameters,
@@ -107,7 +126,7 @@ class MemoryService:
                         raise DomainError("version_conflict", "记忆已改变，请刷新当前状态")
                     check_scopes(tx, current.dependencies)
                     for evidence in current.evidence:
-                        self._evidence(tx, evidence)
+                        self._evidence(tx, evidence, record_id=current.id)
                 return model.model_validate_json(previous["response"])
             result = apply(tx)
             tx.execute("INSERT INTO commands VALUES (?,?,?,?,?)", (meta.command_id, fingerprint,
@@ -160,22 +179,33 @@ class MemoryService:
         result = part.result
         if not isinstance(result, dict) or result.get("truncated") is not True or "artifact_id" not in result:
             raise DomainError("invalid_evidence", "工具消息不是实际结果或已登记摘要")
-        row = tx.execute("SELECT document FROM artifacts WHERE id=?", (result["artifact_id"],)).fetchone()
-        if row is None:
-            raise DomainError("invalid_evidence", "工具摘要产物不存在")
-        artifact = ArtifactRef.model_validate_json(row[0])
-        serialized = json.dumps(activity.receipt.result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        expected = {"artifact_id": artifact.id, "truncated": True,
-            "preview": serialized[:1024], "total_chars": len(serialized)}
-        if (artifact.activity_id != activity.id or artifact.task_id != activity.task_id
-                or artifact.media_type != "text/plain" or artifact.content_hash != digest(serialized)
-                or result != expected or self.artifacts._text(artifact) != serialized
-                or set((item.scope_id, item.epoch) for item in artifact.dependencies)
-                    != set((item.scope_id, item.epoch) for item in message.source_dependencies)):
+        if result.get("kind") == "artifact_preview":
+            expected, documents = tool_result_projection(activity.intent.operation, activity.receipt.result,
+                is_mcp=activity.mcp_source is not None)
+        else:
+            serialized = receipt_json(activity.receipt.result)
+            expected = {"truncated": True, "preview": serialized[:1024], "total_chars": len(serialized)}
+            documents = {"artifact_id": (serialized, "text/plain")}
+        artifact_ids = {field: result.get(field) for field in documents}
+        if (not all(isinstance(id, str) for id in artifact_ids.values())
+                or result != {**expected, **artifact_ids}):
             raise DomainError("invalid_evidence", "工具摘要与真实回执内容或来源不符")
-        check_scopes(tx, artifact.dependencies)
+        for field, (text, media_type) in documents.items():
+            artifact_id = artifact_ids[field]
+            row = tx.execute("SELECT document FROM artifacts WHERE id=? AND run_id=?",
+                (artifact_id, activity.run_id)).fetchone()
+            if row is None:
+                raise DomainError("invalid_evidence", "工具摘要产物不存在")
+            artifact = ArtifactRef.model_validate_json(row[0])
+            if (artifact.id != artifact_id
+                    or artifact.activity_id != activity.id or artifact.task_id != activity.task_id
+                    or artifact.media_type != media_type or artifact.content_hash != digest(text)
+                    or set(artifact.dependencies) != set(message.source_dependencies)):
+                raise DomainError("invalid_evidence", "工具摘要与真实回执内容或来源不符")
+            check_scopes(tx, artifact.dependencies)
+            self.artifacts._text(artifact)  # 同时核对发布指纹和实际可读内容。
 
-    def _evidence(self, tx, evidence, *, ctx=None, include_quote=False):
+    def _evidence(self, tx, evidence, *, ctx=None, include_quote=False, record_id=None):
         """从权威来源取值，不保存原文副本，也不把引用存在视为用户授权。"""
         dependencies = []
         author = None
@@ -262,7 +292,9 @@ class MemoryService:
                         or int(locator[2]) >= len(message.parts) or locator[3] != field
                         or message.parts[int(locator[2])].kind != part_kind):
                     raise DomainError("invalid_evidence", "消息证据只能引用实际正文或结果")
-                dependencies.extend(message.source_dependencies)
+                # 真实用户回答仍绑定原话和其它资料。被这段回答纠正的记录不能成为自己的来源。
+                dependencies.extend(item for item in message.source_dependencies
+                    if author != "user" or message.origin != "answer" or item.scope_id != record_id)
                 source_scope = row["execution_session_id"]
             else:
                 if value["kind"] != "activity.received":
@@ -336,7 +368,7 @@ class MemoryService:
             "workspace_scope": ScopeRef(kind="workspace", workspace_id=ctx.workspace_id).model_dump(mode="json"),
             "items": items}
 
-    def propose(self, ctx, proposal, meta, *, tx=None, exact_source=False):
+    def propose(self, ctx, proposal, meta, *, tx=None, exact_source=False, inferred=False):
         proposal = (MemoryProposal.model_validate_json(json.dumps(proposal, allow_nan=False))
             if isinstance(proposal, dict) else MemoryProposal.model_validate(proposal.model_dump()))
 
@@ -351,7 +383,7 @@ class MemoryService:
             for evidence in proposal.evidence:
                 dependencies.extend(self._evidence(tx, evidence, ctx=ctx))
             if (proposal.author_kind not in {e.author_kind for e in proposal.evidence}
-                    and not (exact_source and proposal.author_kind == "assistant")):
+                    and not ((exact_source or inferred) and proposal.author_kind == "assistant")):
                 raise DomainError("invalid_evidence", "提案作者没有对应来源")
             provider = self.provider.using(tx)
             key = claim_key(proposal.text)
@@ -385,13 +417,13 @@ class MemoryService:
             if ctx.activity_id is not None:
                 activity = tx.execute("SELECT document FROM activities WHERE id=?", (ctx.activity_id,)).fetchone()
                 intent = ActivitySnapshot.model_validate_json(activity[0]).intent
-                if intent.operation == "memory.propose":
+                if intent.operation in {"memory.propose", "memory.remember"}:
                     row = tx.execute("SELECT document FROM messages WHERE task_id=? AND "
                         "json_extract(document,'$.role')='assistant' ORDER BY rowid DESC LIMIT 1",
                         (ctx.task_id,)).fetchone()
                     if row is not None:
                         origin = ModelMessage.model_validate_json(row[0])
-                        if any(isinstance(part, ToolCallPart) and part.name == "memory.propose"
+                        if any(isinstance(part, ToolCallPart) and part.name == intent.operation
                                 and part.call_id == intent.arguments["call_id"] for part in origin.parts):
                             origin_message_id = origin.id
             candidate = MemoryCandidate(id=identifier(), scope=proposal.scope,
@@ -457,9 +489,9 @@ class MemoryService:
         def apply(tx):
             if receipt_message_id is not None:
                 from flowmate.memory.chat import candidate_for_receipt
-                if action != "accept":
-                    raise DomainError("invalid_request", "聊天回执仅用于采纳已展示的候选")
                 saved = candidate_for_receipt(self, tx, id, receipt_message_id)
+                if (action, saved.status) not in {("accept", "candidate"), ("undo", "confirmed")}:
+                    raise DomainError("invalid_request", "聊天回执仅可用于采纳候选或撤销该次保存")
             else:
                 saved = self._get(tx, id)
             if saved.scope != scope:
@@ -472,8 +504,38 @@ class MemoryService:
                 raise DomainError("invalid_request", "仅修订接受正文")
             if saved.status == "deleted":
                 raise DomainError("memory_deleted", "删除的正文不能恢复；请以新用户命令新建")
+            if action == "revise":
+                # 先核对原修订的权限，再将新修订登记为用户编辑。
+                try:
+                    self._check_sources(tx, saved)
+                except DomainError as error:
+                    raise DomainError("memory_source_invalid", "原记忆来源已失效，修改未保存。") from error
+            if action == "undo":
+                if saved.status != "confirmed":
+                    raise DomainError("memory_undo_unavailable", "该记忆没有可撤销的保存")
+                if saved.revision == 1:
+                    restored = saved.model_copy(update={"status": "rejected"})
+                else:
+                    archive = self.provider.using(tx).export_scope(scope)
+                    restored = next(record for record in archive.revisions
+                        if record.id == id and record.revision == saved.revision - 1)
+                    self._check_sources(tx, restored)
+                    if restored.status in {"candidate", "rejected"} and saved.supersedes:
+                        candidate = next(item for item in archive.candidates if item.record_id == id
+                            and item.base_record_id == saved.supersedes)
+                        base = self._get(tx, saved.supersedes)
+                        if base.status != "rejected" or base.revision != candidate.expected_revision + 1:
+                            raise DomainError("version_conflict", "被替代的记忆已改变，无法撤销这次替换")
+                        prior_base = next(record for record in archive.revisions
+                            if record.id == base.id and record.revision == candidate.expected_revision)
+                        self._check_sources(tx, prior_base)
+                        self._save(tx, prior_base.model_copy(update={"revision": base.revision + 1}),
+                            base.revision, meta)
+                return self._save(tx, restored.model_copy(update={"revision": saved.revision + 1}),
+                    saved.revision, meta)
             if action in {"accept", "revise"}:
-                candidate = next(iter(self.provider.using(tx).candidates_for(scope, record_id=id)), None)
+                candidate = (next(iter(self.provider.using(tx).candidates_for(scope, record_id=id)), None)
+                    if saved.status != "confirmed" else None)
                 if candidate and candidate.base_record_id:
                     base = self._get(tx, candidate.base_record_id)
                     if base.revision != candidate.expected_revision:
@@ -492,7 +554,7 @@ class MemoryService:
                 tx.execute("UPDATE cleanup_state SET wal_pending=1 WHERE singleton=1")
             elif action in {"accept", "revise"}:
                 for evidence in saved.evidence if action == "accept" else []:
-                    self._evidence(tx, evidence)
+                    self._evidence(tx, evidence, record_id=saved.id)
                 body = text if action == "revise" else saved.text
                 updates.update(text=body, author_kind="user", claim_key=claim_key(body),
                     evidence=[*(saved.evidence if action == "accept" else []), self._edit_evidence(meta, body)],
@@ -538,7 +600,7 @@ class MemoryService:
         for evidence in record.evidence:
             try:
                 check_scopes(tx, record.dependencies)
-                self._evidence(tx, evidence)
+                self._evidence(tx, evidence, record_id=record.id)
             except DomainError as error:
                 result.append(MemoryEvidenceView(evidence=evidence, available=False, reason=error.code))
             else:
@@ -569,16 +631,35 @@ class MemoryService:
             # 明确交付只延续固定的记忆身份；不查询同范围其它记录。
             selected = task.binding.input_result
             if selected is not None:
-                candidates = [self.provider.using(tx).get(item.scope_id) for item in selected.dependencies
-                    if tx.execute("SELECT 1 FROM scopes WHERE id=? AND kind='memory'",
-                        (item.scope_id,)).fetchone()]
+                scope_ids = {item.scope_id for pin in [selected, *task.binding.additional_result_inputs]
+                    for item in pin.dependencies if tx.execute(
+                        "SELECT 1 FROM scopes WHERE id=? AND kind='memory'", (item.scope_id,)).fetchone()}
+                candidates = [self.provider.using(tx).get(id) for id in sorted(scope_ids)]
         else:
-            # Run/Task 两个固定选择均须包含该范围；读取策略本身不扩大来源上界。
+            # 项目偏好随任务作用域继承，实际发送仍使用项目对接收方的授权。
+            provider = self.provider.using(tx)
+            profile_limit = 100
             for scope in [ScopeRef(kind="user_global"), ScopeRef(kind="workspace", workspace_id=ctx.workspace_id)]:
-                if (not all(scope in selected.memory_scopes for selected in (run.sources, task.binding.sources))
-                        or not self.get_policy(scope, tx=tx).read_profile):
+                selected_scope = all(scope in selected.memory_scopes for selected in (run.sources, task.binding.sources))
+                project_profile = scope.kind == "workspace" and run.kind in {"user", "managed"}
+                personal_profile = scope.kind == "user_global" and run.kind == "user" and task.id == run.root_task_id
+                if not (selected_scope or project_profile or personal_profile) or not self.get_policy(scope, tx=tx).read_profile:
                     continue
-                candidates.extend(self.provider.using(tx).query(scope, True, 100))
+                if not project_profile:
+                    if selected_scope:
+                        candidates.extend(provider.query(scope, True, profile_limit))
+                    else:
+                        candidates.extend(provider.list_records(scope, status="confirmed",
+                            kinds=PERSONAL_PROFILE_MEMORY_KINDS, limit=profile_limit))
+                    continue
+                rules = provider.list_records(scope, status="confirmed", kinds=DEFAULT_PROJECT_MEMORY_KINDS,
+                    limit=profile_limit)
+                remaining = profile_limit - len(rules)
+                if selected_scope and remaining:
+                    candidates.extend(provider.list_records(scope, status="confirmed", kinds=OTHER_PROJECT_MEMORY_KINDS,
+                        limit=remaining))
+                # 上下文容量不足时先省略一般资料，容量判断仍由上下文构建器负责。
+                candidates.extend(rules)
         for record in candidates:
             if (record.owner_id != self._owner_id(tx) or record.status != "confirmed"
                     or record.expires_at and record.expires_at <= self.clock()):
@@ -589,7 +670,7 @@ class MemoryService:
                 if not decision.allowed:
                     continue
                 for evidence in record.evidence:
-                    self._evidence(tx, evidence)
+                    self._evidence(tx, evidence, record_id=record.id)
             except DomainError as error:
                 if error.code not in {"scope_revoked", "invalid_evidence", "scope_deleted", "outside_run_scope",
                         "scope_mismatch", "not_found"}:

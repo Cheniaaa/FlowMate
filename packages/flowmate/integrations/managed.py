@@ -13,6 +13,8 @@ class McpManagedConnections:
         self.current = current
         self.credentials = credentials
         self.limits = limits
+        self.catalog_for = None
+        self.restored = {}
         self._connections = {}
         self._configs = {}
         self._identities = {}
@@ -55,7 +57,8 @@ class McpManagedConnections:
             if manager is None:
                 self._identities[config.id] = identity
                 manager = McpManager([config], limits=self.limits,
-                    environment=self.credentials.environment, http_client=self.credentials.http_client)
+                    environment=self.credentials.environment, http_client=self.credentials.http_client,
+                    catalog_for=self.catalog_for)
                 self._connections[config.id] = manager
                 self._configs[config.id] = config
                 await manager.start()
@@ -81,6 +84,14 @@ class McpManagedConnections:
 
     async def call(self, server_id, catalog_hash, tool_name, arguments, cancel=None, *, before_send=None):
         arguments = deepcopy(arguments)
+        if server_id in self.restored and self.status(server_id) == "saved":
+            config = self.current(server_id)
+            if (config.revision, connection_identity(config)) != self.restored[server_id]:
+                raise DomainError("mcp_connection_trust_changed", "MCP 配置已改变，请重新核对连接")
+            if cancel is not None and cancel.is_set():
+                raise DomainError("mcp_call_cancelled", "调用尚未发送即已取消")
+            # 已恢复目录的任务仅等待所用服务，随后按当前连接验证固定定义。
+            await self.reconfigure(config)
         if not self._accepting or server_id in self._blocked or server_id not in self._connections:
             raise DomainError("blocked_incompatible", "须显式连接并发现当前 MCP 配置")
         async with self._lock(server_id):
@@ -95,8 +106,16 @@ class McpManagedConnections:
             if config.transport == "stdio":
                 # 已运行进程的环境不能热替换；调用前复核引用仍可解析。
                 await self.credentials.environment(config)
+
+            def authorize():
+                if (not self._accepting or server_id in self._blocked
+                        or self.current(server_id) != config):
+                    raise DomainError("blocked_incompatible", "MCP 配置正在改变，尚未派发此次调用")
+                if before_send is not None:
+                    before_send()
+
             return await self._connections[server_id].call(
-                server_id, catalog_hash, tool_name, arguments, cancel, before_send=before_send,
+                server_id, catalog_hash, tool_name, arguments, cancel, before_send=authorize,
             )
 
     def status(self, server_id):

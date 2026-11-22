@@ -8,6 +8,7 @@ from flowmate.memory.contracts import (
     MemoryArchive,
     MemoryCandidate,
     MemoryCapabilities,
+    MemoryKind,
     MemoryRecord,
 )
 
@@ -16,8 +17,9 @@ class MemoryProvider(Protocol):
     capabilities: MemoryCapabilities
 
     def query(self, scope, confirmed_only: bool, limit: int) -> list[MemoryRecord]: ...
-    def list_records(self, scope=None, *, status=None, claim=None, after=None, upper=None,
-                     limit=None, descending=False) -> list[MemoryRecord]: ...
+    # 筛选须在排序后的分页和数量限制前生效。
+    def list_records(self, scope=None, *, status=None, claim=None, kinds: tuple[MemoryKind, ...] | None = None,
+                     after=None, upper=None, limit=None, descending=False) -> list[MemoryRecord]: ...
     def candidates_for(self, scope, *, claim=None, record_id=None) -> list[MemoryCandidate]: ...
     def scrub_history(self, invalid) -> None: ...
     def get(self, id: str) -> MemoryRecord: ...
@@ -90,7 +92,7 @@ class SQLiteMemoryProvider:
             raise DomainError("invalid_query", "记忆查询数量须在1至500之间")
         return self.list_records(scope, status="confirmed" if confirmed_only else None, limit=limit)
 
-    def list_records(self, scope=None, *, status=None, claim=None, after=None, upper=None,
+    def list_records(self, scope=None, *, status=None, claim=None, kinds=None, after=None, upper=None,
                      limit=None, descending=False):
         with self.transaction() as tx:
             clauses, params = [], []
@@ -101,6 +103,9 @@ class SQLiteMemoryProvider:
                 if value is not None:
                     clauses.append(f"json_extract(document,'$.{field}')=?")
                     params.append(value)
+            if kinds is not None:
+                clauses.append("json_extract(document,'$.kind') IN (" + ",".join("?" for _ in kinds) + ")")
+                params.extend(kinds)
             for operator, value in ((">", after), ("<=", upper)):
                 if value is not None:
                     clauses.append(f"id{operator}?")

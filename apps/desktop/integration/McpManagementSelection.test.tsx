@@ -58,18 +58,18 @@ it('真实发现后显式保存选择，另一窗通知更新；本窗修改保�
     const lists = () => readFileSync(resolve(fixture.directory, 'remote/receipts.jsonl'), 'utf-8')
       .trim().split('\n').map(line => JSON.parse(line));
     const listCount = lists().filter(item => item.method === 'list').length;
-    expect(echo).toHaveProperty('checked', false);
+    expect(echo.getAttribute('aria-checked')).toBe('true');
     // 两个真实 SSE 订阅会重建查询视图，操作时重新定位当前 DOM。
-    fireEvent.click(await mainUi.findByRole('checkbox', { name: '允许工具 echo' }));
-    await waitFor(() => expect(mainUi.getByRole('checkbox', { name: '允许工具 echo' })).toHaveProperty('checked', true));
+    fireEvent.click(await mainUi.findByRole('checkbox', { name: '允许工具 number' }));
+    await waitFor(() => expect(mainUi.getByRole('checkbox', { name: '允许工具 number', checked: false })).toBeTruthy());
     fireEvent.click(mainUi.getByRole('button', { name: '保存允许的工具' }));
     await mainUi.findByText('当前固定选择：echo');
     await observerUi.findByText('当前固定选择：echo');
     fireEvent.click(observerUi.getByRole('checkbox', { name: '允许工具 number' }));
     fireEvent.click(await mainUi.findByRole('checkbox', { name: '允许工具 echo' }));
-    fireEvent.click(mainUi.getByRole('button', { name: '保存允许的工具' }));
+    fireEvent.click(mainUi.getByRole('button', { name: '固定为空名单' }));
     await mainUi.findByText('当前固定选择：无');
-    expect(observerUi.getByRole('checkbox', { name: '允许工具 number' })).toHaveProperty('checked', true);
+    expect(observerUi.getByRole('checkbox', { name: '允许工具 number', checked: true })).toBeTruthy();
     fireEvent.click(observerUi.getByRole('button', { name: '放弃工具选择修改' }));
     await observerUi.findByText('当前固定选择：无');
     expect((await mcp.mcpServer(fixture.server_id)).selection?.selected_names).toEqual([]);

@@ -36,6 +36,8 @@ it.each(['direct-global', 'direct-project', 'global-main', 'global-quick', 'proj
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path === '/capabilities/mcp') {
       queries.push(parsed);
+      if (parsed.searchParams.get('scope_kind') !== expectedScope.kind
+        || parsed.searchParams.get('workspace_id') !== expectedScope.workspace_id) return Response.json(mcpPage([]));
       return Response.json(mcpPage([{ ...mcpView, config: { ...mcpView.config, scope: expectedScope as typeof mcpView.config.scope } }]));
     }
     if (path === '/capabilities/mcp/preview') {
@@ -80,7 +82,7 @@ it.each(['direct-global', 'direct-project', 'global-main', 'global-quick', 'proj
     expect(navigation!.target).toMatchObject({ kind: 'mcp', workspace_id: expectedScope.workspace_id });
     await act(async () => { callbacks.get('workbench-navigation')!({ id: 1, event: 'workbench-navigation', payload: null }); });
   }
-  const library = await mainUi.findByRole('dialog', { name: '能力库' });
+  const library = await mainUi.findByRole('region', { name: '能力库' });
   expect(within(library).getByRole('tab', { name: 'MCP' }).getAttribute('aria-selected')).toBe('true');
   await within(library).findByRole('button', { name: /Local Notes/ });
   expect(within(library).getByLabelText('MCP 范围')).toHaveProperty('value', expectedScope.kind);
@@ -99,7 +101,7 @@ it.each(['direct-global', 'direct-project', 'global-main', 'global-quick', 'proj
   fireEvent.click(within(library).getByRole('button', { name: fromQuick ? '返回快捷小窗' : '返回对话与草稿' }));
   await act(async () => {});
   if (fromQuick) expect(invoke).toHaveBeenCalledWith('return_to_quick');
-  expect(mainUi.queryByRole('dialog', { name: '能力库' })).toBeNull();
+  expect(mainUi.queryByRole('region', { name: '能力库' })).toBeNull();
   expect(main.container.querySelector('#message-input')).toBe(mainDraft);
   expect(quick.container.querySelector('#message-input')).toBe(quickDraft);
 });

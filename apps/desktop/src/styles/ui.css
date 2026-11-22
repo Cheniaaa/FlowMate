@@ -1,21 +1,140 @@
 @import "tailwindcss" source(none);
+@import "./tokens.css";
+@import "./desktop-layout.css";
+@import "./reading.css" layer(components);
 @source "../components";
 @source "../features";
 @source "../windows";
 @source "../App.tsx";
 
-@theme inline {
-  --color-background: var(--panel);
-  --color-foreground: var(--ink);
-  --color-primary: var(--accent);
-  --color-primary-foreground: #fff;
-  --color-secondary: var(--accent-soft);
-  --color-destructive: var(--danger);
-  --color-border: var(--line);
+@theme static {
+  --font-sans: 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+  --font-mono: Consolas, 'Microsoft YaHei UI', monospace;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-reading: 0.875rem;
+  --text-reading--line-height: 1.55;
+  --text-compact: 0.8125rem;
+  --text-compact--line-height: 1.5;
+  --spacing-control-xs: 1.5rem;
+  --spacing-control-sm: 2rem;
+  --spacing-control: 2.25rem;
+  --spacing-control-lg: 2.5rem;
+  --radius-control: 0.5rem;
+}
+
+/* 静态报告从根节点读取同一套语义变量。 */
+@theme static inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--primary);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-canvas: var(--canvas);
+  --color-warning: var(--warning);
+}
+
+@layer base {
+  :root {
+    --motion-control: 150ms;
+    --motion-enter: 180ms;
+    --motion-exit: 120ms;
+    --motion-ease: cubic-bezier(0.2, 0.65, 0.3, 1);
+  }
+  /* 只调整文字层级，按钮、焦点环和图标保留各自的尺寸。 */
+  :root[data-text-size='compact'] {
+    --text-reading: 0.8125rem;
+    --text-compact: 0.75rem;
+  }
+  :root[data-text-size='large'] {
+    --text-xs: 0.875rem;
+    --text-sm: 0.9375rem;
+    --text-compact: 0.9375rem;
+    --text-reading: 1rem;
+    --text-base: 1.0625rem;
+    --text-lg: 1.1875rem;
+    --text-xl: 1.375rem;
+  }
+}
+
+@utility ui-control-motion {
+  transition: color var(--motion-control) var(--motion-ease),
+    background-color var(--motion-control) var(--motion-ease),
+    border-color var(--motion-control) var(--motion-ease);
+  @media (prefers-reduced-motion: reduce) { transition: none; }
+}
+
+@keyframes ui-page-in {
+  from { opacity: 0; transform: translateY(var(--spacing)); }
+}
+
+@utility ui-page-motion {
+  animation: ui-page-in var(--motion-enter) var(--motion-ease);
+  @media (prefers-reduced-motion: reduce) { animation: none; }
+}
+
+@utility ui-control-focus {
+  &:focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+  &[aria-invalid='true'] {
+    border-color: var(--color-destructive);
+    outline-color: var(--color-destructive);
+  }
+}
+
+@utility ui-field-control {
+  @apply w-full min-w-0 max-w-full rounded-control border border-input bg-background text-sm text-foreground placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 ui-control-motion ui-control-focus;
+}
+
+@utility ui-choice-control {
+  @apply inline-grid size-4 shrink-0 cursor-pointer place-items-center border border-input bg-background p-0 disabled:cursor-not-allowed disabled:opacity-50 ui-control-motion ui-control-focus;
 }
 
 .ui-overlay { z-index: 90; }
-.ui-dialog { z-index: 91; width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; }
-.ui-sheet { z-index: 91; width: min(460px, 100vw); overflow: auto; }
+.ui-dialog { z-index: 91; width: var(--ui-dialog-width, min(520px, calc(100vw - 32px))); max-height: var(--ui-dialog-max-height, calc(100dvh - 32px)); }
+.ui-sheet { z-index: 91; width: var(--ui-sheet-width, min(460px, 100vw)); }
 .ui-menu { z-index: 100; max-width: calc(100vw - 24px); }
-[data-sonner-toaster] { z-index: 120; }
+.flowmate-toaster[data-sonner-toaster] {
+  z-index: 120;
+  font-family: var(--font-sans);
+  --normal-bg: var(--color-background);
+  --normal-border: var(--color-border);
+  --normal-text: var(--color-foreground);
+  --border-radius: var(--radius-control);
+}
+
+.flowmate-toaster[data-sonner-toaster] [data-sonner-toast] {
+  transition-duration: var(--motion-enter);
+  transition-timing-function: var(--motion-ease);
+  &[data-removed='true'] { transition-duration: var(--motion-exit); }
+  @media (prefers-reduced-motion: reduce) { transition: none; }
+}
+
+@keyframes ui-surface-in {
+  from { opacity: 0; transform: var(--ui-surface-offset, none); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes ui-surface-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: var(--ui-surface-offset, none); }
+}
+
+@utility ui-surface-motion {
+  @media (prefers-reduced-motion: no-preference) {
+    &[data-state='open'] { animation: ui-surface-in var(--motion-enter) var(--motion-ease) both; }
+    &[data-state='closed'] { animation: ui-surface-out var(--motion-exit) ease-in both; }
+  }
+  &[data-state='closed'] { pointer-events: none; }
+}

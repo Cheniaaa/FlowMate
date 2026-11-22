@@ -7,7 +7,7 @@ from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, model_validato
 from flowmate.contracts.base import Contract, Count, Id, Units, Version, identifier
 from flowmate.contracts.pricing import PricingSnapshot
 from flowmate.contracts.scopes import ScopeRef
-from flowmate.contracts.settings import AgentProfile, ResolvedModelProfile
+from flowmate.contracts.settings import AgentProfile, ReasoningEffort, ResolvedModelProfile
 
 
 class RunLimits(Contract):
@@ -87,7 +87,20 @@ class SourceSelection(Contract):
     resource_ids: list[Id] = Field(default_factory=list)
     memory_scopes: list[ScopeRef] = Field(default_factory=list)
     skill_versions: dict[Id, str] = Field(default_factory=dict)
+    # null 表示本轮只用指导；许可 ID 固定所选版本和环境。
+    skill_execution_permissions: dict[Id, Id | None] = Field(default_factory=dict, exclude_if=lambda value: not value)
     excluded_source_ids: list[Id] = Field(default_factory=list)
+
+
+FileContentVersion = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class SelectedFileVersion(Contract):
+    """宿主接纳文件时固定的身份摘要与内容版本，不携带本机路径或字节。"""
+
+    file_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_version: FileContentVersion
+    inheritance_grants: list[ScopeDependency] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class TaskExecutionBinding(Contract):
@@ -95,10 +108,18 @@ class TaskExecutionBinding(Contract):
     interaction_session_id: Id | None
     config: ConfigSnapshot
     sources: SourceSelection
+    file_inputs: dict[Id, SelectedFileVersion] = Field(default_factory=dict)
     delegation_depth: Count
     agent_work: "AgentWork | None" = None
     input_artifacts: list["ArtifactRef"] = Field(default_factory=list)
     input_result: "ResultInput | None" = None
+    additional_result_inputs: list["ResultInput"] = Field(default_factory=list)
+
+
+class ModelSelection(Contract):
+    model_version: Version
+    connection_id: Id
+    connection_version: Version
 
 
 class StartRun(Contract):
@@ -107,16 +128,23 @@ class StartRun(Contract):
     model_profile_id: Id
     text: str = Field(min_length=1)
     sources: SourceSelection = Field(default_factory=SourceSelection)
+    inherit_session_files: bool = Field(default=True, exclude_if=lambda value: value)
+    session_file_adoptions: dict[Id, FileContentVersion] = Field(default_factory=dict, max_length=200,
+        exclude_if=lambda value: not value)
     limits: RunLimits = Field(default_factory=RunLimits)
     allow_managed: bool = False
     allow_follow_up: bool = False
     source_result: Id | None = None
+    reasoning_effort: ReasoningEffort | None = Field(default=None, exclude_if=lambda value: value is None)
+    model_selection: ModelSelection | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class PendingUserCommand(Contract):
     command_id: Id
     session_id: Id
     start: StartRun
+    file_inputs: dict[Id, SelectedFileVersion] = Field(default_factory=dict)
+    session_file_predecessors: dict[Id, Id] = Field(default_factory=dict, exclude_if=lambda value: not value)
     state: Literal["queued", "applied", "cancelled"] = "queued"
     created_seq: Version
     config: ConfigSnapshot
@@ -185,11 +213,14 @@ class RunSnapshot(Contract):
     output: AgentResult | RunOutput | None = None
     reason: str | None = None
     sources: SourceSelection
+    file_inputs: dict[Id, SelectedFileVersion] = Field(default_factory=dict)
+    attached_file_ids: list[Id] | None = Field(default=None, exclude_if=lambda value: value is None)
     allow_managed: bool = False
     allow_follow_up: bool = False
     yield_requested: bool = False
     follow_up_closed: bool = False
     admission_generations: dict[Id, Version] = Field(default_factory=dict)
+    vision_source_run_id: Id | None = None
 
 
 class TaskSnapshot(Contract):
@@ -245,6 +276,8 @@ class Usage(Contract):
     input_tokens: Count | None = None
     output_tokens: Count | None = None
     cached_input_tokens: Count | None = None
+    # 旧回执把缺失的读缓存字段也写作 0；只有实际收到该字段才记录此证据。
+    cache_read_reported: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
     cache_write_tokens: Count | None = None
     cache_write_1h_tokens: Count | None = None
     source: str | None = None
@@ -270,6 +303,11 @@ class ActivityReceipt(Contract):
     source_observations: list[SourceObservation] = Field(default_factory=list)
 
 
+class McpResultSource(Contract):
+    binding: McpToolSnapshot
+    model_destination: str
+
+
 class ActivitySnapshot(Contract):
     id: Id
     version: Version = 1
@@ -286,12 +324,14 @@ class ActivitySnapshot(Contract):
     content_committed: bool = False
     pricing_snapshot: dict[str, JsonValue] | None = None
     lease_generation: Version | None = None
+    mcp_source: McpResultSource | None = None
 
 
 class ReservationEstimate(Contract):
     estimated_units: Units | None
     input_estimate: Count = 0
     max_output_tokens: Count = 0
+    input_estimate_source: Literal["utf8_wire_budget", "local_image_reserve"] = "utf8_wire_budget"
 
 
 class DispatchRequest(Contract):
@@ -301,6 +341,7 @@ class DispatchRequest(Contract):
     estimate: ReservationEstimate
     source_dependencies: list[ScopeDependency] = Field(default_factory=list)
     pricing_snapshot: dict[str, JsonValue] | None = None
+    mcp_source: McpResultSource | None = None
 
 
 class DispatchPermit(Contract):
@@ -420,7 +461,7 @@ class SubmitTask(Contract):
     limits: RunLimits = Field(default_factory=RunLimits)
     sources: SourceSelection = Field(default_factory=SourceSelection)
     allowed_tools: list[str] = Field(default_factory=list)
-    completion_policy: Literal["notify_only", "follow_up"] = "notify_only"
+    completion_policy: Literal["notify_only", "follow_up", "notify_each"] = "notify_only"
 
 
 class TaskHandle(Contract):
@@ -437,7 +478,7 @@ class TaskSubmission(Contract):
     args_hash: str
     origin_run_id: Id
     lifetime: Literal["run_bound", "managed"] = "run_bound"
-    completion_policy: Literal["notify_only", "follow_up"] = "notify_only"
+    completion_policy: Literal["notify_only", "follow_up", "notify_each"] = "notify_only"
 
 
 class ConsumerRef(Contract):
@@ -494,7 +535,8 @@ class ModelMessage(Contract):
     source_dependencies: list[ScopeDependency] = Field(default_factory=list)
     activity_id: Id | None = None
     private_ref: Id | None = None
-    origin: Literal["conversation", "steering", "answer", "task_result"] = "conversation"
+    origin: Literal["conversation", "steering", "answer", "task_result", "background_report"] = "conversation"
+    delivery_ids: list[Id] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class MessageReceipt(Contract):
@@ -541,7 +583,9 @@ class Question(Contract):
     dependencies: list[ScopeDependency] = Field(default_factory=list)
 
 
-ArtifactMediaType = Literal["text/plain", "text/markdown", "application/octet-stream"]
+ArtifactMediaType = Literal[
+    "text/plain", "text/markdown", "application/json", "application/octet-stream", "image/png", "image/jpeg",
+]
 
 
 class ArtifactRef(Contract):
@@ -587,6 +631,8 @@ class SessionInboxEntry(Contract):
     last_error: str | None = None
     source_valid: bool = True
     consumers: list[ResultConsumption] = Field(default_factory=list)
+    task_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    assistant_name: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class ResultInput(Contract):
@@ -632,6 +678,7 @@ class TextSlice(Contract):
     end: Count
     total_chars: Count
     source_version: str
+    has_structured_content: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class ExportReceipt(Contract):

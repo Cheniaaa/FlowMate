@@ -17,13 +17,17 @@ it.each([undefined, '00000000-0000-4000-8000-000000000001'])('MCP 添加默认�
   expect(queries[0].searchParams.get('scope_kind')).toBe(workspaceId ? 'workspace' : 'user_global');
 });
 
-it('明确指定工具和模型地址后才创建窄公共查询许可，可撤销且不会改变允许工具', async () => {
+it('已启用工具无需填写接收模型地址，历史查询许可可单独撤销', async () => {
   const catalog = { server_id: mcpConfig.id, config_revision: 1, content_hash: 'a'.repeat(64), tools: [{
     name: 'user-selected-query', description: '公开资料', input_schema: { type: 'object' },
     output_schema: null, annotations: { readOnlyHint: true }, unavailable_reason: null,
   }] };
-  const view = { ...mcpView, state: 'connected', catalog, selection: { server_id: mcpConfig.id, version: 1,
-    scope: mcpConfig.scope, config_revision: 1, catalog_hash: catalog.content_hash, selected_names: ['user-selected-query'] } };
+  const view = { ...mcpView, config: { ...mcpConfig, enabled: false }, state: 'stopped',
+    catalog: null, selection: { server_id: mcpConfig.id, version: 1,
+     scope: mcpConfig.scope, config_revision: 1, catalog_hash: catalog.content_hash, selected_names: ['user-selected-query'] },
+    query_grants: [{ ...grant, status: 'active', destination: 'https://model.invalid/v1',
+      mcp_queries: [{ server_id: mcpConfig.id, config_revision: 1, catalog_hash: catalog.content_hash,
+        original_name: 'user-selected-query', destination: 'synthetic-mcp' }] }] };
   const writes: { path: string; body: any }[] = [];
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
@@ -33,36 +37,27 @@ it('明确指定工具和模型地址后才创建窄公共查询许可，可撤�
     return Response.json({ ...grant, ...body.data, resource_ids: [], memory_scopes: [], mcp_versions: {} });
   });
   render(<McpPanel client={new McpClient(mcpConnection)} />);
-  const trust = await screen.findByRole('button', { name: '信任此工具用于公共查询' });
-  expect(trust).toHaveProperty('disabled', true);
+  const revoke = await screen.findByRole('button', { name: '撤销公共查询许可' });
+  expect(screen.queryByLabelText('结果接收模型地址')).toBeNull();
   expect(writes).toEqual([]);
-  fireEvent.change(screen.getByLabelText('公共查询工具'), { target: { value: 'user-selected-query' } });
-  fireEvent.change(screen.getByLabelText('结果接收模型地址'), { target: { value: 'https://model.invalid/v1' } });
-  fireEvent.click(trust);
-  await screen.findByRole('button', { name: '撤销公共查询许可' });
-  expect(writes[0].body.data).toMatchObject({ scope: mcpConfig.scope, purposes: ['model_send'],
-    destination: 'https://model.invalid/v1', mcp_queries: [{
-      original_name: 'user-selected-query', server_id: mcpConfig.id, config_revision: 1, catalog_hash: catalog.content_hash,
-    }] });
-  fireEvent.click(screen.getByRole('button', { name: '撤销公共查询许可' }));
+  fireEvent.click(revoke);
   await waitFor(() => expect(screen.queryByRole('button', { name: '撤销公共查询许可' })).toBeNull());
-  expect(writes.every(write => !write.path.endsWith('/tools'))).toBe(true);
+  expect(writes.map(write => write.path)).toEqual([`/v3/grants/${grant.id}/revoke`]);
 });
 
-it('查询许可被明确拒绝时解除编辑锁，可核对当前配置后修改', async () => {
+it('撤销未成功时保留可重试的原许可', async () => {
   const view = { ...mcpView, state: 'connected' as const,
     catalog: { server_id: mcpConfig.id, config_revision: 1, content_hash: 'b'.repeat(64), tools: [] },
     selection: { server_id: mcpConfig.id, version: 1, scope: mcpConfig.scope,
-      config_revision: 1, catalog_hash: 'b'.repeat(64), selected_names: ['explicit-query'] } };
+      config_revision: 1, catalog_hash: 'b'.repeat(64), selected_names: ['explicit-query'] },
+    query_grants: [{ ...grant, mcp_queries: [] }] };
   vi.stubGlobal('fetch', async () => Response.json({ error: { code: 'blocked_incompatible',
     safe_message: '目录已改变', retryable: false, related_ids: [] } }, { status: 409 }));
   const active = vi.fn();
   render(<McpQueryPermissions client={new McpClient(mcpConnection)} view={view}
     disabled={false} onActiveChange={active} />);
-  fireEvent.change(screen.getByLabelText('公共查询工具'), { target: { value: 'explicit-query' } });
-  fireEvent.change(screen.getByLabelText('结果接收模型地址'), { target: { value: 'https://model.invalid/v1' } });
-  fireEvent.click(screen.getByRole('button', { name: '信任此工具用于公共查询' }));
-  await screen.findByText(/公共查询许可未保存/);
-  expect(screen.getByLabelText('结果接收模型地址')).toHaveProperty('disabled', false);
+  fireEvent.click(screen.getByRole('button', { name: '撤销公共查询许可' }));
+  await screen.findByText(/撤销未确认/);
+  expect(screen.getByRole('button', { name: '撤销公共查询许可' })).toHaveProperty('disabled', false);
   expect(active).toHaveBeenLastCalledWith(false);
 });

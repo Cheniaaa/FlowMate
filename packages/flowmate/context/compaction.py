@@ -208,8 +208,7 @@ class ContextCompaction:
                 if message.id in set(protected_message_ids) - authority_ids]
             consumptions = self._result_consumptions(tx, ctx, original)
             source_digest = _digest([message.model_dump(mode="json") for message in original])
-        available = profile.context_window_tokens - profile.max_output_tokens - max(
-            1024, (profile.context_window_tokens + 19) // 20)
+        available = profile.input_budget(profile.max_output_tokens)
         selected, best = [], None
         for group in candidates:
             proposed = [*selected, *group]
@@ -232,7 +231,7 @@ class ContextCompaction:
         # 用同一投影验证保留消息的真实私有续接；供应商不允许切断时必须阻塞，不能去签名。
         try:
             await self.estimate(ctx, ModelRequest(profile=profile, messages=retained, tools=tools,
-                instructions=self.builder._instructions(task), max_output_tokens=profile.max_output_tokens))
+                instructions=self.builder._instructions(task, tools=tools), max_output_tokens=profile.max_output_tokens))
         except DomainError as error:
             if error.code not in {"blocked_incompatible", "private_state_missing", "private_state_invalid",
                     "private_state_unavailable", "private_state_too_large", "unsupported_capability"}:
@@ -271,6 +270,13 @@ class ContextCompaction:
     def _validate_plan_tx(self, tx, ctx, checkpoint, plan, *, ready):
         if plan.task_id != ctx.task_id:
             raise DomainError("owner_mismatch", "压缩提议不属于当前 Task")
+        request_document = plan.request.model_dump(mode="json")
+        if not ready:
+            saved = checkpoint.context_manifest["compaction"]
+            if CompactionPlan.model_validate_json(_json(saved)) != plan:
+                raise DomainError("compaction_binding", "压缩提议与原持久请求不一致")
+            # 摘要绑定原始已存请求；新增默认字段只参与下方语义核验，不改写旧摘要。
+            request_document = saved["request"]
         _, original, messages = self._snapshot(tx, ctx, checkpoint, plan.request.profile,
             plan.replay_tools, ready=ready)
         if _digest([message.model_dump(mode="json") for message in original]) != plan.source_digest:
@@ -302,7 +308,7 @@ class ContextCompaction:
                 or plan.dropped_private_refs != [message.private_ref for message in selected if message.private_ref]
                 or plan.retained_private_refs != [message.private_ref for message in retained if message.private_ref]
                 or plan.result_consumptions != consumptions or plan.dependencies != dependencies
-                or plan.input_digest != _digest(request.model_dump(mode="json"))
+                or plan.input_digest != _digest({**request_document, "projection_digest": None})
                 or plan.request.model_copy(update={"projection_digest": None}) != request
                 or plan.request.projection_digest is None):
             raise DomainError("compaction_plan_invalid", "压缩覆盖、来源或实际请求与提议不一致")

@@ -15,6 +15,50 @@ function withoutDiscriminator(value) {
   return value;
 }
 
+function* schemaNodes(schema) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return;
+  yield schema;
+  for (const keyword of ['$defs', 'definitions', 'properties', 'patternProperties', 'dependentSchemas', 'dependencies']) {
+    for (const child of Object.values(schema[keyword] ?? {})) yield* schemaNodes(child);
+  }
+  for (const keyword of ['allOf', 'anyOf', 'oneOf', 'prefixItems']) {
+    for (const child of schema[keyword] ?? []) yield* schemaNodes(child);
+  }
+  for (const keyword of ['items', 'contains', 'propertyNames', 'additionalProperties', 'unevaluatedProperties',
+    'unevaluatedItems', 'not', 'if', 'then', 'else', 'contentSchema']) {
+    yield* schemaNodes(schema[keyword]);
+  }
+}
+
+function shareDefinitions(ajv, schema, shared) {
+  if (!schema.$defs) return;
+  const nodes = [...schemaNodes(schema)];
+  // Ajv 仍按原作用域解析锚点、子资源及指向定义内部的指针。
+  const localDefinition = /^#\/\$defs\/[\w-]+$/;
+  if (nodes.some(node => '$id' in node || '$anchor' in node || '$dynamicAnchor' in node
+      || '$dynamicRef' in node || '$recursiveAnchor' in node || '$recursiveRef' in node
+      || ('$ref' in node && !localDefinition.test(node.$ref)))) return;
+  const refs = new Map();
+  for (const [key, definition] of Object.entries(schema.$defs)) {
+    const ref = `#/$defs/${key}`;
+    if (!localDefinition.test(ref)) continue;
+    const content = JSON.stringify(definition);
+    if (/"\$[\w]+":/.test(content)) continue;
+    let id = shared.get(content);
+    if (id === undefined) {
+      id = `urn:flowmate:definition:${shared.size}`;
+      shared.set(content, id);
+      ajv.addSchema(definition, id);
+    }
+    delete schema.$defs[key];
+    refs.set(ref, id);
+  }
+  for (const node of nodes) {
+    const id = refs.get(node.$ref);
+    if (id !== undefined) node.$ref = id;
+  }
+}
+
 export async function generateContracts(document) {
   if (document.schema_version !== 3) throw new Error('不支持的公共 Schema 版本');
   const ajv = new Ajv2020({ code: { source: true, esm: true }, strict: true, inlineRefs: false,
@@ -23,12 +67,14 @@ export async function generateContracts(document) {
   const namespaces = [];
   const exports = {};
   const declarations = [];
+  const sharedDefinitions = new Map();
   for (const [name, root] of Object.entries(document.roots)) {
     const schema = withoutDiscriminator(root.schema);
     const generated = await compile({ ...schema, title: name }, name, { bannerComment: '',
       style: { singleQuote: true }, $refOptions: { resolve: { http: false, file: false } } });
     namespaces.push(`export namespace ${name}Schema {\n${generated.split('\n').map(line => line ? '  ' + line : '').join('\n')}\n}\nexport type ${name} = ${name}Schema.${name};\n`);
     const schemaId = `urn:flowmate:public:${name}`;
+    shareDefinitions(ajv, schema, sharedDefinitions);
     ajv.addSchema({ ...schema, $id: schemaId });
     exports[name] = schemaId;
     declarations.push(`export declare function ${name}(value: unknown): value is ${name};`);

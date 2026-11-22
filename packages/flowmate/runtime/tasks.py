@@ -16,6 +16,7 @@ from flowmate.contracts.execution import (
     BudgetGroupSnapshot,
     BudgetSnapshot,
     Checkpoint,
+    ConsumerRef,
     ModelMessage,
     OutboxItem,
     ResultConsumption,
@@ -51,6 +52,35 @@ from flowmate.tools.gateway import _merge_dependencies
 def control_command_id(run_id: str, task_id: str, message_id: str, call_id: str) -> str:
     identity = json.dumps([run_id, task_id, message_id, call_id], separators=(",", ":"))
     return str(uuid5(uuid5(NAMESPACE_URL, "flowmate:task-control:v1"), identity))
+
+
+def child_failure_feedback(tx, owner, checkpoint, output):
+    boundary = checkpoint.context_manifest.get("model_message_boundary")
+    if boundary is None or owner.binding.config.model_profile.capabilities.tools is False:
+        return None
+    results = tx.execute(
+        "SELECT t.id,t.state,c.result_version,json_extract(c.document,'$.message_boundary') "
+        "FROM tasks t LEFT JOIN consumptions c ON c.target_task_id=t.id "
+        "AND c.result_version=json_extract(t.document,'$.result_version') AND c.consumer_task_id=? "
+        "AND c.execution_session_id=? WHERE t.run_id=? AND t.parent_task_id=? ORDER BY t.rowid",
+        (owner.id, owner.binding.execution_session_id, owner.run_id, owner.id)).fetchall()
+    if any(index is None or index >= boundary for _, _, _, index in results):
+        return None  # 后到交付由 joining 收取，先让父代理看见真实状态。
+    handled = {(item.task_id, item.result_version) for item in output.handled_failures}
+    missing = {id: version for id, state, version, _ in results
+               if state in {"failed", "cancelled"} and (id, version) not in handled}
+    if not missing or tx.execute(
+            "WITH RECURSIVE failed_tree(id) AS (SELECT value FROM json_each(?) "
+            "UNION ALL SELECT t.id FROM tasks t JOIN failed_tree p ON t.parent_task_id=p.id) "
+            "SELECT 1 FROM activities WHERE task_id IN (SELECT id FROM failed_tree) "
+            "AND state IN ('dispatched','uncertain') LIMIT 1", (json.dumps(list(missing)),)).fetchone():
+        return None
+    previous = checkpoint.context_manifest.get("child_failure_feedback", {})
+    fresh = any(previous.get(id) != version for id, version in missing.items())
+    failures = [{"task_id": id, "result_version": version} for id, version in missing.items()]
+    reason = ("完成候选缺少已收件的成员失败处置。可保留已成功的结果并改派未完成部分，或明确报告缺口。"
+              "用完成工具的 handled_failures 写明这些失败版本及实际处置理由：" + json.dumps(failures))
+    return ({**previous, **missing} if fresh else None), reason
 
 
 def _owner(tx, ctx):
@@ -100,6 +130,7 @@ def result_input(tx, entry_id, session_id):
     entry = SessionInboxEntry.model_validate_json(row[0])
     if entry.target_session_id != session_id:
         raise DomainError("result_target_mismatch", "结果不属于目标会话")
+    check_scopes(tx, entry.dependencies)
     task = load(tx, TaskSnapshot, entry.result.task_id)
     if (task.run_id != entry.result.run_id or task.state not in TERMINAL
             or task.result_version != entry.result_version or handle_for(tx, task) != entry.result):
@@ -113,7 +144,6 @@ def result_input(tx, entry_id, session_id):
             for item in event.payload.tasks):
         raise DomainError("result_version_conflict", "结果不匹配原交付事件")
     result = delivered_result(tx, task, entry.result, input_only=True)
-    check_scopes(tx, [*entry.dependencies, *result.dependencies])
     return ResultInput(inbox_entry_id=entry.id, target_session_id=entry.target_session_id,
         source_event_id=entry.source_event_id, handle=entry.result,
         result_version=entry.result_version, dependencies=result.dependencies)
@@ -123,14 +153,29 @@ def selected_result(tx, ctx):
     selected = load(tx, TaskSnapshot, ctx.task_id).binding.input_result
     if selected is None:
         raise DomainError("result_not_selected", "当前任务未选择结果输入")
+    return _selected_result(tx, ctx, selected)
+
+
+def _selected_result(tx, ctx, selected):
     current = result_input(tx, selected.inbox_entry_id, ctx.interaction_session_id)
     if current != selected:
         raise DomainError("result_version_conflict", "固定结果输入已改变")
     return delivered_result(tx, load(tx, TaskSnapshot, selected.handle.task_id), selected.handle, input_only=True)
 
 
+def selected_results(tx, ctx, binding):
+    return [_selected_result(tx, ctx, pin)
+            for pin in [binding.input_result, *binding.additional_result_inputs] if pin is not None]
+
+
 def consume_selected_result(tx, ctx, policy):
-    result = selected_result(tx, ctx)
+    task = load(tx, TaskSnapshot, ctx.task_id)
+    for pin, result in zip([task.binding.input_result, *task.binding.additional_result_inputs],
+                           selected_results(tx, ctx, task.binding), strict=True):
+        _consume_result_input(tx, ctx, policy, pin, result)
+
+
+def _consume_result_input(tx, ctx, policy, pin, result):
     policy.check_run_sources(tx, ctx, result.dependencies,
         source_run_id=result.handle.run_id, source_task_id=result.handle.task_id)
     decision = policy.check_tx(tx, ctx, result.dependencies, "read")
@@ -148,10 +193,11 @@ def consume_selected_result(tx, ctx, policy):
     checkpoint = load(tx, Checkpoint, ctx.task_id)
     consumption = ResultConsumption(run_id=ctx.run_id, task_id=ctx.task_id, execution_session_id=ctx.session_id,
         target_task_id=result.handle.task_id, result_version=result.result_version,
-        message_boundary=checkpoint.message_boundary, inbox_entry_id=task.binding.input_result.inbox_entry_id)
+        message_boundary=checkpoint.message_boundary, inbox_entry_id=pin.inbox_entry_id)
     emit(tx, run, task.id, "task.consumed", RuntimeChange(consumptions=[consumption],
         messages=[ModelMessage(role="user", origin="task_result", parts=[TextPart(text=result.model_dump_json())],
-            source_dependencies=_merge_dependencies([*result.dependencies, *decision.dependencies]))],
+            source_dependencies=_merge_dependencies([*result.dependencies, *decision.dependencies]),
+            delivery_ids=[pin.inbox_entry_id])],
         checkpoints=[bump(checkpoint, message_boundary=checkpoint.message_boundary+1)]))
 
 
@@ -220,11 +266,12 @@ def handle_for(tx, task):
 
 
 class TaskService:
-    def __init__(self, store, catalog, *, clock=None, delivery=None, artifacts=None):
+    def __init__(self, store, catalog, *, policy: PolicyService, clock=None, delivery=None, artifacts=None, scheduler=None):
+        self.scheduler = scheduler
         self.store = store
         self.catalog = catalog
         self.clock = clock or utc_now
-        self.policy = PolicyService(store, clock=self.clock)
+        self.policy = policy
         self.budgets = BudgetService()
         self.artifacts = artifacts
         from flowmate.runtime.delivery import DeliveryService
@@ -248,7 +295,11 @@ class TaskService:
         work = command.work
         is_agent = isinstance(work, AgentWork)
         if is_agent:
-            from flowmate.agents.checkpoint import CONTROL_TOOLS, agent_output_validator
+            from flowmate.agents.checkpoint import (
+                CONTROL_TOOLS,
+                agent_output_validator,
+                member_delivery_block_reason,
+            )
 
             agent_output_validator(work.output_schema)
             member = origin.binding.config.members.get(work.profile_id)
@@ -273,6 +324,10 @@ class TaskService:
             if (previous[0], previous[1], previous[2]) != (run.id, origin.id, args_hash):
                 raise DomainError("command_conflict", "同一命令不能更改参数或归属")
             return TaskSubmission.model_validate_json(previous[3])
+        if is_agent:
+            reason = member_delivery_block_reason(member.model_profile.capabilities)
+            if reason is not None:
+                raise DomainError("unsupported_capability", reason)
         if not is_agent and not tool.spec.background_supported:
             raise DomainError("background_unsupported", "工具未声明后台能力")
         if not is_agent and not tool.spec.model_visible:
@@ -288,6 +343,9 @@ class TaskService:
                        self.clock() + timedelta(seconds=command.limits.deadline_seconds))
         dependencies = _merge_dependencies(ctx.scope_dependencies, dependencies)
         sources = command.sources
+        inherited = run.file_inputs.keys() - set(run.attached_file_ids or ()) if run.attached_file_ids is not None else set()
+        if inherited.intersection(sources.resource_ids):
+            raise DomainError("outside_run_scope", "会话续读文件仅供当前会话主任务使用")
         for id in sources.resource_ids:
             self.policy.check_run_sources(tx, ctx, [ScopeDependency(scope_id=id, epoch=1)])
         parent_sources = origin.binding.sources
@@ -303,8 +361,12 @@ class TaskService:
             # 当前运行固定版本仍可委派；管理停用只阻止新 Run，不改变既有内容。
             SkillService(self.store).reference(ctx, id, version, tx=tx)
         sources = SourceSelection(**{**sources.model_dump(),
+            "skill_execution_permissions": {id: choice
+                for id, choice in run.sources.skill_execution_permissions.items() if id in sources.skill_versions},
             "excluded_source_ids": sorted(set(sources.excluded_source_ids)
                 | set(parent_sources.excluded_source_ids) | set(run.sources.excluded_source_ids))})
+        file_inputs = {id: pin for id, pin in origin.binding.file_inputs.items()
+            if id in sources.resource_ids and run.file_inputs.get(id) == pin}
         input_artifacts = [] if is_agent else origin.binding.input_artifacts
         if is_agent:
             requested = []
@@ -380,7 +442,10 @@ class TaskService:
         target_run = run
         private_session = is_agent or command.lifetime == "managed"
         if private_session:
-            session = Session(workspace_id=run.workspace_id, title=work.goal if is_agent else "后台工具任务",
+            from flowmate.runtime.naming import goal_title
+
+            title = (goal_title(work.goal, explicit=True) or "后台任务") if is_agent else "后台工具任务"
+            session = Session(workspace_id=run.workspace_id, title=title,
                 agent_profile_id=config.agent_profile.id, kind="execution")
         if command.lifetime == "managed":
             target_run = RunSnapshot(id=identifier(), workspace_id=run.workspace_id,
@@ -388,7 +453,8 @@ class TaskService:
                 root_task_id=identifier(), budget_id=identifier(), budget_group_id=run.budget_group_id,
                 # Run保存执行范围；正文/grant来源事实留在固定调用中，不能把首次观察的文件epoch
                 # 当作永久执行身份，否则工具自己发布新正文版本后会撤销自身完成资格。
-                kind="managed", config=config, sources=sources, scope_dependencies=ctx.scope_dependencies,
+                kind="managed", config=config, sources=sources, file_inputs=file_inputs,
+                scope_dependencies=ctx.scope_dependencies,
                 deadline_at=deadline, allow_managed=run.allow_managed,
                 admission_generations=run.admission_generations)
             self.budgets.allocate(tx, run.id, target_run.id, command.limits)
@@ -403,7 +469,7 @@ class TaskService:
             executor_id=config.catalog.agent_executor_id if is_agent else "builtin.tool",
             binding=origin.binding.model_copy(update={"execution_session_id":
                 session.id if private_session else origin.binding.execution_session_id,
-                 "sources": sources, "config": config, "delegation_depth": depth,
+                  "sources": sources, "file_inputs": file_inputs, "config": config, "delegation_depth": depth,
                  "agent_work": work if is_agent else None, "input_artifacts": input_artifacts,
                  "input_result": None}),
             created_seq=created_seq, deadline_at=deadline)
@@ -427,6 +493,14 @@ class TaskService:
         self.budgets.count(tx, target_run.id, "task_count")
         if (managed or command.completion_policy == "follow_up") and target_run.interaction_session_id is not None:
             self.delivery.reserve_tx(tx,task.id,target_run.interaction_session_id)
+        if is_agent and self.scheduler is not None:
+            from flowmate.runtime.naming import _TITLE_LENGTH, queue_title
+
+            if len(work.goal.strip()) > _TITLE_LENGTH:
+                queue_title(tx, self.scheduler, workspace_id=run.workspace_id,
+                    session_id=run.interaction_session_id, goal=work.goal, kind="task", target_id=task.id,
+                    agent=origin.binding.config.agent_profile, catalog=origin.binding.config.catalog,
+                    goal_dependencies=dependencies)
         return submission
 
     def status(self, ctx, handle):
@@ -437,13 +511,30 @@ class TaskService:
         with self.store.transaction() as tx:
             return self._result(tx,ctx,handle,consumer)
 
+    def _pending_direct_results(self, tx, ctx, *, model_boundary=None):
+        """返回未入账的直属交付，以及在候选请求发出后才入账的交付。"""
+        return [row[0] for row in tx.execute(
+            "SELECT t.id FROM tasks t LEFT JOIN consumptions c ON c.consumer_task_id=? "
+            "AND c.execution_session_id=? AND c.target_task_id=t.id "
+            "AND c.result_version=json_extract(t.document,'$.result_version') "
+            "WHERE t.run_id=? AND t.parent_task_id=? AND t.state IN ('completed','failed','cancelled') "
+            "AND (c.id IS NULL OR json_extract(c.document,'$.message_boundary')>=?) ORDER BY t.rowid",
+            (ctx.task_id, ctx.session_id, ctx.run_id, ctx.task_id, model_boundary))]
+
+    def _receive_direct_results(self, tx, ctx, ids):
+        for id in ids:
+            checkpoint = load(tx, Checkpoint, ctx.task_id)
+            self._result(tx, ctx, TaskHandle(run_id=ctx.run_id, task_id=id),
+                ConsumerRef(run_id=ctx.run_id, task_id=ctx.task_id, message_boundary=checkpoint.message_boundary))
+
     def _result(self,tx,ctx,handle,consumer,*,inbox_entry_id=None):
         result, newly_consumed = self._consume(tx, ctx, handle, consumer,inbox_entry_id=inbox_entry_id)
         if newly_consumed:
             run = load(tx, RunSnapshot, ctx.run_id)
             checkpoint = load(tx, Checkpoint, ctx.task_id)
             message = ModelMessage(role="user", origin="task_result",
-                parts=[TextPart(text=result.model_dump_json())],source_dependencies=result.dependencies)
+                parts=[TextPart(text=result.model_dump_json())], source_dependencies=result.dependencies,
+                delivery_ids=[inbox_entry_id] if inbox_entry_id is not None else [])
             emit(tx, run, ctx.task_id, "task.consumed", RuntimeChange(messages=[message],
                 checkpoints=[bump(checkpoint, message_boundary=checkpoint.message_boundary + 1)]))
         return result

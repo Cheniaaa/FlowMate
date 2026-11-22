@@ -50,7 +50,7 @@ function server(initial: WorkspaceSnapshot, selection = [resource, otherResource
       '/models': page([model]), '/model-connections': page([connection]), [`/workspaces/${id}/snapshot`]: initial,
       [`/sessions/${id}/messages`]: page([]), [`/sessions/${secondId}/messages`]: page([]),
       [`/sessions/${id}/runs`]: initial.active_runs, [`/sessions/${secondId}/runs`]: page([]),
-      [`/runs/${id}`]: { ...runDetailSummary, run, tasks: page([{ id: run.root_task_id, version: 1, run_id: run.id, binding: { agent_work: null, input_artifacts: [], input_result: null, execution_session_id: run.execution_session_id, interaction_session_id: run.interaction_session_id, config: run.config, sources: run.sources, delegation_depth: 0 }, parent_task_id: null, origin_task_id: null,
+      [`/runs/${id}`]: { ...runDetailSummary, run, tasks: page([{ id: run.root_task_id, version: 1, run_id: run.id, binding: { agent_work: null, input_artifacts: [], input_result: null, additional_result_inputs: [], file_inputs: {}, execution_session_id: run.execution_session_id, interaction_session_id: run.interaction_session_id, config: run.config, sources: run.sources, delegation_depth: 0 }, parent_task_id: null, origin_task_id: null,
         kind: 'agent', executor_id: 'builtin.agent', state: 'running', created_seq: 1, deadline_at: null, result_version: null, reason: null }]), activities: page([]), messages: page([]), artifacts: page([]), questions: page([]), approvals: page([]),
         waits: page([]), consumptions: page([]), joins: page([]), budget: { id: run.budget_id, version: 1, run_id: id, limits,
           spent_units: '0', reserved_units: '0', model_requests: 0, steps: 0, task_count: 1, total_tokens: 0, reserved_tokens: 0 }, watermark: event.event_id } };
@@ -67,14 +67,15 @@ it('窗口重建后复用同一完整共享 grant，只有显式选择的资源�
   await screen.findByRole('heading', { name: session.title });
   expect(screen.queryByText(resource.label)).toBeNull();
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
-  await screen.findByRole('button', { name: '当前范围已授权' });
+  await screen.findByRole('list', { name: '本次附件' });
   expect(fixture.commands).toHaveLength(0);
   first.unmount();
   render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
-  await screen.findByRole('button', { name: '当前范围已授权' });
+  await screen.findByRole('list', { name: '本次附件' });
   await user.type(screen.getByLabelText('消息'), '整理共享资料');
+  await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', false));
   await user.click(screen.getByRole('button', { name: '发送' }));
   await waitFor(() => expect(fixture.commands).toHaveLength(1));
   expect(fixture.commands[0]).toMatchObject({ path: `/sessions/${id}/runs`, body: { data: { sources: { resource_ids: [resource.id, otherResource.id] } } } });
@@ -84,6 +85,27 @@ it('窗口重建后复用同一完整共享 grant，只有显式选择的资源�
   await waitFor(() => expect(fixture.commands).toHaveLength(2));
   expect(fixture.commands[1]).toMatchObject({ path: `/runs/${id}/steering`, body: { data: { text: '仅补充文本' } } });
   expect(fixture.commands[1].body.data).not.toHaveProperty('resource_ids');
+});
+
+it('键盘按文件名移除草稿附件，焦点移到相邻附件，移除最后一份后可以继续写消息', async () => {
+  const fixture = server(snapshot([resource, otherResource], [sharedGrant]));
+  const user = userEvent.setup();
+  render(<Conversation client={client} />);
+  await screen.findByRole('heading', { name: session.title });
+  const input = screen.getByRole('textbox', { name: '消息' });
+  await user.type(input, '整理会议资料');
+  await user.click(screen.getByRole('button', { name: '选择文本文件' }));
+  const first = await screen.findByRole('button', { name: `移除附件「${resource.label}」` });
+  const second = screen.getByRole('button', { name: `移除附件「${otherResource.label}」` });
+  first.focus();
+  await user.keyboard('{Enter}');
+  expect(first.isConnected).toBe(false);
+  expect(document.activeElement).toBe(second);
+  await user.keyboard(' ');
+  expect(second.isConnected).toBe(false);
+  expect(document.activeElement).toBe(input);
+  expect((input as HTMLTextAreaElement).value).toBe('整理会议资料');
+  expect(fixture.commands).toHaveLength(0);
 });
 
 it('发送两份当前附件一次表达读取与外发意图，收件地址可见且授权确认后仅提交一次', async () => {
@@ -104,18 +126,25 @@ it('发送两份当前附件一次表达读取与外发意图，收件地址可�
   } } });
 });
 
-it('会话专属 grant 不授权其他会话，切换后只复用本会话或 workspace 共享授权', async () => {
-  server(snapshot([resource], [{ ...grant, scope: { kind: 'session', workspace_id: id, session_id: secondId } }]), [resource], [secondId]);
+it('目录仍需明确授权，和文件混选时点击目录授权只覆盖目录', async () => {
+  const directory: ResourceRef = { ...otherResource, kind: 'directory', label: '项目文件夹' };
+  const fixture = server(snapshot([resource, directory], []), [resource, directory], []);
   const user = userEvent.setup();
   render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
-  await user.click(screen.getByRole('button', { name: '选择文本文件' }));
-  expect(screen.queryByRole('button', { name: '当前范围已授权' })).toBeNull();
-  await waitFor(() => expect((screen.getByRole('button', { name: '授权读取并发送' }) as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByRole('button', { name: '选择目录' }));
+  const authorize = await screen.findByRole('button', { name: '授权读取并发送目录' });
+  await waitFor(() => expect(authorize).toHaveProperty('disabled', false));
+  await user.type(screen.getByLabelText('消息'), '整理目录与附件');
+  expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', true);
+  await user.click(authorize);
+  await waitFor(() => expect(fixture.commands[0]).toMatchObject({ path: '/grants', body: { data: {
+    scope: { kind: 'session', workspace_id: id, session_id: id }, resource_ids: [directory.id],
+  } } }));
   await user.click(screen.getByRole('button', { name: otherSession.title }));
-  expect(screen.queryByText(resource.label)).toBeNull();
-  await user.click(screen.getByRole('button', { name: '选择文本文件' }));
-  await screen.findByRole('button', { name: '当前范围已授权' });
+  expect(screen.queryByText(directory.label)).toBeNull();
+  await user.click(screen.getByRole('button', { name: '选择目录' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: '授权读取并发送目录' })).toHaveProperty('disabled', false));
 });
 
 it('资源/授权分页保留游标，有效覆盖由后端完整查询决定', async () => {
@@ -139,14 +168,14 @@ it('资源/授权分页保留游标，有效覆盖由后端完整查询决定', 
   render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
-  await screen.findByRole('button', { name: '当前范围已授权' });
+  await screen.findByRole('list', { name: '本次附件' });
   await user.click(screen.getByRole('button', { name: '更多资料' }));
   expect(screen.queryByRole('button', { name: '更多资料' })).toBeNull();
   expect(screen.queryByText(otherResource.label)).toBeNull();
   await user.click(screen.getByRole('button', { name: '更多授权' }));
-  await screen.findByRole('button', { name: '当前范围已授权' });
+  await screen.findByRole('button', { name: '更多授权' });
   await user.click(screen.getByRole('button', { name: '更多授权' }));
-  await screen.findByRole('button', { name: '当前范围已授权' });
+  await waitFor(() => expect(screen.queryByText(/资料与授权同步中/)).toBeNull());
   expect(screen.queryByRole('button', { name: '更多授权' })).toBeNull();
   expect(screen.queryByText(/资料与授权同步中/)).toBeNull();
   expect(fixture.requests.filter(url => /\/(resources|grants)$/.test(url.pathname)).map(url => url.search)).toEqual([
@@ -170,6 +199,6 @@ it('旧会话的授权续页迟到不清掉新视图游标或误授权，仍可�
   await act(async () => { finish(Response.json(page([{ ...grant, scope: { kind: 'session', workspace_id: id, session_id: id } }]))); });
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
   expect(screen.getByRole('button', { name: '更多授权' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: '授权状态同步中' })).toBeTruthy();
+  expect(screen.getByText(/资料与授权同步中/)).toBeTruthy();
   expect(fixture.commands).toHaveLength(0);
 });

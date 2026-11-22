@@ -14,9 +14,11 @@ from flowmate.contracts.execution import (
     ModelMessage,
     ScopeDependency,
     SourceObservation,
+    TaskSnapshot,
     TextSlice,
 )
 from flowmate.policy.contracts import NativeSelection, ResourceRef
+from flowmate.runtime.transitions import load
 from flowmate.tools.catalog import ToolOutcome, ToolSpec
 from flowmate.tools.files import FileAnchor
 
@@ -76,7 +78,7 @@ def register_builtin_tools(catalog, policy, files, artifacts, config):
         source_version=(str | None, Field(default=None, pattern=r"^[0-9a-f]{64}$")),
         offset=(Count, 0), limit=(int, Field(default=config.max_read_chars, ge=1, le=config.max_read_chars)))
     batch_input = create_model("InspectBatchInput", __base__=Contract,
-        resource_ids=(list[Id], Field(min_length=1, max_length=config.max_batch_files)))
+        resource_ids=(list[Id], Field(min_length=1, max_length=min(config.max_batch_files, files.max_batch_files))))
     create_input = create_model("CreateTextInput", __base__=Contract,
         text=(str, Field(max_length=config.max_file_bytes)),
         media_type=(Literal["text/plain", "text/markdown"], "text/markdown"))
@@ -114,8 +116,21 @@ def register_builtin_tools(catalog, policy, files, artifacts, config):
 
     async def read_text(ctx, args, cancel):
         resource = policy.resource(ctx, args["resource_id"])
-        result = await asyncio.to_thread(files.read_text, _anchor(resource),
-            source_version=args["source_version"], offset=args["offset"], limit=args["limit"], cancel=cancel.is_set)
+        with policy.store.transaction(write=False) as tx:
+            pinned = load(tx, TaskSnapshot, ctx.task_id).binding.file_inputs.get(resource.id)
+        source_version = args["source_version"]
+        if pinned is not None:
+            if source_version is not None and source_version != pinned.source_version:
+                raise DomainError("file_source_changed", "读取版本不属于本轮固定文件")
+            source_version = pinned.source_version
+        try:
+            result = await asyncio.to_thread(files.read_text, _anchor(resource),
+                source_version=source_version, offset=args["offset"], limit=args["limit"], cancel=cancel.is_set)
+        except DomainError as error:
+            if pinned is None or error.code not in {"file_source_changed", "file_identity_changed"}:
+                raise
+            policy.record_file_pin_invalid(ctx, resource.id, error.code)
+            return ToolOutcome(error=error.code, result={"invalid_file_inputs": [resource.id]})
         observation, dependency = _observed(resource, result)
         return ToolOutcome(result=TextSlice(**{key: value for key, value in asdict(result).items()
             if key in TextSlice.model_fields}).model_dump(mode="json"),
@@ -123,10 +138,22 @@ def register_builtin_tools(catalog, policy, files, artifacts, config):
 
     async def inspect_batch(ctx, args, cancel):
         records = [policy.resource(ctx, id) for id in args["resource_ids"]]
-        results = await asyncio.to_thread(files.inspect_batch, [_anchor(record) for record in records],
-                                          cancel=cancel.is_set)
+        with policy.store.transaction(write=False) as tx:
+            pins = load(tx, TaskSnapshot, ctx.task_id).binding.file_inputs
         observations, dependencies, entries = [], [], []
-        for record, result in zip(records, results, strict=True):
+        for record in records:
+            pin = pins.get(record.id)
+            try:
+                if pin is None:
+                    result, = await asyncio.to_thread(files.inspect_batch, [_anchor(record)], cancel=cancel.is_set)
+                else:
+                    result = await asyncio.to_thread(files.read_text, _anchor(record),
+                        source_version=pin.source_version, limit=1, cancel=cancel.is_set)
+            except DomainError as error:
+                if pin is None or error.code not in {"file_source_changed", "file_identity_changed"}:
+                    raise
+                policy.record_file_pin_invalid(ctx, record.id, error.code)
+                return ToolOutcome(error=error.code, result={"invalid_file_inputs": [record.id]})
             observation, dependency = _observed(record, result)
             observations.append(observation)
             dependencies.append(dependency)

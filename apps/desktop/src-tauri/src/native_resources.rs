@@ -86,6 +86,7 @@ struct ActiveDirectory { token: Arc<()>, input: Option<DirectoryInput> }
 struct DirectoryState {
     pending: HashMap<String, FrozenDirectory>,
     active: HashMap<String, ActiveDirectory>,
+    selected: Option<(String, PathBuf)>,
 }
 // 只属于 main 当前窗口生命周期；不记录已确认命令的历史 ID 或任何持久路径。
 #[derive(Default)]
@@ -109,6 +110,37 @@ impl WorkspaceDirectories {
     pub fn clear(&self) {
         let mut state = self.0.lock().unwrap();
         state.pending.clear(); state.active.clear();
+        state.selected = None;
+    }
+
+    async fn select_with_picker<F, Fut>(self: &Arc<Self>, command_id: String, pick: F) -> Result<Option<String>, String>
+        where F: FnOnce() -> Fut, Fut: Future<Output = Result<Option<PathBuf>, String>> {
+        validate_command_id(&command_id)?;
+        let operation = self.begin(command_id.clone(), None)?;
+        let Some(path) = pick().await? else { return Ok(None); };
+        path.to_str().ok_or("invalid_native_path")?;
+        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default().to_owned();
+        let mut state = self.0.lock().map_err(|_| "directory_state_unavailable")?;
+        if !operation.is_active(&state) { return Err("directory_selection_lost".into()); }
+        state.selected = Some((command_id, path));
+        Ok(Some(name))
+    }
+
+    pub async fn select<R: tauri::Runtime>(self: &Arc<Self>, window: &tauri::WebviewWindow<R>,
+        command_id: String) -> Result<Option<String>, String> {
+        self.select_with_picker(command_id, || async {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            window.dialog().file().set_parent(window).pick_folder(move |value| { let _ = sender.send(value); });
+            receiver.await.map_err(|_| "dialog_failed")?.map(|value| value.into_path().map_err(|_| "invalid_native_path".into())).transpose()
+        }).await
+    }
+
+    pub fn discard(&self, command_id: &str) -> Result<(), String> {
+        let mut state = self.0.lock().map_err(|_| "directory_state_unavailable")?;
+        if state.selected.as_ref().is_some_and(|(id, _)| id == command_id) {
+            state.selected = None;
+        }
+        Ok(())
     }
 
     async fn create_with_picker<F, Fut>(self: &Arc<Self>, channel: &Channel, name: String, meta: CommandMeta, pick: F,
@@ -126,22 +158,16 @@ impl WorkspaceDirectories {
         operation.submit(channel, timeout).await.map(Some)
     }
 
-    pub async fn create<R: tauri::Runtime>(self: &Arc<Self>, window: &tauri::WebviewWindow<R>, channel: &Channel,
-        name: String, meta: CommandMeta) -> Result<Option<WorkspaceDirectoryResult>, String> {
-        self.create_with_picker(channel, name, meta, || async {
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-            window.dialog().file().set_parent(window).pick_folder(move |value| { let _ = sender.send(value); });
-            receiver.await.map_err(|_| "dialog_failed")?.map(|value| value.into_path().map_err(|_| "invalid_native_path".into())).transpose()
-        }, Duration::from_secs(60)).await
-    }
-
     pub async fn retry(self: &Arc<Self>, channel: &Channel, name: String, meta: CommandMeta,
         timeout: Duration) -> Result<WorkspaceDirectoryResult, String> {
-        meta.validate()?;
-        let input = DirectoryInput { name, meta };
-        let operation = self.begin(input.meta.command_id.clone(), Some(&input))?;
-        if let Some(result) = operation.status(channel, timeout).await?.result { return Ok(result); }
-        operation.submit(channel, timeout).await
+        let command_id = meta.command_id.clone();
+        self.create_with_picker(channel, name, meta, || async {
+            let mut state = self.0.lock().map_err(|_| "directory_state_unavailable")?;
+            if !state.selected.as_ref().is_some_and(|(id, _)| *id == command_id) {
+                return Err("directory_selection_lost".into());
+            }
+            Ok(state.selected.take().map(|(_, path)| path))
+        }, timeout).await?.ok_or_else(|| "directory_selection_lost".into())
     }
 
     pub async fn check(self: &Arc<Self>, channel: &Channel, command_id: String,
@@ -184,7 +210,8 @@ impl DirectoryOperation {
         let frozen = self.frozen()?.ok_or("directory_selection_lost")?;
         let reply = channel.request("workspace.create_from_directory", serde_json::json!({
             "name":frozen.input.name,"path":frozen.path,"meta":frozen.input.meta}), timeout).await;
-        if reply.as_ref().is_err_and(|error| error == "scope_deleted") { self.confirmed(); }
+        if reply.as_ref().is_err_and(|error| matches!(error.as_str(),
+            "scope_deleted" | "file_not_found" | "native_selection_kind")) { self.confirmed(); }
         let result: WorkspaceDirectoryResult = serde_json::from_value(reply?).map_err(|_| "invalid_workspace_directory_reply")?;
         result.validate()?;
         self.confirmed();
@@ -331,14 +358,24 @@ mod tests {
 
     #[test]
     fn workspace_directory_cancellation_does_not_create_or_retain_a_selection() {
-        let (channel, mut peer) = pair();
-        let worker = std::thread::spawn(move || { not_found(&mut peer); });
         let commands = Arc::new(WorkspaceDirectories::default());
-        let result = tauri::async_runtime::block_on(commands.create_with_picker(&channel, "目录项目".into(), meta(), || async { Ok(None) }, TEST_TIMEOUT)).unwrap();
+        let result = tauri::async_runtime::block_on(commands.select_with_picker(meta().command_id,
+            || async { Ok(None) })).unwrap();
         assert!(result.is_none());
         assert!(commands.0.lock().unwrap().pending.is_empty());
         assert!(commands.0.lock().unwrap().active.is_empty());
-        worker.join().unwrap(); channel.close();
+        assert!(commands.0.lock().unwrap().selected.is_none());
+    }
+
+    #[test]
+    fn workspace_directory_preview_discloses_only_name_and_discard_releases_selection() {
+        let commands = Arc::new(WorkspaceDirectories::default());
+        let title = tauri::async_runtime::block_on(commands.select_with_picker(meta().command_id,
+            || async { Ok(Some(PathBuf::from("C:\\public-fixture\\中文 目录"))) })).unwrap();
+        assert_eq!(title.as_deref(), Some("中文 目录"));
+        assert!(commands.0.lock().unwrap().pending.is_empty());
+        commands.discard(&meta().command_id).unwrap();
+        assert!(commands.0.lock().unwrap().selected.is_none());
     }
 
     #[test]
@@ -355,8 +392,11 @@ mod tests {
             reply(&mut peer, &retry, directory_result());
         });
         let commands = Arc::new(WorkspaceDirectories::default());
-        let result = tauri::async_runtime::block_on(commands.create_with_picker(&channel, "目录项目".into(), meta(),
-            || async { Ok(Some(PathBuf::from("C:\\public-fixture\\中文 目录"))) }, Duration::from_millis(100)));
+        let title = tauri::async_runtime::block_on(commands.select_with_picker(meta().command_id,
+             || async { Ok(Some(PathBuf::from("C:\\public-fixture\\中文 目录"))) })).unwrap();
+        assert_eq!(title.as_deref(), Some("中文 目录"));
+        let result = tauri::async_runtime::block_on(commands.retry(
+            &channel, "目录项目".into(), meta(), Duration::from_millis(100)));
         assert_eq!(result.unwrap_err(), "request_timeout");
         assert_eq!(commands.0.lock().unwrap().pending.len(), 1);
         let result = tauri::async_runtime::block_on(commands.retry(&channel, "目录项目".into(), meta(), TEST_TIMEOUT)).unwrap();

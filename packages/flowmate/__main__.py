@@ -5,12 +5,12 @@ import asyncio
 from pathlib import Path
 
 from flowmate import __version__
-from flowmate.contracts.base import DomainError, identifier
-from flowmate.host.diagnostics import make_diagnostic, write_diagnostic
 
 
 class _ArgumentParser(argparse.ArgumentParser):
     def error(self, message):
+        from flowmate.contracts.base import DomainError
+
         # argparse默认错误会回显参数；路径和控制输入不进入诊断日志。
         raise DomainError("runtime_arguments_invalid", "命令行参数无效")
 
@@ -30,6 +30,9 @@ def main() -> None:
 
         asyncio.run(serve_runtime(args.data_dir))
     except Exception as error:
+        from flowmate.contracts.base import DomainError, identifier
+        from flowmate.host.diagnostics import make_diagnostic, write_diagnostic
+
         safe_codes = {"runtime_arguments_invalid", "startup_invalid", "startup_timeout",
             "startup_data_dir_mismatch", "already_running", "host_disconnected",
             "http_startup_failed", "shutdown_timeout", "blocked_incompatible"}

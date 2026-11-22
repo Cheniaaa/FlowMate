@@ -38,16 +38,18 @@ function server(read: (url: URL) => Promise<Response> = async () => Response.jso
   return { reads, revoke: () => { available = false; }, resolve: () => { resolved = true; } };
 }
 
-it('仅用户展开后读取有界原话，展示真实作者/出处/修订；原文按文本转义', async () => {
+it('仅用户展开后读取有界原话，显示可读作者、出处和定位，原文按文本转义', async () => {
   const api = server(), runtime = client(), store = createRuntimeStore(runtime), user = userEvent.setup();
   const { container } = render(<MemoryEvidenceReader client={runtime} store={store} record={memory} items={items} />);
   await act(async () => {});
   expect(api.reads).toHaveLength(0);
-  await user.click(screen.getByText('查看依据', { selector: 'summary' }));
+  await user.click(screen.getByText('查看来源', { selector: 'summary' }));
   expect(await screen.findByText(quote)).toBeTruthy();
-  expect(screen.getByText(/用户自述 · message/)).toBeTruthy();
+  expect(screen.getByText('用户原话')).toBeTruthy();
   expect(screen.getByText('对话「普通来源」')).toBeTruthy();
-  expect(screen.getByText(/记录修订 3/)).toBeTruthy();
+  expect(screen.getByText('消息第 1 段')).toBeTruthy();
+  expect(screen.queryByText(memory.evidence[0].source_id)).toBeNull();
+  expect(screen.queryByText(memory.evidence[0].locator)).toBeNull();
   expect(container.querySelector('script')).toBeNull();
   expect(api.reads[0].url.searchParams.get('expected_revision')).toBe('3');
   expect(api.reads[0].init.cache).toBe('no-store');
@@ -56,7 +58,7 @@ it('仅用户展开后读取有界原话，展示真实作者/出处/修订；�
 it('聊天阅读始终绑定原 receipt；已处理候选的复核立即移除旧正文', async () => {
   const api = server(), runtime = client(), store = createRuntimeStore(runtime), user = userEvent.setup();
   render(<MemoryEvidenceReader client={runtime} store={store} record={memory} items={items} receiptMessageId="real-receipt" />);
-  await user.click(screen.getByText('查看依据', { selector: 'summary' }));
+  await user.click(screen.getByText('查看来源', { selector: 'summary' }));
   await screen.findByText(quote);
   expect(api.reads[0].url.searchParams.get('receipt_message_id')).toBe('real-receipt');
   api.resolve();
@@ -70,7 +72,7 @@ it('来源事件立即隐藏已展开原文，新的不可用响应不保留旧�
   server(async () => ++count === 1 ? Response.json(excerpt()) : waiting.promise);
   const runtime = client(), store = createRuntimeStore(runtime), user = userEvent.setup();
   render(<MemoryEvidenceReader client={runtime} store={store} record={memory} items={items} />);
-  await user.click(screen.getByText('查看依据', { selector: 'summary' }));
+  await user.click(screen.getByText('查看来源', { selector: 'summary' }));
   await screen.findByText(quote);
   await act(async () => { store.update(state => ({ ...state, memoryRevision: state.memoryRevision + 1, cursor: '1' })); });
   expect(screen.queryByText(quote)).toBeNull();
@@ -82,7 +84,7 @@ it('来源事件立即隐藏已展开原文，新的不可用响应不保留旧�
 it('另一项目撤权即使没有本窗SSE，也在已展开阅读器聚焦复核时清除旧正文', async () => {
   const api = server(), runtime = client(), store = createRuntimeStore(runtime), user = userEvent.setup();
   render(<MemoryEvidenceReader client={runtime} store={store} record={memory} items={items} />);
-  await user.click(screen.getByText('查看依据', { selector: 'summary' }));
+  await user.click(screen.getByText('查看来源', { selector: 'summary' }));
   await screen.findByText(quote);
   api.revoke();
   await act(async () => { fireEvent(window, new Event('focus')); });
@@ -96,7 +98,7 @@ it('记录修订切换后的迟到原文不能覆盖新响应', async () => {
   const runtime = client(), store = createRuntimeStore(runtime), user = userEvent.setup();
   const next = { ...memory, revision: 4 };
   const view = render(<MemoryEvidenceReader client={runtime} store={store} record={memory} items={items} />);
-  await user.click(screen.getByText('查看依据', { selector: 'summary' }));
+  await user.click(screen.getByText('查看来源', { selector: 'summary' }));
   view.rerender(<MemoryEvidenceReader client={runtime} store={store} record={next} items={items} />);
   await act(async () => { current.resolve(Response.json(excerpt(next, '当前修订原话'))); });
   await screen.findByText('当前修订原话');
@@ -110,7 +112,7 @@ it('私有或内部依据只显示清楚的来源说明，不以指针代替可�
     excerpt: null, reason: 'source_not_public' }));
   const runtime = client(), store = createRuntimeStore(runtime), user = userEvent.setup();
   render(<MemoryEvidenceReader client={runtime} store={store} record={memory} items={items} />);
-  await user.click(screen.getByText('查看依据', { selector: 'summary' }));
+  await user.click(screen.getByText('查看来源', { selector: 'summary' }));
   await screen.findByText(/仅可在原任务查看已公开的交付或授权/);
   expect(screen.queryByText(quote)).toBeNull();
 });
@@ -118,17 +120,17 @@ it('私有或内部依据只显示清楚的来源说明，不以指针代替可�
 it('没有SSE和聚焦事件时也复核已展开原文，失效后不会自动重新请求正文', async () => {
   const api = server(), runtime = client(), store = createRuntimeStore(runtime), user = userEvent.setup();
   render(<MemoryEvidenceReader client={runtime} store={store} record={memory} items={items} />);
-  await user.click(screen.getByText('查看依据', { selector: 'summary' }));
+  await user.click(screen.getByText('查看来源', { selector: 'summary' }));
   await screen.findByText(quote);
   api.revoke();
-  await screen.findByText(/依据已失效或记录已改变/, {}, { timeout: 6500 });
+  await screen.findByText(/依据已失效或记忆已改变/, {}, { timeout: 6500 });
   expect(screen.queryByText(quote)).toBeNull();
   expect(api.reads.filter(item => item.url.pathname.endsWith('/excerpt'))).toHaveLength(1);
 }, 10000);
 
 it('下一段使用返回的边界读取，切换期间不残留上一段正文', async () => {
   const full = '第一段依据' + 'a'.repeat(2000 - '第一段依据'.length) + '下一段依据' + 'b'.repeat(100 - '下一段依据'.length);
-  server(async url => {
+  const api = server(async url => {
     const offset = Number(url.searchParams.get('offset'));
     return Response.json({ ...excerpt(), excerpt: {
       text: full.slice(offset, offset + 2000), start: offset, end: offset === 0 ? 2000 : 2100,
@@ -137,18 +139,27 @@ it('下一段使用返回的边界读取，切换期间不残留上一段正文'
   });
   const runtime = client(), store = createRuntimeStore(runtime), user = userEvent.setup();
   render(<MemoryEvidenceReader client={runtime} store={store} record={memory} items={items} />);
-  await user.click(screen.getByText('查看依据', { selector: 'summary' }));
+  await user.click(screen.getByText('查看来源', { selector: 'summary' }));
   await screen.findByText(/^第一段依据/);
-  await user.click(screen.getByRole('button', { name: '查看下一段依据' }));
+  const next = screen.getByRole('button', { name: '查看下一段依据' });
+  next.focus();
+  await user.keyboard('{Enter}');
   await screen.findByText(/^下一段依据/);
+  const heading = screen.getByRole('heading', { name: '对话「普通来源」' });
+  expect(document.activeElement).toBe(heading);
   expect(screen.queryByText(/^第一段依据/)).toBeNull();
+  await act(async () => { store.update(state => ({ ...state, memoryRevision: state.memoryRevision + 1 })); });
+  await screen.findByText(/^下一段依据/);
+  expect(document.activeElement).toBe(heading);
+  expect(api.reads.filter(item => item.url.pathname.endsWith('/excerpt'))
+    .map(item => item.url.searchParams.get('offset'))).toEqual(['0', '2000', '2000']);
 });
 
 it('仅依据可用性变化也立刻隐藏原文，不依赖记录修订或全局事件', async () => {
   server();
   const runtime = client(), store = createRuntimeStore(runtime), user = userEvent.setup();
   const view = render(<MemoryEvidenceReader client={runtime} store={store} record={memory} items={items} />);
-  await user.click(screen.getByText('查看依据', { selector: 'summary' }));
+  await user.click(screen.getByText('查看来源', { selector: 'summary' }));
   await screen.findByText(quote);
   view.rerender(<MemoryEvidenceReader client={runtime} store={store} record={memory}
     items={items.map(item => ({ ...item, available: false, reason: 'scope_revoked' }))} />);

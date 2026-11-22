@@ -185,7 +185,7 @@ describe('TaskGraph 和 TaskList 可访问交互', () => {
   it('SVG 节点可点击或用 Enter/Space 选择，区分 task/activity 并呈现文字状态', () => {
     const onSelect = vi.fn();
     render(createElement(TaskGraph, { ...props, selectedId: activityId, onSelect, onToggle: vi.fn() }));
-    const selected = screen.getByRole('button', { name: new RegExp(`过程.*${activityId}.*结果不确定`) });
+    const selected = screen.getByRole('button', { name: /过程.*工具调用.*结果不确定/ });
     expect(selected.getAttribute('aria-pressed')).toBe('true');
     expect(selected.classList.contains('graph-node--selected')).toBe(true);
     fireEvent.keyDown(selected, { key: 'Enter' });
@@ -193,22 +193,22 @@ describe('TaskGraph 和 TaskList 可访问交互', () => {
     fireEvent.click(selected);
     fireEvent.keyDown(selected, { key: 'ArrowDown' });
     expect(onSelect.mock.calls).toEqual([[activityId, 'activity'], [activityId, 'activity'], [activityId, 'activity']]);
-    expect(screen.getByRole('button', { name: new RegExp(`任务.*${rootId}.*等待子任务`) }).getAttribute('tabindex')).toBe('0');
+    expect(screen.getByRole('button', { name: /任务.*主任务.*等待子任务/ }).getAttribute('tabindex')).toBe('0');
   });
 
   it('折叠控制带 aria-expanded，不触发选择；折叠由 props 驱动', () => {
     const onSelect = vi.fn();
     const onToggle = vi.fn();
     const { rerender } = render(createElement(TaskGraph, { ...props, onSelect, onToggle }));
-    const toggle = screen.getByRole('button', { name: `折叠任务 ${rootId}` });
+    const toggle = screen.getByRole('button', { name: '折叠任务 · 主任务' });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     fireEvent.keyDown(toggle, { key: ' ' });
     fireEvent.click(toggle);
     expect(onToggle.mock.calls).toEqual([[rootId], [rootId]]);
     expect(onSelect).not.toHaveBeenCalled();
     rerender(createElement(TaskGraph, { ...props, collapsedIds: new Set([rootId]), onSelect, onToggle }));
-    expect(screen.getByRole('button', { name: `展开任务 ${rootId}` }).getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByRole('button', { name: new RegExp(`过程.*${activityId}`) })).toBeNull();
+    expect(screen.getByRole('button', { name: '展开任务 · 主任务' }).getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('button', { name: /过程.*工具调用/ })).toBeNull();
   });
 
   it('图例明确区分父关系实线与等待/消费/join 虚线，只有 pending wait 使用活跃 class', () => {
@@ -256,16 +256,16 @@ describe('公开 Trace 与持久待办', () => {
   const changed: TracePageSchema.TraceItem = { event_id: event.event_id, seq: 2, task_id: rootId,
     activity_id: null, kind: 'activity.received', activities: [activity] };
 
-  it('Trace 用所选 Activity 的明确投影过滤，只显示事件 ID/seq/kind 和公开过程摘要', () => {
+  it('Trace 用明确关联过滤步骤，可读名称仍定位实际步骤', () => {
     const onSelect = vi.fn();
     render(createElement(TracePanel, { events: [changed, { event_id: '9007199254740995', seq: 3,
       task_id: null, activity_id: null, kind: 'run.started', activities: [] }], selectedId: activityId, onSelect }));
-    expect(screen.getByText(changed.event_id)).toBeTruthy();
-    expect(screen.getByText('activity.received')).toBeTruthy();
-    expect(screen.queryByText('9007199254740995')).toBeNull();
-    expect(screen.getByText('序号 2')).toBeTruthy();
-    expect(screen.getByText(/files.read/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: `定位过程 ${activityId}` }));
+    expect(screen.queryByText(changed.event_id)).toBeNull();
+    expect(screen.getByText('步骤回执')).toBeTruthy();
+    expect(screen.queryByText('运行开始')).toBeNull();
+    expect(screen.getByText('步骤 2')).toBeTruthy();
+    expect(screen.getByText('工具调用')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '定位步骤 · 工具调用' }));
     expect(onSelect).toHaveBeenCalledWith(activityId, 'activity');
   });
 
@@ -273,7 +273,7 @@ describe('公开 Trace 与持久待办', () => {
     const onLoadMore = vi.fn();
     const { rerender } = render(createElement(TracePanel, { events: [changed], selectedId: childId,
       nextCursor: 'next-page', onLoadMore, loading: true }));
-    expect(screen.getByText('activity.received')).toBeTruthy();
+    expect(screen.getByText('步骤回执')).toBeTruthy();
     expect((screen.getByRole('button', { name: '加载更多事件' }) as HTMLButtonElement).disabled).toBe(true);
     rerender(createElement(TracePanel, { events: [changed], selectedId: rootId, nextCursor: 'next-page', onLoadMore }));
     fireEvent.click(screen.getByRole('button', { name: '加载更多事件' }));
@@ -285,10 +285,10 @@ describe('公开 Trace 与持久待办', () => {
   it('Trace 的 activity_id 可独立定位；没有回调时只读展示，不要求重建完整事件', () => {
     render(createElement(TracePanel, { events: [{ event_id: '9007199254740996', seq: null,
       task_id: null, activity_id: activityId, activities: [], kind: 'activity.dispatched' }], selectedId: activityId }));
-    expect(screen.getByText('activity.dispatched')).toBeTruthy();
-    expect(screen.getByText(activityId)).toBeTruthy();
+    expect(screen.getByText('步骤开始')).toBeTruthy();
+    expect(screen.queryByText(activityId)).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
-    expect(screen.queryByText(/序号/)).toBeNull();
+    expect(screen.queryByText(/步骤 \d/)).toBeNull();
   });
 
   it('Inbox 按真实 run_id 汇总 pending 记录，不从 Run.state 生成待办，更新后立即重建数量', () => {
@@ -297,7 +297,7 @@ describe('公开 Trace 与持久待办', () => {
       approvals: [approval, { ...approval, id: missingId, status: 'denied' }], runs: [run], onSelect }));
     expect(screen.getByRole('heading', { name: '待处理（2）' })).toBeTruthy();
     expect(screen.getByText('待回答 1 · 待审批 1')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: `定位运行 ${run.id}` }));
+    fireEvent.click(screen.getByRole('button', { name: `定位运行：${question.question}` }));
     expect(onSelect).toHaveBeenCalledWith(run.id);
     rerender(createElement(Inbox, { questions: [{ ...question, status: 'answered' }], approvals: [],
       runs: [{ ...run, state: 'waiting_user' }], onSelect }));
@@ -308,7 +308,9 @@ describe('公开 Trace 与持久待办', () => {
   it('Inbox 保留未分页Run的持久待办，但等归属加载后才允许定位', () => {
     const onSelect = vi.fn();
     render(createElement(Inbox, { questions: [question], approvals: [], runs: [], onSelect }));
-    fireEvent.click(screen.getByRole('button', { name: `定位运行 ${run.id}` }));
+    const pending = screen.getByRole('button', { name: `定位运行：${question.question}` }) as HTMLButtonElement;
+    expect(pending.disabled).toBe(true);
+    fireEvent.click(pending);
     expect(onSelect).not.toHaveBeenCalled();
     expect(screen.getByText('待回答 1 · 待审批 0')).toBeTruthy();
   });

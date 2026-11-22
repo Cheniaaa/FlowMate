@@ -3,17 +3,19 @@ import userEvent from '@testing-library/user-event';
 import { invoke } from '@tauri-apps/api/core';
 import { afterEach, expect, it, vi } from 'vitest';
 import { RuntimeClient } from '../../api/client';
+import { expectComposerModel, selectComposerModel } from '../../test/composer-model';
 import type { ModelMessage, PendingUserCommand, RunSnapshot, TaskResult } from '../../generated/contracts';
 import { agent, binding, connection, event, followUpIntent, grant, id, limits, model, page, pendingUserCommand, resource, resultEntry, run, runDetailSummary, secondId } from '../../test/fixtures';
 import { Conversation } from './Conversation';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
-afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); localStorage.clear(); });
 const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
 const session = { id, version: 1, workspace_id: id, title: '总结中的会话', agent_profile_id: id, kind: 'interaction', archived: false };
 const other = { ...session, id: secondId, title: '另一个会话' };
 function server(initial: RunSnapshot | null = { ...run, kind: 'follow_up', version: 5 }, messages: ModelMessage[] = []) {
   const requests: { path: string; body: any; method: string }[] = [];
+  const coverageChecks: { path: string; method: string; body: unknown }[] = [];
   const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
   let current = initial, commands: PendingUserCommand[] = [], intents = initial?.kind === 'follow_up' ? [followUpIntent] : [];
   let lost = false, defer: ((receipt: Response) => void) | undefined;
@@ -23,8 +25,10 @@ function server(initial: RunSnapshot | null = { ...run, kind: 'follow_up', versi
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname.replace('/v3', ''), method = init.method ?? 'GET';
     const body = init.body ? JSON.parse(String(init.body)) : null;
-    if (path.endsWith('/resource-coverage')) return Response.json({ allowed: true,
-      destination: connection.endpoint, missing_read: [], missing_model_send: [] });
+    if (path.endsWith('/resource-coverage')) {
+      coverageChecks.push({ path, method, body });
+      return Response.json({ allowed: true, destination: connection.endpoint, missing_read: [], missing_model_send: [] });
+    }
     requests.push({ path, body, method });
     if (method === 'POST') {
       if (path.endsWith('/commands')) {
@@ -66,7 +70,7 @@ function server(initial: RunSnapshot | null = { ...run, kind: 'follow_up', versi
     return Response.json(values[path]);
   });
   return {
-    requests, lose: () => { lost = true; }, hold: () => { hold = true; },
+    requests, coverageChecks, lose: () => { lost = true; }, hold: () => { hold = true; },
     release: () => { defer!(Response.json(commands[0])); },
     async change(next: RunSnapshot, state: PendingUserCommand['state'], offset: number) {
       current = next; commands = commands.map(command => ({ ...command, state, run_id: state === 'applied' ? next.id : null,
@@ -84,39 +88,56 @@ function server(initial: RunSnapshot | null = { ...run, kind: 'follow_up', versi
 it('自动总结许可默认关闭，与独立后台许可分别提交并在同revision确认后重置', async () => {
   const api = server(null), user = userEvent.setup(); render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
-  await user.click(screen.getByLabelText('运行配置'));
-  const permission = screen.getByLabelText('完成后自动总结') as HTMLInputElement;
-  expect(permission.checked).toBe(false);
-  await user.click(permission);
-  expect((screen.getByLabelText('允许本次转为独立后台任务') as HTMLInputElement).checked).toBe(false);
+  const trigger = screen.getByRole('button', { name: '运行配置' });
+  await user.click(trigger);
+  const dialog = within(await screen.findByRole('dialog', { name: '运行配置' }));
+  await user.click(dialog.getByRole('checkbox', { name: '完成后自动总结', checked: false }));
+  expect(dialog.getByRole('checkbox', { name: '完成后自动总结', checked: true })).toBeTruthy();
+  expect(dialog.getByRole('checkbox', { name: '允许本次转为独立后台任务', checked: false })).toBeTruthy();
+  await user.click(dialog.getByRole('button', { name: '关闭对话框' }));
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
   await user.type(screen.getByLabelText('消息'), '本次允许总结');
   await user.click(screen.getByRole('button', { name: '发送' }));
   await waitFor(() => expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe(''));
   const write = api.requests.find(request => request.method === 'POST')!;
   expect(write.path).toBe(`/sessions/${id}/runs`);
   expect(write.body.data).toMatchObject({ allow_follow_up: true, allow_managed: false, source_result: null });
-  expect(permission.checked).toBe(false);
+  await user.click(trigger);
+  const reopened = within(await screen.findByRole('dialog', { name: '运行配置' }));
+  expect(reopened.getByRole('checkbox', { name: '完成后自动总结', checked: false })).toBeTruthy();
 });
 
 it('follow_up默认新目标排队，模型/来源/许可/限额独立；明确修改总结才带原Run版本steer', async () => {
   const api = server(), user = userEvent.setup(); render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
-  await user.selectOptions(screen.getByLabelText('模型'), id);
+  await selectComposerModel(user, id);
   await user.click(screen.getByRole('button', { name: '选择文本文件' }));
-  await user.click(screen.getByLabelText('运行配置'));
-  await user.click(screen.getByLabelText('完成后自动总结'));
-  await user.type(screen.getByLabelText('模型请求上限'), '3');
+  expect(invoke).toHaveBeenCalledWith('select_resources', { scope: { kind: 'session', workspace_id: id, session_id: id }, kind: 'file' });
+  const trigger = screen.getByRole('button', { name: '运行配置' });
+  await user.click(trigger);
+  const dialog = within(await screen.findByRole('dialog', { name: '运行配置' }));
+  await user.click(dialog.getByRole('checkbox', { name: '完成后自动总结', checked: false }));
+  await user.click(dialog.getByText('本次限额', { selector: 'summary' }));
+  await user.type(dialog.getByRole('spinbutton', { name: '模型请求上限' }), '3');
+  await user.click(dialog.getByRole('button', { name: '关闭对话框' }));
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
   await user.type(screen.getByLabelText('消息'), '新目标');
   await user.click(screen.getByRole('button', { name: '排队发送' }));
   await screen.findByText('已排队，输入已保存，尚未开始执行');
-  expect(api.requests.find(request => request.method === 'POST')).toMatchObject({ path: `/sessions/${id}/commands`,
-    body: { data: { model_profile_id: id, text: '新目标', allow_follow_up: true, sources: { resource_ids: [resource.id] }, limits: { max_model_requests: 3 } } } });
+  expect(api.coverageChecks.at(-1)).toEqual({ path: `/sessions/${id}/resource-coverage`, method: 'POST',
+    body: { resource_ids: [resource.id], model_profile_id: id } });
+  expect(api.requests.filter(request => request.method === 'POST')).toMatchObject([{ path: `/sessions/${id}/commands`,
+    body: { data: { model_profile_id: id, text: '新目标', allow_follow_up: true, allow_managed: false,
+      sources: { resource_ids: [resource.id], memory_scopes: [] }, limits: { max_model_requests: 3 } } } }]);
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('');
-  await user.click(screen.getByLabelText('修改这个总结'));
+  await user.click(screen.getByRole('radio', { name: '修改这个总结', checked: false }));
+  expect(screen.getByRole('radio', { name: '修改这个总结', checked: true })).toBeTruthy();
   await user.type(screen.getByLabelText('消息'), '请总结得更简洁');
   await user.click(screen.getByRole('button', { name: '补充指令' }));
-  expect(api.requests.filter(request => request.method === 'POST').at(-1)).toMatchObject({
-    path: `/runs/${id}/steering`, body: { meta: { expected_version: 5 }, data: { text: '请总结得更简洁' } } });
+  const writes = api.requests.filter(request => request.method === 'POST');
+  expect(writes.map(request => request.path)).toEqual([`/sessions/${id}/commands`, `/runs/${id}/steering`]);
+  expect(writes[1].body.meta.expected_version).toBe(5);
+  expect(writes[1].body.data).toEqual({ text: '请总结得更简洁' });
 });
 
 it('队列响应丢失核对不重交，另一窗新草稿与本窗后来revision均不被applied/cancelled清空', async () => {
@@ -129,7 +150,7 @@ it('队列响应丢失核对不重交，另一窗新草稿与本窗后来revisio
   await first.findByText('提交状态待确认');
   expect(inputA.value).toBe('A');
   await user.clear(inputA); await user.type(inputA, '后来编辑');
-  await user.type(inputB, '小窗草稿'); await user.selectOptions(second.getByLabelText('模型'), id);
+  await user.type(inputB, '小窗草稿'); await selectComposerModel(user, id, second);
   await user.click(first.getByRole('button', { name: '核对提交状态' }));
   await first.findByText('已排队，输入已保存，尚未开始执行');
   expect(inputA.value).toBe('后来编辑'); expect(inputB.value).toBe('小窗草稿');
@@ -138,10 +159,33 @@ it('队列响应丢失核对不重交，另一窗新草稿与本窗后来revisio
   await first.findByText(/输入已取消：deadline_exceeded/);
   await second.findByText(/输入已取消：deadline_exceeded/);
   expect(inputA.value).toBe('后来编辑'); expect(inputB.value).toBe('小窗草稿');
-  expect((second.getByLabelText('模型') as HTMLSelectElement).value).toBe(id);
+  await expectComposerModel(user, model.id, first);
+  await expectComposerModel(user, id, second);
   expect(first.queryByLabelText('修改这个总结')).toBeNull();
   expect(first.getByRole('button', { name: '发送' })).toBeTruthy();
-  expect(api.requests.filter(request => request.method === 'POST')).toHaveLength(1);
+  const writes = api.requests.filter(request => request.method === 'POST');
+  expect(writes).toMatchObject([{ path: `/sessions/${id}/commands`,
+    body: { data: { text: 'A', model_profile_id: model.id } } }]);
+  const commandId = writes[0].body.meta.command_id;
+  expect(api.requests.filter(request => request.path.includes('/commands/'))).toMatchObject([
+    { method: 'GET', path: `/sessions/${id}/commands/${commandId}` },
+  ]);
+});
+
+it('已经接收但随后取消的排队模型不会进入项目最近使用', async () => {
+  const api = server(), user = userEvent.setup();
+  render(<Conversation client={client} />);
+  await screen.findByRole('heading', { name: session.title });
+  await selectComposerModel(user, id);
+  fireEvent.change(screen.getByLabelText('消息'), { target: { value: '尚未运行的队列输入' } });
+  await user.click(screen.getByRole('button', { name: '排队发送' }));
+  await screen.findByText('已排队，输入已保存，尚未开始执行');
+  await api.change({ ...run, kind: 'follow_up', version: 6, state: 'interrupted', reason: 'yield_to_user' }, 'cancelled', 1);
+  await screen.findByText(/输入已取消：deadline_exceeded/);
+  await user.click(screen.getByRole('button', { name: other.title }));
+  await screen.findByRole('heading', { name: other.title });
+  await user.click(screen.getByRole('button', { name: '选择模型' }));
+  expect(screen.queryByRole('group', { name: '最近使用' })).toBeNull();
 });
 
 it('队列接收迟到只确认原草稿revision，切会话返回保持独立配置；让出/恢复仍展示原总结Run', async () => {
@@ -170,7 +214,7 @@ it.each([false, true])('显式结果总结绑定Inbox引用，以本次配置发
   const api = server(automatic ? { ...run, kind: 'follow_up' } : null), user = userEvent.setup(); render(<Conversation client={client} />);
   await screen.findByRole('heading', { name: session.title });
   await user.type(screen.getByLabelText('消息'), '请列出关键结论');
-  await user.selectOptions(screen.getByLabelText('模型'), id);
+  await selectComposerModel(user, id);
   await user.click(screen.getByRole('button', { name: /^结果/ }));
   await user.click(await screen.findByRole('button', { name: '在会话中总结' }));
   expect(api.requests.filter(request => request.method === 'POST')).toHaveLength(0);
@@ -186,7 +230,7 @@ it('普通user运行仍steer，不出现总结输入模式，也不将许可或�
   const api = server(run), user = userEvent.setup(); render(<Conversation client={client} />);
   await screen.findByRole('button', { name: '停止当前运行' });
   expect(screen.queryByLabelText('修改这个总结')).toBeNull();
-  expect((screen.getByLabelText('模型') as HTMLSelectElement).disabled).toBe(true);
+  expect(screen.getByRole('button', { name: '选择模型' })).toHaveProperty('disabled', true);
   await user.type(screen.getByLabelText('消息'), '普通补充');
   await user.click(screen.getByRole('button', { name: '补充指令' }));
   expect(api.requests.find(request => request.method === 'POST')).toMatchObject({ path: `/runs/${id}/steering`,
@@ -200,7 +244,7 @@ it('总结让出后曾选的修改模式失效，同Run恢复时新输入仍默�
   await api.change({ ...run, kind: 'follow_up', version: 6, state: 'interrupted', reason: 'yield_to_user', yield_requested: true }, 'queued', 1);
   await screen.findByText('已让出，等待会话空闲后继续原总结');
   await api.change({ ...run, kind: 'follow_up', version: 7 }, 'queued', 2);
-  expect((screen.getByLabelText('新目标（默认排队）') as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByRole('radio', { name: '新目标（默认排队）', checked: true })).toBeTruthy();
   expect(screen.getByRole('button', { name: '排队发送' })).toBeTruthy();
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('未发送的输入');
 });

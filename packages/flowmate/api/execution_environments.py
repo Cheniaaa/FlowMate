@@ -1,12 +1,13 @@
 """运行环境设置只使用显式安全投影，不暴露执行配置或私有绑定。"""
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Query, Response
 
 from flowmate.api.contracts import Command, Page
-from flowmate.api.queries import _page
+from flowmate.api.queries import _page, watermark
 from flowmate.api.routes import body
 from flowmate.contracts.base import Id
 from flowmate.processes.contracts import (
+    EnvironmentKind,
     ExecutionEnvironment,
     ExecutionEnvironmentCommandStatus,
     ExecutionEnvironmentView,
@@ -33,7 +34,14 @@ def router(runtime):
         return runtime.environments.save_view(command.data, command.meta)
 
     @route.post("/discover", response_model=Page[ExecutionEnvironmentView])
-    async def discover(response: Response):
+    async def discover(response: Response, workspace_id: Id | None = None,
+            kind: list[EnvironmentKind] | None = Query(default=None)):
+        response.headers["Cache-Control"] = "no-store"
+        if workspace_id is not None or kind is not None:
+            candidates = await runtime.environments.discover(workspace_id=workspace_id,
+                kinds=kind if kind is not None else ["python", "node", "powershell", "bash"])
+            with runtime.environments.store.transaction(write=False) as tx:
+                return Page(items=candidates, watermark=str(watermark(tx)))
         await runtime.environments.discover()
         return await listing(response)
 

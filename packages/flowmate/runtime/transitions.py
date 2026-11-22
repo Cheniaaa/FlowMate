@@ -67,6 +67,8 @@ def emit(tx, run, task_id, kind, change, causation_id=None):
     from flowmate.runtime.leases import SessionLease, release_session
 
     intents = list(change.follow_up_intents)
+    terminal_followups = []
+    runs = []
     for changed in change.runs:
         if changed.kind == "follow_up" and changed.state in {"completed", "failed", "cancelled"}:
             from flowmate.contracts.execution import FollowUpIntent
@@ -76,12 +78,18 @@ def emit(tx, run, task_id, kind, change, causation_id=None):
                 intent = FollowUpIntent.model_validate_json(row[0])
                 if intent.status != "closed":
                     intents.append(intent.model_copy(update={"status": "closed", "reason": changed.reason}))
+                    if changed.state == "completed":
+                        from flowmate.runtime.followups import finish_managed_follow_up
+                        changed = finish_managed_follow_up(tx, intent, changed)
+                    elif changed.state == "failed":
+                        terminal_followups.append((changed, intent))
         if changed.state in {"interrupted","blocked_incompatible","completed","failed","cancelled"}:
             row = tx.execute("SELECT session_id,generation FROM session_leases WHERE run_id=?",
                              (changed.id,)).fetchone()
             if row is not None:
                 release_session(tx, SessionLease(session_id=row[0],run_id=changed.id,generation=row[1]))
-    change = change.model_copy(update={"follow_up_intents": intents})
+        runs.append(changed)
+    change = change.model_copy(update={"follow_up_intents": intents, "runs": runs})
     if change.checkpoints:
         seq = tx.execute("SELECT coalesce(max(seq),0)+1 FROM events WHERE run_id=?",
                          (run.id,)).fetchone()[0]
@@ -105,6 +113,8 @@ def emit(tx, run, task_id, kind, change, causation_id=None):
             )
             from flowmate.runtime.delivery import DeliveryService
             root=load(tx,TaskSnapshot,changed.root_task_id)
+            if root.executor_id == "naming.title":
+                continue
             messages=[ModelMessage.model_validate_json(row[0]) for row in tx.execute(
                 "SELECT document FROM messages WHERE task_id=? ORDER BY event_id,event_index",(root.id,))]
             dependencies=[*changed.scope_dependencies,*(item for message in messages for item in message.source_dependencies)]
@@ -132,6 +142,12 @@ def emit(tx, run, task_id, kind, change, causation_id=None):
     for changed in change.runs:
         if changed.state in TERMINAL:
             BudgetService().return_unused(tx, changed.id)
+            if changed.kind == "user":
+                from flowmate.runtime.delivery import publish_managed_report
+                publish_managed_report(tx, changed)
+    for changed, intent in terminal_followups:
+        from flowmate.runtime.followups import finish_managed_follow_up
+        finish_managed_follow_up(tx, intent, changed)
     return event
 
 

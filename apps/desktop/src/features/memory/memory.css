@@ -1,0 +1,103 @@
+@reference "../../styles/ui.css";
+
+/* 证据阅读与卡片操作共享网格，窄窗按证据展开状态切换列。 */
+@layer components {
+.memory-card {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+}
+
+.memory-card .memory-record-text {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.memory-card summary {
+  @apply min-h-control-sm w-fit cursor-pointer py-1.5 ui-control-focus;
+}
+
+.memory-evidence {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.memory-evidence p,
+.memory-evidence h4 {
+  margin: 0;
+}
+
+.memory-evidence blockquote {
+  @apply m-0 border-s-2 border-border ps-3 text-sm leading-relaxed whitespace-pre-wrap text-foreground wrap-anywhere;
+}
+
+.memory-editor {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.memory-editor > button {
+  justify-self: start;
+}
+
+.memory-page {
+  padding-block: 16px;
+  scroll-padding-top: 54px;
+}
+
+.memory-page > .panel-header {
+  top: -16px;
+  padding-block: 6px;
+  margin-bottom: 10px;
+}
+
+.memory-page > .panel-header h1 {
+  margin: 0;
+}
+
+.memory-page .memory-list-filters {
+  gap: 8px;
+}
+
+.memory-page .memory-grid {
+  align-items: start;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.memory-page .memory-grid > .memory-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 8px;
+  padding: 10px 12px;
+}
+
+.memory-page .memory-card > * {
+  grid-column: 1 / -1;
+}
+
+.memory-page .memory-card > p {
+  margin: 0;
+}
+
+.memory-page .memory-card .memory-record-meta,
+.memory-page .memory-card > details {
+  @apply text-xs text-muted-foreground;
+}
+
+.memory-page .memory-card > details {
+  margin: 0;
+}
+
+@media (min-width: 360px) {
+  .memory-page .memory-card:has(> details:not([open])) > .memory-record-actions {
+    grid-column: 1;
+  }
+
+  .memory-page .memory-card > details:not([open]) {
+    grid-column: 2;
+    align-self: center;
+  }
+}
+}

@@ -5,7 +5,13 @@ from uuid import UUID, uuid5
 
 from pydantic import Field, ValidationError
 
-from flowmate.context.compaction import ContextSummary, _digest, _SummaryContent
+from flowmate.context.compaction import (
+    CompactionPlan,
+    ContextSummary,
+    _digest,
+    _json,
+    _SummaryContent,
+)
 from flowmate.contracts.base import Contract, Count, DomainError, Id
 from flowmate.contracts.execution import (
     ActivitySnapshot,
@@ -111,7 +117,8 @@ def commit_summary_tx(strategy, tx, ctx, plan, summary, *, receipt, artifact):
     if (activity.state != "dispatched" or checkpoint.phase != "waiting_compaction"
             or checkpoint.pending_activity_ids != [activity.id] or checkpoint.pending_call_ids
             or checkpoint.version <= plan.checkpoint_version
-            or checkpoint.context_manifest.get("compaction") != plan.model_dump(mode="json")):
+            or checkpoint.context_manifest.get("compaction") is None
+            or CompactionPlan.model_validate_json(_json(checkpoint.context_manifest["compaction"])) != plan):
         raise DomainError("compaction_binding", "摘要没有固定的持久压缩阶段和待处理活动")
     expected = strategy._intent(plan)
     if ((activity.intent.kind, activity.intent.origin, activity.intent.operation, activity.intent.arguments)

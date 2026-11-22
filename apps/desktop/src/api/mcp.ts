@@ -7,6 +7,11 @@ export interface McpQuery extends PageQuery {
   query?: string;
 }
 
+export function mcpDestinationLabel(destination: string) {
+  const target = destination.replace(/^mcp:[^:]+:\d+:/, '');
+  return target === 'stdio' ? '本机 MCP 服务' : target;
+}
+
 export class McpClient extends RuntimeClient {
   mcpServers(parameters: McpQuery) { return this.page('/capabilities/mcp', 'McpServerPage', parameters); }
   mcpServer(id: string) { return this.request(`/capabilities/mcp/${encodeURIComponent(id)}`, 'McpServerView'); }
@@ -18,6 +23,11 @@ export class McpClient extends RuntimeClient {
   }
   discoverMcp(id: string, meta: CommandMeta) {
     return this.command(`/capabilities/mcp/${encodeURIComponent(id)}/discover`, 'CommandMeta', 'McpServerView', meta);
+  }
+  prepareMcp(id: string, sessionId: string, meta: CommandMeta, signal: AbortSignal) {
+    return this.request(`/capabilities/mcp/${encodeURIComponent(id)}/discover?session_id=${encodeURIComponent(sessionId)}`,
+      'McpServerView', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(meta), signal });
   }
   selectMcpTools(id: string, command: McpSelectToolsCommand) {
     return this.command(`/capabilities/mcp/${encodeURIComponent(id)}/tools`,

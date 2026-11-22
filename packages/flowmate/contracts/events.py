@@ -12,6 +12,7 @@ from flowmate.contracts.settings import (
     ModelConnection,
     ModelProfile,
     Session,
+    TitlePolicy,
     Workspace,
 )
 from flowmate.integrations.configuration_contracts import McpNotice
@@ -29,7 +30,7 @@ class AgentSaved(Contract):
 
 class NewEvent(Contract):
     kind: Literal[
-        "workspace.created", "workspace.default_created", "workspace.directory_changed", "session.created", "session.updated", "agent.saved", "model.saved", "connection.saved",
+        "workspace.created", "workspace.default_created", "workspace.directory_changed", "workspace.renamed", "session.created", "session.updated", "agent.saved", "model.saved", "connection.saved",
         "run.started", "run.cancelled", "run.resumed", "run.steered", "task.stepped",
         "activity.prepared", "activity.dispatched", "activity.received",
         "budget.reserved", "budget.settled", "budget.allocated", "budget.counted", "budget.returned", "runtime.recovered",
@@ -44,9 +45,9 @@ class NewEvent(Contract):
         "memory.maintenance_changed",
         "skill.changed",
         "environment.changed",
-        "mcp.changed",
+        "mcp.changed", "naming.policy_saved", "naming.task_changed",
     ]
-    payload: Workspace | Session | AgentSaved | ModelProfile | ModelConnection | RuntimeChange | PolicyChange | LifecycleChange | MemoryChange | MemoryMaintenanceNotice | SkillNotice | EnvironmentChanged | McpNotice
+    payload: Workspace | Session | AgentSaved | ModelProfile | ModelConnection | RuntimeChange | PolicyChange | LifecycleChange | MemoryChange | MemoryMaintenanceNotice | SkillNotice | EnvironmentChanged | McpNotice | TitlePolicy
     event_version: Literal[1] = 1
     workspace_id: Id | None = None
     session_id: Id | None = None
@@ -60,10 +61,12 @@ class NewEvent(Contract):
     def check_payload(self):
         expected = {
             "workspace.created": Workspace, "workspace.default_created": Workspace,
-            "workspace.directory_changed": Workspace, "session.created": Session, "session.updated": Session,
+            "workspace.directory_changed": Workspace, "workspace.renamed": Workspace,
+            "session.created": Session, "session.updated": Session,
             "agent.saved": AgentSaved, "model.saved": ModelProfile, "connection.saved": ModelConnection,
             "environment.changed": EnvironmentChanged,
             "mcp.changed": McpNotice,
+            "naming.policy_saved": TitlePolicy,
         }.get(self.kind, SkillNotice if self.kind == "skill.changed" else
               MemoryMaintenanceNotice if self.kind == "memory.maintenance_changed" else
               MemoryChange if self.kind.startswith("memory.") else

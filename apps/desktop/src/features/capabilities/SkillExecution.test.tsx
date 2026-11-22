@@ -12,7 +12,7 @@ import { limits, page, run, runDetailSummary } from '../../test/fixtures';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 const envId = '20000000-0000-4000-8000-000000000002';
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 const binding = { ...skillView.binding!, environment_id: envId, environment_revision: 1 };
 const settings = { skill_id: skillView.version.skill_id, content_hash: skillHash, scope: skillScope,
   scripts: ['scripts/report.py'], binding, permissions: [] };

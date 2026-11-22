@@ -34,7 +34,7 @@ function mergeNavigation(current: NavigationView | undefined, incoming: Navigati
   } };
 }
 
-export default function ProjectSidebar({ client, onNavigate, onCreated, onSettings, children, renderScopeActions, allowDirectoryCreation = true, onDefaultWorkspace, onNewSession, deletedWorkspaceIds = [], deletedSessionIds = [], onFormActiveChange, onTaskCenter, onAssistants, onMemory, onCapabilities, onPendingOpen, onPendingAction, onOpenInbox, refreshKey, workspaceId, sessionId, activePage, drawerToggleRef, sessionVersions }: {
+export default function ProjectSidebar({ client, onNavigate, onCreated, onSettings, children, renderScopeActions, allowDirectoryCreation = true, onDefaultWorkspace, onNewSession, deletedWorkspaceIds = [], deletedSessionIds = [], onFormActiveChange, onTaskCenter, onAssistants, onMemory, onCapabilities, onKnowledge, onPendingOpen, onPendingAction, onOpenInbox, refreshKey, workspaceId, sessionId, activePage, drawerToggleRef, sessionVersions }: {
   client: RuntimeClient; onNavigate: (target: ProjectNavigation) => void; onCreated: (workspace: Workspace) => void;
   onSettings: () => void; children?: ReactNode;
   renderScopeActions?: (target: Session | Workspace, createSession?: (trigger: HTMLButtonElement) => void) => ReactNode;
@@ -46,10 +46,11 @@ export default function ProjectSidebar({ client, onNavigate, onCreated, onSettin
   onAssistants?: () => void;
   onMemory?: () => void;
   onCapabilities?: () => void;
+  onKnowledge?: () => void;
   onPendingAction?: (item: PendingAction, action: PendingAction['allowed_actions'][number], returnToInbox: () => void) => Promise<unknown>;
   onOpenInbox?: (open: () => void) => void;
   refreshKey?: string;
-  activePage?: 'tasks' | 'assistants' | 'memory' | 'capabilities';
+  activePage?: 'tasks' | 'assistants' | 'memory' | 'capabilities' | 'knowledge';
   drawerToggleRef?: React.RefObject<HTMLButtonElement | null>;
   sessionVersions?: Readonly<Record<string, Session>>;
 }) {
@@ -168,9 +169,12 @@ export default function ProjectSidebar({ client, onNavigate, onCreated, onSettin
             onClick={() => setFoldedProjects(current => { const next = new Set(current); if (next.has(item.workspace.id)) next.delete(item.workspace.id); else next.add(item.workspace.id); return next; })} />
             <Button variant="ghost" size="sm" className="project-name justify-between gap-1 px-0.5" aria-label={item.workspace.name} aria-current={workspaceId === item.workspace.id ? 'true' : undefined} onClick={() => navigate({ workspaceId: item.workspace.id })}><span className="truncate">{item.workspace.name}</span>{item.pending_count > 0 && <small>{item.pending_count}</small>}</Button>
             {renderScopeActions?.(item.workspace, trigger => newSession(item.workspace.id, trigger))}</div>
-          <div id={`sessions-${item.workspace.id}`} hidden={foldedProjects.has(item.workspace.id)}>
+           <div id={`sessions-${item.workspace.id}`} hidden={foldedProjects.has(item.workspace.id)}>
+            {workspaceId === item.workspace.id && onKnowledge && <Button variant={activePage === 'knowledge' ? 'secondary' : 'ghost'} size="sm"
+              className="session-nav justify-start" aria-current={activePage === 'knowledge' ? 'page' : undefined}
+              onClick={() => { onKnowledge(); setDrawer(false); }}><UiIcon name="library" /><span>资料</span></Button>}
            {item.sessions.items.filter(session => visible(session.workspace_id, session.id)).map(displayedSession).map(session => <div className="session-nav-row" key={session.id}>
-            <Button variant="ghost" size="sm" className="session-nav justify-start" aria-current={sessionId === session.id ? 'page' : undefined} onClick={() => navigate({ workspaceId: session.workspace_id, sessionId: session.id })}><span className="truncate">{session.title}</span></Button>
+             <Button variant="ghost" size="sm" className="session-nav justify-start" aria-current={sessionId === session.id && !activePage ? 'page' : undefined} onClick={() => navigate({ workspaceId: session.workspace_id, sessionId: session.id })}><span className="truncate">{session.title}</span></Button>
             {renderScopeActions?.(session)}</div>)}
           {item.sessions.next_cursor && <Button variant="ghost" size="sm" onClick={() => void act(async () => { const next = await client.sessions(item.workspace.id, { cursor: item.sessions.next_cursor! }); setNavigation(current => current && ({ ...current, workspaces: { ...current.workspaces, items: current.workspaces.items.map(value => value.workspace.id === item.workspace.id ? { ...value, sessions: { ...next, items: Object.values(mergeVersioned(Object.fromEntries(value.sessions.items.map(session => [session.id, session])), next.items)) } } : value) } })); })}>更多项目会话</Button>}
           </div></section>)}

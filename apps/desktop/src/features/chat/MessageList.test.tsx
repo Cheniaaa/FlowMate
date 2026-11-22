@@ -7,6 +7,7 @@ import { validate } from '../../api/validation';
 import RunFeedbackNotice from '../tasks/RunFeedbackNotice';
 import { emptyProjection, reduceStream } from '../../api/events';
 import type { RuntimeStore } from '../../state/runtime-store';
+import { evidence, source } from '../knowledge/knowledge-fixtures';
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 function message(messageId: string, parts: ModelMessage['parts'], role: ModelMessage['role'] = 'assistant', activityId: string | null = null): ModelMessage {
@@ -15,12 +16,60 @@ function message(messageId: string, parts: ModelMessage['parts'], role: ModelMes
 const call = (name: string, callId = 'reused-call'): Extract<ModelMessage['parts'][number], { kind: 'tool_call' }> => ({ kind: 'tool_call', call_id: callId, name, arguments: { target: name } });
 const result = (originId: string | null, text: string, callId = 'reused-call', error: string | null = null): Extract<ModelMessage['parts'][number], { kind: 'tool_result' }> => ({ kind: 'tool_result', origin_message_id: originId, call_id: callId, result: { text }, error });
 function article(container: HTMLElement, messageId: string) { return container.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`)!; }
-function feedback(value: RunSnapshot, error: string, state: ActivityView['state']): RunFeedback {
+function feedback(value: RunSnapshot & { config: typeof run.config }, error: string, state: ActivityView['state']): RunFeedback {
   return { run_id: value.id, version: value.version, workspace_id: value.workspace_id, session_id: value.interaction_session_id!,
     root_task_id: value.root_task_id, state: value.state, reason: value.reason, connection_id: value.config.model_profile.connection_id,
     context_usage: null, model_activity: { id: uuid(19), version: 3, kind: 'model', operation: 'model.generate', state, error,
       run_id: value.id, task_id: value.root_task_id, usage: null, actual_units: null, dependencies: [], script_execution: null } };
 }
+
+it('项目资料工具展示查询、文件与原片段，正式引用复用同Evidence标签且无元数据请求', () => {
+  const evidenceId = evidence.evidence.id, open = vi.fn();
+  const invoke = message(uuid(91), [{ ...call('knowledge.search', 'search'), arguments: { query: '项目共享',
+    source_ids: [source.id], mode: 'hybrid', limit: 5 } }]);
+  const receipt = message(uuid(92), [{ kind: 'tool_result', call_id: 'search', origin_message_id: invoke.id, error: null,
+    result: { status: 'partial', mode: 'bm25', error: 'embedding_failed', notices: [],
+      sources: [source], evidence: [evidence.evidence] } }], 'tool');
+  const completed = { ...run, state: 'completed' as const, output: { summary: '已核验[1]。', citations: [
+    { marker: 1, evidence_id: evidenceId }], artifact_ids: [], unresolved: [], handled_failures: [] } };
+  const { container } = render(<MessageList messages={[invoke, receipt]} runs={[completed]} assistantName="助理" onOpenEvidence={open} />);
+  const tool = container.querySelector<HTMLDetailsElement>('.tool-card')!;
+  fireEvent.click(tool.querySelector('summary')!);
+  expect(within(tool).getByText('检索项目资料')).toBeTruthy();
+  expect(within(tool).getByText('项目共享')).toBeTruthy();
+  expect(within(tool).getByText(evidence.evidence.excerpt)).toBeTruthy();
+  expect(within(tool).getByText(/已使用关键词结果/)).toBeTruthy();
+  for (const hidden of ['content_hash', 'parser_version', 'chunker_version', 'index_generation', source.id, evidenceId])
+    expect(tool.textContent).not.toContain(hidden);
+  const citation = screen.getByRole('button', { name: /查看引用 1 · 项目说明.md/ });
+  fireEvent.click(citation);
+  expect(open).toHaveBeenLastCalledWith(run.workspace_id, evidenceId);
+});
+
+it('其他工具的相似JSON与失效来源不能为Citation补文件标签', () => {
+  const evidenceId = evidence.evidence.id;
+  const invoke = message(uuid(93), [call('example.search', 'untrusted')]);
+  const receipt = message(uuid(94), [{ kind: 'tool_result', call_id: 'untrusted', origin_message_id: invoke.id,
+    result: { status: 'ok', mode: 'bm25', error: null, notices: [], sources: [source], evidence: [evidence.evidence] }, error: null }], 'tool');
+  const completed = { ...run, state: 'completed' as const, output: { summary: '结论[1]。', citations: [
+    { marker: 1, evidence_id: evidenceId }], artifact_ids: [], unresolved: [], handled_failures: [] } };
+  render(<MessageList messages={[invoke, receipt]} runs={[completed]} assistantName="助理" onOpenEvidence={vi.fn()} />);
+  expect(screen.getByRole('button', { name: '查看引用 1' }).textContent).toBe('[1]');
+});
+
+it('已加载的较新来源事实将旧Evidence标为历史，不按引用编号或消息顺序推断版本', () => {
+  const firstCall = message(uuid(95), [call('knowledge.search', 'before')]);
+  const nextCall = message(uuid(96), [call('knowledge.list_sources', 'after')]);
+  const oldResult = message(uuid(97), [{ kind: 'tool_result', call_id: 'before', origin_message_id: firstCall.id,
+    error: null, result: { status: 'ok', mode: 'bm25', error: null, notices: [], sources: [source], evidence: [evidence.evidence] } }], 'tool');
+  const newer = message(uuid(98), [{ kind: 'tool_result', call_id: 'after', origin_message_id: nextCall.id,
+    error: null, result: { status: 'ok', mode: 'none', error: null, notices: [],
+      sources: [{ ...source, revision: source.revision + 1, active_version: 2 }], evidence: [] } }], 'tool');
+  const completed = { ...run, state: 'completed' as const, output: { summary: '历史答案[1]。', citations: [
+    { marker: 1, evidence_id: evidence.evidence.id }], artifact_ids: [], unresolved: [], handled_failures: [] } };
+  render(<MessageList messages={[nextCall, newer, firstCall, oldResult]} runs={[completed]} assistantName="助理" onOpenEvidence={vi.fn()} />);
+  expect(screen.getByRole('button', { name: /查看引用 1 · 项目说明.md.*历史原文/ })).toBeTruthy();
+});
 
 it('两个已发送文件归各自的用户原消息，补充文字不继承文件', () => {
   const text = [{ kind: 'text' as const, text: '这个文件' }];

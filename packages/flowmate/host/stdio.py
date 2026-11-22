@@ -1,4 +1,4 @@
-"""Windows匿名管道适配；不让阻塞stdin占用asyncio线程池或解释器缓冲锁。"""
+"""私有匿名管道适配；读取不占用asyncio线程池或原生库探测的标准输入。"""
 
 import asyncio
 import os
@@ -13,6 +13,16 @@ class _Reader:
     def __init__(self, loop, fd, max_frame_bytes):
         self.loop = loop
         self.fd = fd
+        if os.name == "nt":
+            # 原生DLL会探测stdin；Windows同步管道的阻塞读取会令该探测也阻塞。
+            # reader独占原管道，普通stdin改为NUL，不让按需加载依赖触及控制通道。
+            self.fd = os.dup(fd)
+            try:
+                with open(os.devnull, "rb") as empty:
+                    os.dup2(empty.fileno(), fd)
+            except OSError:
+                os.close(self.fd)
+                raise
         self.limit = max_frame_bytes
         self.queue = asyncio.Queue(maxsize=8)
         self.stopped = threading.Event()
@@ -56,6 +66,9 @@ class _Reader:
                     return
         except OSError:
             self._deliver(b"")
+        finally:
+            if os.name == "nt":
+                os.close(self.fd)
 
     async def readline(self):
         item = await self.queue.get()
@@ -67,8 +80,8 @@ class _Reader:
         self.stopped.set()
         if self.delivery is not None:
             self.delivery.cancel()
-        # 宿主关闭管道产生EOF；若本地shutdown先到，raw os.read线程为daemon，
-        # 不等待持有阻塞I/O的线程，也不碰sys.stdin的BufferedReader锁。
+        # 宿主关闭管道产生EOF后由reader释放私有描述符；若本地shutdown先到，
+        # 不从别的线程关闭仍在阻塞I/O的描述符，daemon不保活Runtime。
 
 
 class _Writer:

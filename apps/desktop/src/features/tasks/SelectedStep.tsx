@@ -1,6 +1,6 @@
 import type { ActivityView, TaskSnapshot } from '../../generated/contracts';
 import Status from '../../components/Status';
-import { operationLabel } from './operation-label';
+import { isEmbeddingOperation, operationLabel } from './operation-label';
 import ScriptActivity from './ScriptActivity';
 
 export default function SelectedStep({ id, tasks, activities, onArtifact, fileNames, taskTitles }: {
@@ -22,15 +22,15 @@ export default function SelectedStep({ id, tasks, activities, onArtifact, fileNa
       <h3>{activity ? operationLabel(activity.operation, task) : title || goal || (task!.kind === 'agent' ? '助理任务' : '工具任务')}</h3>
       <Status state={activity?.state ?? task!.state} />
     </header>
-    {config && <p className="muted">负责人 {config.agent_profile.display_name}</p>}
+    {config?.kind === 'agent' && <p className="muted">负责人 {config.agent_profile.display_name}</p>}
     {goal && (activity || title && title !== goal) && <p>任务目标 {goal}</p>}
-    {(!activity || activity.kind === 'model') && config && <p>模型 {config.model_profile.model_id}</p>}
+    {(!activity || activity.kind === 'model' && !isEmbeddingOperation(activity.operation)) && config?.kind === 'agent' && <p>模型 {config.model_profile.model_id}</p>}
     {files.length > 0 && <div><p>固定输入文件 {files.length} 个</p>
       {namedFiles.length > 0 && <ul>{namedFiles.map((name, index) => <li key={index}>{name}</li>)}</ul>}</div>}
     {binding?.agent_work?.success_criteria.length ? <ul>{binding.agent_work.success_criteria.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul> : null}
     {activity?.actual_units != null && <p>已记账单位 {activity.actual_units}</p>}
     {activity?.usage?.input_tokens != null && <p>输入 Token {activity.usage.input_tokens}</p>}
-    {activity?.usage?.output_tokens != null && <p>输出 Token {activity.usage.output_tokens}</p>}
+    {activity?.usage?.output_tokens != null && !isEmbeddingOperation(activity.operation) && <p>输出 Token {activity.usage.output_tokens}</p>}
     {activity && <ScriptActivity activity={activity} onArtifact={onArtifact} />}
   </section>;
 }

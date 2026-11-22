@@ -6,7 +6,7 @@ import { id, secondId } from '../../test/fixtures';
 import SessionActions from './SessionActions';
 
 it('三种范围不混用；stop-all使用准入generation，archive使用Session.version且不cancel', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   vi.spyOn(client, 'sessionAdmission').mockResolvedValue({ scope: { kind: 'session', workspace_id: id, session_id: secondId }, generation: 7 });
   vi.spyOn(client, 'workspaceAdmission').mockResolvedValue({ scope: { kind: 'workspace', workspace_id: id, session_id: null }, generation: 9 });
   const command = vi.fn().mockResolvedValue({ status: 'confirmed', sync: 'ready', commandId: id });

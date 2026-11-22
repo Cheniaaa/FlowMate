@@ -6,9 +6,15 @@ import { agent, binding, connection, contextUsage, event, grant, id, limits, mod
 import { mcpView } from '../src/test/mcp-fixtures';
 import { memory, memoryGrant, memoryPolicy } from '../src/test/memory-fixtures';
 import { skillHash, skillReceipt, skillView } from '../src/test/skill-fixtures';
-import type { ActivityView, AgentResult, Approval, ArtifactRef, DataUseGrant, ModelConnection, ModelMessage, ModelProfile, ModelResolution, ProviderPresetList, PublicEvent, Question, RunDetail, RunSnapshot, Session, SessionContext, SessionContextSchema, SessionContextUsage, SessionInboxEntry, SessionRunPage, StopAllReceipt, TaskResult, Workspace } from '../src/generated/contracts';
+import { evidence as knowledgeEvidence, evidenceId as knowledgeEvidenceId, source as knowledgeSource,
+  job as knowledgeJob } from '../src/features/knowledge/knowledge-fixtures';
+import { embeddingProfile as defaultEmbeddingProfile, projectKnowledge } from '../src/features/knowledge/embedding-fixtures';
+import type { EmbeddingProfile, EmbeddingProfileView, KnowledgeImportReceipt, KnowledgeJob as KnowledgeJobRecord, KnowledgeSettings, KnowledgeSource, KnowledgeSourceView } from '../src/generated/contracts';
+import type { ActivityView, AgentResult, Approval, ArtifactRef, DataUseGrant, MemberLane, ModelConnection, ModelMessage, ModelProfile, ModelResolution, ProviderPresetList, PublicEvent, Question, RunDetail, RunSnapshot, Session, SessionContext, SessionContextSchema, SessionContextUsage, SessionInboxEntry, SessionRunPage, StopAllReceipt, TaskResult, Workspace } from '../src/generated/contracts';
 import type { PendingCounts } from '../src/api/windows';
 import type { WorkbenchRequest } from '../src/api/windows';
+
+type AgentRunSnapshot = RunSnapshot & { config: typeof run.config };
 
 // 仅由验收页面载入。所有业务调用留在内存，未定义的路由立即失败。
 let sequence = 100;
@@ -53,8 +59,8 @@ const sessions: Session[] = firstRun === 'clean' || firstRun === 'no-session' ? 
 let firstSessionReceipt: { commandId: string; session: Session } | undefined;
 let cancelFirstFileSelection = firstRun === 'no-session';
 const messages: ModelMessage[] = [];
-let current: RunSnapshot | undefined;
-const runs = new Map<string, RunSnapshot>();
+let current: AgentRunSnapshot | undefined;
+const runs = new Map<string, AgentRunSnapshot>();
 const chatModelDispatches: { workspaceId: string; use: NonNullable<SessionRunPage['last_model_use']> }[] = [];
 const reports = new Map<string, { runId: string; artifact: ArtifactRef; text: string }>();
 const activities = new Map<string, ActivityView>();
@@ -88,6 +94,54 @@ const approvals = new Map<string, Approval>();
 const stopReceipts = new Map<string, { path: string; version: number; receipt: StopAllReceipt }>();
 const generations = new Map<string, number>();
 const readingScenario = new URLSearchParams(location.search).get('reading');
+const knowledgeScenario = new URLSearchParams(location.search).get('knowledge');
+let knowledgeMember: MemberLane | undefined;
+const retrievalScenario = new URLSearchParams(location.search).has('retrieval');
+const retrievalConnection = { ...connection, id: uuid(), display_name: '硅基流动', endpoint: 'https://api.siliconflow.cn/v1' };
+const retrievalProfiles = new Map<string, EmbeddingProfile>();
+const retrievalViews = new Map<string, EmbeddingProfileView>();
+const retrievalReceipts = new Map<string, KnowledgeSettings>();
+let retrievalSettings = projectKnowledge;
+if (retrievalScenario) {
+  const profile: EmbeddingProfile = { ...defaultEmbeddingProfile, display_name: '硅基流动资料检索',
+    model_id: 'Qwen/Qwen3-Embedding-4B', dimensions: 1024, request_dimensions: true, connection_id: retrievalConnection.id };
+  retrievalProfiles.set(profile.id, profile);
+  retrievalViews.set(`${profile.id}:${profile.revision}`, { profile,
+    destination: 'https://api.siliconflow.cn/v1/embeddings', local_runtime_available: null });
+}
+const knowledgeReceipts = new Map<string, KnowledgeImportReceipt>();
+const knowledgeActionReceipts = new Map<string, { fingerprint: string; source: KnowledgeSource }>();
+const knowledgeSources: KnowledgeSource[] = [{ ...knowledgeSource, active_version: 2 }, { ...knowledgeSource, id: uuid(), label: '会议记录.txt', active_version: 2 },
+  { ...knowledgeSource, id: uuid(), label: '研究方案.md', active_version: null, status: 'pending' as const }];
+const knowledgeJobs: KnowledgeJobRecord[] = [
+  { ...knowledgeJob, source_id: knowledgeSources[1].id, source_version: 3, status: 'running' as const },
+  { ...knowledgeJob, id: uuid(), source_id: knowledgeSources[2].id, source_version: 1, status: 'queued' as const },
+];
+if (knowledgeScenario === 'duplicates') knowledgeSources[1].label = knowledgeSources[0].label;
+if (knowledgeScenario === 'failed') knowledgeJobs.push({ ...knowledgeJob, id: uuid(),
+  status: 'failed', task: null, reason: 'knowledge_encoding_unsupported' });
+if (knowledgeScenario === 'grants') {
+  const scope = { kind: 'workspace' as const, workspace_id: id, session_id: null };
+  const destination = 'https://api.siliconflow.cn/v1/embeddings';
+  grants.push(
+    { ...grant, id: uuid(), scope, resource_ids: [], knowledge_source_ids: [knowledgeSources[0].id],
+      purposes: ['embedding_send'], destination },
+    { ...grant, id: uuid(), scope, resource_ids: [], knowledge_scopes: [scope],
+      purposes: ['embedding_send'], destination },
+  );
+}
+const knowledgeText = [
+  '第 18 行：保留当前可用版本，更新完成后再发布新版。\n第 19 行：历史答复始终指向当时引用的原文。\n第 20 行：项目之间的资料保持隔离。',
+  '第二段：项目内的对话共享已加入资料，历史引用始终指向原版本。',
+];
+const knowledgeFirstLength = Array.from(knowledgeText[0]).length;
+function knowledgeNotice(source: KnowledgeSource) {
+  const eventId = String(++watermark);
+  const wire = { kind: 'durable', event_id: eventId, event: { ...event, event_id: eventId, kind: 'knowledge.changed',
+    workspace_id: id, session_id: null, run_id: null, seq: null, payload: { workspace_id: id,
+      source_revisions: { [source.id]: source.revision }, job_revisions: {}, settings_revision: null, profile_revisions: {} } } };
+  for (const stream of streams) stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(wire)}\n\n`));
+}
 const contextFiles = new Map<string, SessionContextSchema.ContextFile[]>();
 const contextActivities = new Map<string, SessionContextSchema.ContextActivity[]>();
 const fileName = '读书会纪要.txt';
@@ -143,7 +197,7 @@ if (readingScenario !== null) {
   if (fileGrant) grants.push(fileGrant);
   for (const [index, [question, answer]] of exchanges.entries()) {
     const withMedia = readingScenario === 'media' && index === 4;
-    const value: RunSnapshot = { ...run, id: uuid(), root_task_id: uuid(), budget_id: uuid(),
+    const value: AgentRunSnapshot = { ...run, id: uuid(), root_task_id: uuid(), budget_id: uuid(),
       state: 'completed', config: { ...run.config, agent_profile: profile, catalog: withMedia ? {
         ...run.config.catalog,
         tools: { ...run.config.catalog.tools, [readingMediaOperation]: `${readingMediaTool.config_revision}:${readingMediaTool.catalog_hash}` },
@@ -236,7 +290,7 @@ if (queryRecovery) {
   const operation = 'mcp.synthetic.resolve';
   const remote = { server_id: notes.config.id, config_revision: 1, catalog_hash: 'a'.repeat(64),
     original_name: 'resolve-library-id', destination: 'mcp:synthetic' };
-  const value: RunSnapshot = { ...run, id: uuid(), root_task_id: uuid(), budget_id: uuid(), version: 4,
+  const value: AgentRunSnapshot = { ...run, id: uuid(), root_task_id: uuid(), budget_id: uuid(), version: 4,
     state: 'interrupted', reason: 'mcp_query_uncertain', config: { ...run.config, agent_profile: profile,
       catalog: { ...run.config.catalog, tools: { [operation]: '1:catalog' }, mcp_tools: { [operation]: remote } } } };
   const activity: ActivityView = { id: uuid(), version: 3, run_id: value.id, task_id: value.root_task_id,
@@ -270,7 +324,7 @@ if (task2Scenario === 'stop') {
 }
 if (task2Scenario === 'interaction') {
   // 两个成员分别等待回答与审批。用同一个后台 Run 验证两个入口选中不同对象。
-  const value: RunSnapshot = { ...run, id: uuid(), root_task_id: uuid(), budget_id: uuid(), execution_session_id: uuid(),
+  const value: AgentRunSnapshot = { ...run, id: uuid(), root_task_id: uuid(), budget_id: uuid(), execution_session_id: uuid(),
     kind: 'managed', state: 'waiting_children', config: { ...run.config, agent_profile: { ...profile, display_name: '资料整理员' } } };
   runs.set(value.id, value);
   const choice = new URLSearchParams(location.search).get('question-choice');
@@ -288,7 +342,7 @@ if (task2Scenario === 'interaction') {
     } : null };
   approvals.set(approval.id, approval);
 }
-const detail = (value: RunSnapshot): RunDetail => ({ ...runDetailSummary, run: value, tasks: page([{ id: value.root_task_id, run_id: value.id, version: 1,
+const detail = (value: AgentRunSnapshot): RunDetail => ({ ...runDetailSummary, run: value, tasks: page([{ id: value.root_task_id, run_id: value.id, version: 1,
   binding: { ...binding, config: value.config, execution_session_id: value.execution_session_id, interaction_session_id: value.interaction_session_id }, parent_task_id: null, origin_task_id: null, kind: 'agent', executor_id: 'builtin.agent',
   state: value.state, created_seq: 1, deadline_at: null, result_version: taskResults.get(value.root_task_id)?.result_version ?? null, reason: null }]),
   activities: page(coldDeliveryRuns.has(value.id) ? [] : [...activities.values()].filter(activity => activity.run_id === value.id)),
@@ -302,10 +356,55 @@ const detail = (value: RunSnapshot): RunDetail => ({ ...runDetailSummary, run: v
   budget: { id: value.budget_id, run_id: value.id, version: 1, limits, spent_units: '0', reserved_units: '0', model_requests: 0, steps: 0,
     task_count: 1, total_tokens: 0, reserved_tokens: 0 }, watermark: String(watermark) });
 
+if (knowledgeScenario) {
+  current = { ...run, id: uuid(), root_task_id: uuid(), budget_id: uuid(), state: 'completed',
+    config: { ...run.config, agent_profile: profile },
+    output: { summary: '两个方案都支持项目内共享；更新完成前，继续使用当前可用版本 [1]。\n\n引用保留答复所用的历史原文，可逐段核对。\n\n`[1]` 是代码示例，不打开资料。',
+      artifact_ids: [], handled_failures: [], unresolved: [], citations: [{ marker: 1, evidence_id: knowledgeEvidenceId }] } };
+  runs.set(current.id, current);
+  contextActivities.set(current.id, [...(retrievalScenario ? [{
+    id: uuid(), kind: 'embedding', embedding_kind: 'query', model: '硅基流动资料检索',
+    input_tokens: 128, output_tokens: null, cached_input_tokens: null, input_limit: null,
+    calculated_units: null, files: [], hidden_file_count: 0, file_changed: false, compaction: false, state: 'succeeded',
+  } satisfies SessionContextSchema.ContextActivity] : []), contextRequest(1850, 120, null, 16000, null)]);
+  if (knowledgeScenario === 'tools') {
+    const call: ModelMessage = { id: uuid(), run_id: current.id, event_id: String(++watermark), event_index: 0,
+      activity_id: null, role: 'assistant', origin: 'conversation', private_ref: null, source_dependencies: [],
+      parts: [{ kind: 'tool_call', call_id: 'project-search', name: 'knowledge.search',
+        arguments: { query: '项目资料如何共享和更新？', mode: 'hybrid', source_ids: [knowledgeSource.id] } }] };
+    messages.push(call, { ...call, id: uuid(), event_id: String(++watermark), role: 'tool', parts: [{
+      kind: 'tool_result', call_id: 'project-search', origin_message_id: call.id, error: null,
+      result: { status: 'partial', mode: 'bm25', error: 'knowledge_embedding_failed', notices: [],
+        sources: [knowledgeSources[0]], evidence: [{ ...knowledgeEvidence.evidence, excerpt: knowledgeText[0] }] },
+    }] });
+  }
+  if (knowledgeScenario === 'member') {
+    current.kind = 'managed'; current.execution_session_id = uuid();
+    const task = detail(current).tasks.items[0];
+    knowledgeMember = { profile: { ...profile, display_name: '资料核对员' }, activities: [], handoffs: [],
+      task: { ...task, result_version: 1, binding: { ...task.binding, agent_work: {
+        kind: 'agent', profile_id: profile.id, goal: '核对项目共享与更新规则',
+        input_refs: [], output_schema: {}, success_criteria: [],
+      } } } };
+    taskResults.set(task.id, { handle: { run_id: current.id, task_id: task.id, lifetime: 'managed', submitted_state: 'completed' },
+      result_version: 1, state: 'completed', artifacts: [], dependencies: [], error: null,
+      result: { summary: '更新完成前继续使用当前资料 [1]。', status: 'completed',
+        citations: [{ marker: 1, evidence_id: knowledgeEvidenceId }], evidence_refs: [], artifact_ids: [],
+        structured_result: null, verification: [], unresolved: [], handled_failures: [] } });
+  }
+}
+const knowledgeWindows = knowledgeScenario ? new BroadcastChannel(`flowmate-fixture-knowledge-${knowledgeScenario}`) : undefined;
+knowledgeWindows?.addEventListener('message', async ({ data }) => {
+  const isQuick = new URLSearchParams(location.search).get('window') === 'quick';
+  if (data.kind === 'workbench' && !isQuick) {
+    navigation = { target: data.target, from_quick: true };
+    await emit('workbench-navigation', null);
+  } else if (data.kind === 'return' && isQuick) document.querySelector<HTMLElement>('[data-quick-origin]')?.focus();
+});
 mockIPC(async (command, args) => {
   nativeRequests.push({ command, args });
   const payload = args as Record<string, unknown> | undefined;
-  if (command === 'runtime_connection') return { base_url: 'http://synthetic.invalid', token: 'synthetic-token', protocol_version: 3 };
+  if (command === 'runtime_connection') return { base_url: 'http://synthetic.invalid', token: 'synthetic-token', protocol_version: 4 };
   if (command === 'take_settings_navigation') return null;
   if (command === 'take_workbench_navigation') { const target = navigation; navigation = null; return target; }
   if (new URLSearchParams(location.search).has('project-name')) {
@@ -313,10 +412,16 @@ mockIPC(async (command, args) => {
     if (command === 'discard_workspace_directory_selection') return;
   }
   if (command === 'show_workbench') {
+    if (knowledgeWindows && new URLSearchParams(location.search).get('window') === 'quick') {
+      document.activeElement?.setAttribute('data-quick-origin', '');
+      knowledgeWindows.postMessage({ kind: 'workbench', target: payload?.target });
+      return;
+    }
     await (window as Window & { acknowledgeWorkbench?: () => Promise<void> }).acknowledgeWorkbench?.();
     navigation = { target: payload?.target as WorkbenchRequest['target'], from_quick: false };
     return emit('workbench-navigation', null);
   }
+  if (command === 'return_to_quick') { knowledgeWindows?.postMessage({ kind: 'return' }); return; }
   if (command === 'select_resources') {
     if (cancelFirstFileSelection) {
       cancelFirstFileSelection = false;
@@ -327,7 +432,8 @@ mockIPC(async (command, args) => {
       selectedFiles.set(chosen.id, chosen);
       return { resources: [chosen] };
     }
-    const chosen = { ...resource, scope: payload?.scope as typeof resource.scope, source_version: 'a'.repeat(64) };
+    const chosen = { ...resource, scope: payload?.scope as typeof resource.scope, source_version: 'a'.repeat(64),
+      ...(retrievalScenario && payload?.kind === 'directory' ? { kind: 'directory' as const, label: '所选本地检索模型' } : {}) };
     selectedFiles.set(chosen.id, chosen);
     return { resources: [chosen] };
   }
@@ -346,9 +452,97 @@ const originalFetch = window.fetch;
 window.fetch = async (input, init = {}) => {
   const url = new URL(String(input));
   if (url.origin !== 'http://synthetic.invalid') return originalFetch(input, init);
-  const path = url.pathname.replace('/v3', '');
+  const path = url.pathname.replace('/v4', '');
   const body = init.body ? JSON.parse(String(init.body)) : null;
   requests.push({ path, method: init.method ?? 'GET', body, query: Object.fromEntries(url.searchParams) });
+  if (retrievalScenario) {
+    if (path === '/knowledge/embedding-profiles') return Response.json(page([...retrievalProfiles.values()]));
+    if (path.startsWith('/knowledge/embedding-profiles/')) {
+      const profileId = path.split('/').at(-1)!;
+      if (init.method === 'PUT') {
+        const previous = retrievalProfiles.get(profileId);
+        const profile: EmbeddingProfile = { ...defaultEmbeddingProfile, ...body.data, id: profileId,
+          revision: (previous?.revision ?? 0) + 1,
+          pricing: { ...defaultEmbeddingProfile.pricing, ...body.data.pricing } };
+        retrievalProfiles.set(profileId, profile);
+        const selectedConnection = [connection, retrievalConnection].find(item => item.id === profile.connection_id);
+        retrievalViews.set(`${profile.id}:${profile.revision}`, { profile,
+          destination: profile.provider === 'openai' ? `${selectedConnection!.endpoint}/embeddings` : null,
+          local_runtime_available: profile.provider === 'fastembed' ? false : null });
+        return Response.json(profile);
+      }
+      return Response.json(retrievalViews.get(`${profileId}:${url.searchParams.get('revision')}`));
+    }
+    if (path.endsWith('/knowledge/settings')) {
+      if (init.method === 'PUT') {
+        retrievalSettings = { ...retrievalSettings, revision: retrievalSettings.revision + 1,
+          desired_profile: body.data.embedding_profile, rebuild_job_id: uuid() };
+        knowledgeJobs.push({ ...knowledgeJob, id: retrievalSettings.rebuild_job_id!, command_id: body.meta.command_id,
+          kind: 'rebuild', source_id: null, source_version: null, task: null, status: 'queued' });
+        retrievalReceipts.set(body.meta.command_id, retrievalSettings);
+        for (const requested of body.data.grants) grants.push({ ...grant, ...requested, id: uuid() });
+      }
+      return Response.json(retrievalSettings);
+    }
+  }
+  if (knowledgeScenario) {
+    if (path.startsWith('/knowledge/sources/') && path.endsWith('/actions')) {
+      const sourceId = path.split('/')[3], index = knowledgeSources.findIndex(source => source.id === sourceId);
+      const fingerprint = JSON.stringify({ path, body }), prior = knowledgeActionReceipts.get(body.meta.command_id);
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new Error('来源动作重放身份已改变');
+        return Response.json(prior.source);
+      }
+      const source = knowledgeSources[index];
+      if (body.meta.expected_version !== source.revision) throw new Error('来源动作使用了错误 revision');
+      const changed: KnowledgeSource = { ...source, revision: source.revision + 1,
+        status: ({ remove: 'removed', revoke: 'revoked', delete: 'deleted' } as const)[body.data.action as 'remove' | 'revoke' | 'delete'],
+        cleanup_status: 'pending', cleanup_reason: null };
+      knowledgeSources[index] = changed;
+      knowledgeActionReceipts.set(body.meta.command_id, { fingerprint, source: changed });
+      knowledgeNotice(changed);
+      return Response.json(changed);
+    }
+    if (path.endsWith('/knowledge/sources')) return Response.json(page(knowledgeSources.map((source, index): KnowledgeSourceView => ({
+      ...source, latest_job: [...knowledgeJobs].reverse().find(job => job.source_id === source.id) ?? null,
+      origin_hint: source.status === 'deleted' ? null : ['设计文档', '会议资料', '研究记录'][index],
+      added_at: source.status === 'deleted' ? null : knowledgeJob.created_at,
+    }))));
+    if (path.endsWith('/knowledge/jobs')) return Response.json(page(knowledgeJobs));
+    if (/^\/knowledge\/jobs\/[^/]+$/.test(path)) {
+      return Response.json(knowledgeJobs.find(job => job.id === path.split('/').at(-1)));
+    }
+    if (path.includes('/knowledge/evidence/')) {
+      const source = knowledgeSources.find(source => source.id === knowledgeSource.id)!;
+      if (source.status === 'revoked' || source.status === 'deleted') return Response.json({
+        error: { code: 'knowledge_source_unavailable', safe_message: '资料已停止使用，历史原文不可用', retryable: false, related_ids: [] },
+      }, { status: 403 });
+      const second = url.searchParams.get('offset') === String(knowledgeFirstLength);
+      return Response.json({ ...knowledgeEvidence, text: knowledgeText[second ? 1 : 0], current_version: source.active_version,
+        offset: second ? knowledgeFirstLength : 0, next_offset: second ? null : knowledgeFirstLength,
+        total_chars: knowledgeFirstLength + Array.from(knowledgeText[1]).length });
+    }
+    if (path.endsWith('/knowledge/imports')) {
+      if (body.data.source_id) {
+        const index = knowledgeSources.findIndex(source => source.id === body.data.source_id), source = knowledgeSources[index];
+        if (body.meta.expected_version !== source.revision) throw new Error('来源更新使用了错误 revision');
+        const label = body.data.resource_ids.length ? selectedFiles.get(body.data.resource_ids[0])!.label : source.label;
+        knowledgeSources[index] = { ...source, revision: source.revision + 1, label };
+        knowledgeJobs.push({ ...knowledgeJob, id: uuid(), command_id: body.meta.command_id, source_id: source.id,
+          source_version: (source.active_version ?? 0) + 1, status: 'queued' });
+        knowledgeNotice(knowledgeSources[index]);
+      }
+      const receipt: KnowledgeImportReceipt = { command_id: body.meta.command_id,
+        jobs: [{ ...knowledgeJob, command_id: body.meta.command_id }], rejected: [] };
+      knowledgeReceipts.set(receipt.command_id, receipt);
+      if (knowledgeScenario === 'unknown') throw new TypeError('合成响应丢失');
+      return Response.json(receipt, { status: 202 });
+    }
+    if (path.startsWith(`/workspaces/${id}/commands/`)) {
+      const receipt = knowledgeReceipts.get(path.split('/').at(-1)!) ?? retrievalReceipts.get(path.split('/').at(-1)!);
+      return Response.json({ status: receipt ? 'confirmed' : 'not_found', result: receipt ?? null });
+    }
+  }
   if (queryRecovery && path === '/inbox') {
     const value = [...runs.values()][0];
     return Response.json(page([{ id: value.id, kind: 'recovery', workspace_id: id, session_id: id, run_id: value.id,
@@ -597,7 +791,7 @@ window.fetch = async (input, init = {}) => {
   if (path === `/models/${model.id}/resolved`) return Response.json({
     ...modelResolution,
   });
-  if (path === '/model-connections') return Response.json(page(noModel ? [] : [connection]));
+  if (path === '/model-connections') return Response.json(page(noModel ? [] : retrievalScenario ? [connection, retrievalConnection] : [connection]));
   if (path === `/workspaces/${id}/title-policy` && new URLSearchParams(location.search).has('title-settings')) {
     return Response.json({ workspace_id: id, version: null, binding: null });
   }
@@ -632,9 +826,16 @@ window.fetch = async (input, init = {}) => {
     const firstPage = Math.min(3, Number(url.searchParams.get('limit') ?? 3));
     const nextCursor = value && records.length > firstPage ? `context-${value.id}` : null;
     if (cursor !== null && cursor !== nextCursor) throw new Error('分页游标不属于当前轮');
+    const usedKnowledge = knowledgeScenario && value?.id === current?.id;
+    const citedSource = knowledgeSources[0];
+    const knowledgeHidden = citedSource.status === 'revoked' || citedSource.status === 'deleted';
     return Response.json({
       round: value ? { run_id: value.id, state: value.state, source_attention: false } : null,
       files: value ? contextFiles.get(value.id) ?? [] : [],
+      knowledge: usedKnowledge && !knowledgeHidden ? [{ evidence_id: knowledgeEvidenceId, name: citedSource.label,
+        start_line: knowledgeEvidence.evidence.locator.start_line, end_line: knowledgeEvidence.evidence.locator.end_line,
+        historical: citedSource.status === 'removed' || citedSource.active_version !== knowledgeEvidence.evidence.source_version }] : [],
+      hidden_knowledge_count: usedKnowledge && knowledgeHidden ? 1 : 0,
       hidden_file_count: 0, history: value && value.id === historyNoticeRunId ? contextHistory : null,
       latest_request: latest, units_per_currency: '1000000000',
       activities: { items: cursor ? records.slice(firstPage) : records.slice(0, firstPage),
@@ -646,6 +847,8 @@ window.fetch = async (input, init = {}) => {
     const modelRequests = [...runs.values()].filter(value => value.interaction_session_id === sessionId)
       .flatMap(({ id }) => contextActivities.get(id) ?? []).filter(item => item.kind === 'model');
     const reportingCache = modelRequests.filter(item => item.cached_input_tokens != null);
+    const embeddings = [...runs.values()].filter(value => value.interaction_session_id === sessionId)
+      .flatMap(({ id }) => contextActivities.get(id) ?? []).filter(item => item.kind === 'embedding');
     return Response.json({
       units_per_currency: '1000000000', requests: modelRequests.length,
       input_tokens: modelRequests.reduce((sum, item) => sum + item.input_tokens!, 0),
@@ -655,8 +858,14 @@ window.fetch = async (input, init = {}) => {
       cache_reported_requests: reportingCache.length,
       cache_reported_input_tokens: reportingCache.reduce((sum, item) => sum + item.input_tokens!, 0),
       cached_tokens_with_reported_input: reportingCache.reduce((sum, item) => sum + item.cached_input_tokens!, 0),
-      calculated_units: modelRequests.reduce((sum, item) => sum + BigInt(item.calculated_units ?? '0'), 0n).toString(),
+      calculated_units: [...modelRequests, ...embeddings].reduce((sum, item) => sum + BigInt(item.calculated_units ?? '0'), 0n).toString(),
       unknown_cost_requests: modelRequests.filter(item => item.calculated_units == null).length, pending_cost_requests: 0,
+      embedding_requests: embeddings.length,
+      embedding_input_tokens: embeddings.reduce((sum, item) => sum + (item.input_tokens ?? 0), 0),
+      embedding_input_reported_requests: embeddings.filter(item => item.input_tokens != null).length,
+      embedding_calculated_units: embeddings.reduce((sum, item) => sum + BigInt(item.calculated_units ?? '0'), 0n).toString(),
+      embedding_unknown_cost_requests: embeddings.filter(item => item.calculated_units == null && !item.cost_pending).length,
+      embedding_pending_cost_requests: embeddings.filter(item => item.cost_pending).length,
     } satisfies SessionContextUsage);
   }
   if (path.endsWith('/run-feedback')) return Response.json({ ...page(url.searchParams.getAll('run_id').map(id => runs.get(id)!).map(value => ({
@@ -685,12 +894,13 @@ window.fetch = async (input, init = {}) => {
     return Response.json({ ...page([...activities.values()].filter(activity =>
       activity.run_id === path.split('/')[2] && (!activityId || activity.id === activityId))), watermark: String(watermark) });
   }
+  if (knowledgeMember && path === `/runs/${knowledgeMember.task.run_id}/member-lanes`) return Response.json([knowledgeMember]);
   if (path.startsWith('/runs/')) return Response.json(detail(runs.get(path.split('/')[2])!));
   unexpectedRequests.push(path);
   throw new Error(`未定义的读取路由：${path}`);
 };
-function managedDelivery(origin: RunSnapshot, name: string, assistant: string, summary: string, text: string) {
-  const managed: RunSnapshot = { ...origin, id: uuid(), root_task_id: uuid(), budget_id: uuid(),
+function managedDelivery(origin: AgentRunSnapshot, name: string, assistant: string, summary: string, text: string) {
+  const managed: AgentRunSnapshot = { ...origin, id: uuid(), root_task_id: uuid(), budget_id: uuid(),
     execution_session_id: uuid(), kind: 'managed', state: 'completed',
     config: { ...origin.config, agent_profile: { ...profile, id: uuid(), display_name: assistant } } };
   const artifact: ArtifactRef = { id: uuid(), activity_id: uuid(), task_id: managed.root_task_id, version: 1,
@@ -717,6 +927,11 @@ function managedDelivery(origin: RunSnapshot, name: string, assistant: string, s
   return { managed, artifact, activity, entry };
 }
 Object.assign(window, { syntheticUi: { requests, nativeRequests, unexpectedRequests,
+  failKnowledgeCleanup() {
+    const source = knowledgeSources[0];
+    const failed: KnowledgeSource = { ...source, revision: source.revision + 1, cleanup_status: 'failed', cleanup_reason: 'index_cleanup_failed' };
+    knowledgeSources[0] = failed; knowledgeNotice(failed);
+  },
   readingPreview() {
     const owner = current!;
     readingActivity = { id: uuid(), run_id: owner.id, task_id: owner.root_task_id, version: 1, kind: 'model',
@@ -731,7 +946,7 @@ Object.assign(window, { syntheticUi: { requests, nativeRequests, unexpectedReque
   },
   readingCommit() {
     const answer = '白板已确认，使用后请擦干净。';
-    const owner: RunSnapshot = { ...current!, state: 'completed', version: current!.version + 1,
+    const owner: AgentRunSnapshot = { ...current!, state: 'completed', version: current!.version + 1,
       output: { summary: answer, artifact_ids: [], unresolved: [], handled_failures: [] } };
     current = owner;
     runs.set(owner.id, owner);
@@ -749,7 +964,7 @@ Object.assign(window, { syntheticUi: { requests, nativeRequests, unexpectedReque
   },
   receiveContextReply() {
     const answer = '白板已确认，使用后请擦干净。';
-    const owner: RunSnapshot = { ...run, id: uuid(), root_task_id: uuid(), budget_id: uuid(), state: 'completed',
+    const owner: AgentRunSnapshot = { ...run, id: uuid(), root_task_id: uuid(), budget_id: uuid(), state: 'completed',
       config: { ...run.config, agent_profile: profile },
       output: { summary: answer, artifact_ids: [], unresolved: [], handled_failures: [] } };
     const request = contextRequest(3100, 35, null, 16000, '1200000');

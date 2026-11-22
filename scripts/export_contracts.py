@@ -6,6 +6,7 @@ from pathlib import Path
 
 from flowmate.api import capabilities as capabilities
 from flowmate.api import contracts as api
+from flowmate.api.knowledge import KnowledgeSourceView
 from flowmate.contracts.base import CommandMeta
 from flowmate.contracts.execution import (
     AdmissionFence,
@@ -59,6 +60,24 @@ from flowmate.integrations.configuration_contracts import (
     McpServerView,
     McpToolSelection,
 )
+from flowmate.knowledge.contracts import (
+    EmbeddingProfile,
+    Evidence,
+    EvidencePage,
+    KnowledgeNotice,
+    KnowledgeResult,
+    KnowledgeSettings,
+    KnowledgeSource,
+    SourceVersion,
+)
+from flowmate.knowledge.ingestion_contracts import (
+    KnowledgeCancel,
+    KnowledgeImportReceipt,
+    KnowledgeImportRequest,
+    KnowledgeJob,
+    KnowledgeSourceAction,
+)
+from flowmate.knowledge.settings import EmbeddingProfileView, SetProjectKnowledge
 from flowmate.memory.contracts import (
     CreateMemory,
     MemoryDecision,
@@ -78,10 +97,15 @@ from flowmate.policy.contracts import (
     DataUseGrant,
     DeletionReceipt,
     GrantCommand,
-    ResourceRef,
     ResourceCoverage,
     ResourceCoverageRequest,
+    ResourceRef,
     ScopeState,
+)
+from flowmate.processes.contracts import (
+    ExecutionEnvironmentCommandStatus,
+    ExecutionEnvironmentView,
+    SaveExecutionEnvironment,
 )
 from flowmate.skills.contracts import (
     SkillBinding,
@@ -94,13 +118,8 @@ from flowmate.skills.contracts import (
     SkillVersion,
     SkillView,
 )
-from flowmate.skills.export_publication import SkillExportReceipt
 from flowmate.skills.execution.contracts import SkillExecutionPermission, SkillScriptSettings
-from flowmate.processes.contracts import (
-    ExecutionEnvironmentCommandStatus,
-    ExecutionEnvironmentView,
-    SaveExecutionEnvironment,
-)
+from flowmate.skills.export_publication import SkillExportReceipt
 from flowmate.tools.catalog import ToolSpec
 from pydantic import TypeAdapter
 
@@ -138,6 +157,11 @@ REQUESTS = {
     "SaveMemoryPolicyCommand": api.Command[MemoryPolicy],
     "MemoryGrantRequest": api.Command[MemoryGrantCommand],
     "SubmitMemoryMaintenanceCommand": api.Command[MemoryMaintenanceRequest],
+    "KnowledgeImportCommand": api.Command[KnowledgeImportRequest],
+    "KnowledgeCancelCommand": api.Command[KnowledgeCancel],
+    "KnowledgeSourceActionCommand": api.Command[KnowledgeSourceAction],
+    "SaveEmbeddingProfileCommand": api.Command[EmbeddingProfile],
+    "SetProjectKnowledgeCommand": api.Command[SetProjectKnowledge],
 }
 RESPONSES = {model.__name__: model for model in [
     api.TitlePolicy,
@@ -157,10 +181,15 @@ RESPONSES = {model.__name__: model for model in [
     api.NavigationView, api.RunCostSummary, api.ContextUsageSummary, api.RunFeedback, WorkspaceDirectoryView, ModelDiscoveryResult,
     AgentResult, ResolvedMember, api.MemberLane, FollowUpIntent, PendingUserCommand, ResultInput,
     MemoryRecord, MemoryPolicy, MemorySourceBoundary, MemoryMaintenanceNotice, MemoryEvidenceExcerpt,
+    KnowledgeNotice, KnowledgeSettings, KnowledgeSource, KnowledgeSourceView, SourceVersion, KnowledgeJob, KnowledgeImportReceipt,
+    Evidence, EvidencePage, KnowledgeResult, EmbeddingProfile, EmbeddingProfileView,
 ]}
 RESPONSES.update(PublicEvent=api.PublicEvent, StreamEvent=api.StreamEvent, ModelMessage=api.MessageView)
 RESPONSES["PublicationList"] = list[PublicationView]
 RESPONSES["SkillPage"] = api.Page[SkillView]
+RESPONSES["KnowledgeSourcePage"] = api.Page[KnowledgeSourceView]
+RESPONSES["KnowledgeJobPage"] = api.Page[KnowledgeJob]
+RESPONSES["EmbeddingProfilePage"] = api.Page[EmbeddingProfile]
 RESPONSES["McpServerPage"] = api.Page[McpServerView]
 RESPONSES["ExecutionEnvironmentPage"] = api.Page[ExecutionEnvironmentView]
 RESPONSES["SkillExportReceiptList"] = list[SkillExportReceipt]

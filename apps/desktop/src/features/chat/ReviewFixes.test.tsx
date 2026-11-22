@@ -22,7 +22,7 @@ function deferred<T>() {
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
-const runtime = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 3 });
+const runtime = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 4 });
 const workspace = { id, version: 1, name: '复核项目', directory_resource_id: null };
 const session = { id, version: 1, workspace_id: id, title: '复核会话', agent_profile_id: id, kind: 'interaction' as const, archived: false };
 const snapshot = { workspace, sessions: page([session]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([grant]), watermark: event.event_id };
@@ -35,7 +35,7 @@ function shellServer(override: (path: string, parsed: URL, init: RequestInit) =>
   let request: WorkbenchRequest | null = null;
   let settingsRequest: SettingsNavigation | null = null;
   vi.mocked(invoke).mockImplementation(async name => {
-    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 3 };
+    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 4 };
     if (name === 'take_workbench_navigation') { const target = request; request = null; return target; }
     if (name === 'take_settings_navigation') { const target = settingsRequest; settingsRequest = null; return target; }
     if (name === 'pending_counts') return null;
@@ -43,7 +43,7 @@ function shellServer(override: (path: string, parsed: URL, init: RequestInit) =>
   });
   vi.mocked(listen).mockImplementation(async (name, callback) => { callbacks.set(name, callback); return () => {}; });
   vi.stubGlobal('fetch', async (input: string, init: RequestInit = {}) => {
-    const parsed = new URL(input), path = parsed.pathname.replace('/v3', '');
+    const parsed = new URL(input), path = parsed.pathname.replace('/v4', '');
     const value = await override(path, parsed, init);
     if (value !== undefined) return value instanceof Response ? value : Response.json(value);
     if (path.endsWith('/events')) {

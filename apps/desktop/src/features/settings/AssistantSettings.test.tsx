@@ -10,7 +10,7 @@ import Settings from './Settings';
 import AssistantSettings from './AssistantSettings';
 
 afterEach(() => { vi.unstubAllGlobals(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 4 });
 
 describe('共享主助理设置', () => {
   it('连接与模型先显示标题与新建入口，固定模型在所选助理下保存', async () => {
@@ -90,7 +90,7 @@ describe('共享主助理设置', () => {
     await user.click(screen.getByRole('button', { name: '保存助理' }));
     await screen.findByText('助理配置已保存；仅对新运行生效');
     expect(requests).toHaveLength(1);
-    expect(requests[0].url).toBe('http://127.0.0.1:54321/v3/profiles/00000000-0000-4000-8000-000000000001');
+    expect(requests[0].url).toBe('http://127.0.0.1:54321/v4/profiles/00000000-0000-4000-8000-000000000001');
     expect(requests[0].body.meta.expected_version).toBe(1);
     expect(requests[0].body.data).toEqual({ ...agent, version: 1, display_name: '我的助理', icon_id: 'compass', communication_style: '简洁、直接', instructions: '先核对来源', default_model_profile_id: model.id });
     await user.click(screen.getByRole('button', { name: '保存助理' }));

@@ -44,7 +44,7 @@ it.each(['main', 'quick'])('%s 实际窗口打开 MCP 原图并选择新视觉�
         return null;
       });
       vi.stubGlobal('fetch', (input: RequestInfo | URL, init: RequestInit = {}) => {
-        if (!String(input).startsWith(fixture!.connection.base_url + '/v3/')) throw new Error(`禁止外部请求：${input}`);
+        if (!String(input).startsWith(fixture!.connection.base_url + '/v4/')) throw new Error(`禁止外部请求：${input}`);
         return nativeFetch(input, { ...init, headers: {
           ...Object.fromEntries(new Headers(init.headers)), Origin: 'http://tauri.localhost',
         } });

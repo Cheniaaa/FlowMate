@@ -16,7 +16,7 @@ from flowmate.contracts.execution import (
     ScopeDependency,
 )
 
-Purpose = Literal["read", "model_send", "export", "tool_send", "local_process_send"]
+Purpose = Literal["read", "model_send", "embedding_send", "export", "tool_send", "local_process_send"]
 FilePinInvalidReason = Literal["file_source_changed", "file_identity_changed"]
 
 
@@ -59,6 +59,8 @@ class GrantCommand(Contract):
     scope: scopes.ScopeRef
     resource_ids: list[Id] = Field(default_factory=list)
     memory_scopes: list[scopes.ScopeRef] = Field(default_factory=list)
+    knowledge_source_ids: list[Id] = Field(default_factory=list, exclude_if=lambda value: not value)
+    knowledge_scopes: list[scopes.ScopeRef] = Field(default_factory=list, exclude_if=lambda value: not value)
     mcp_versions: dict[Id, Version] = Field(default_factory=dict)
     mcp_queries: list[McpToolSnapshot] = Field(default_factory=list)
     purposes: list[Purpose] = Field(min_length=1)

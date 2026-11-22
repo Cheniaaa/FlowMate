@@ -69,15 +69,29 @@ function Usage({ usage }: { usage: SessionContextUsage }) {
       <dt>已知输出</dt><dd>{tokens(outputs > 0 ? usage.output_tokens : null)}{coverage(outputs)}</dd>
       <dt>缓存命中</dt><dd>{cached > 0 ? tokens(usage.cached_input_tokens) + coverage(cached) : '无缓存读数'}</dd>
       {cacheInput > 0 && <><dt>缓存率</dt><dd>{percent(usage.cached_tokens_with_reported_input, cacheInput)}</dd></>}
-      <dt>已计算费用</dt><dd>{requests > pending + unknown ? formatUsd(usage.calculated_units, usage.units_per_currency) : '未确认'}</dd>
+      <dt>已计算总费用</dt><dd>{requests + usage.embedding_requests > pending + unknown
+        + usage.embedding_pending_cost_requests + usage.embedding_unknown_cost_requests
+        ? formatUsd(usage.calculated_units, usage.units_per_currency) : '未确认'}</dd>
     </dl>
     {cacheInput > 0 && <p className="context-muted">缓存率仅计入同时报告输入和缓存的请求。</p>}
     {(pending > 0 || unknown > 0) && <p className="context-muted">{pending > 0 && `${pending} 次等待费用回执`}{pending > 0 && unknown > 0 && ' · '}{unknown > 0 && `${unknown} 次费用未确认`}</p>}
-    <p className="context-muted"><span>截至本次展开。</span><span>费用按记录用量和固定价格估算。</span></p>
+    {usage.embedding_requests > 0 && <section aria-label="会话向量用量">
+      <h4>向量用量</h4><dl className="context-facts">
+        <dt>向量操作</dt><dd>{count(usage.embedding_requests)} 次</dd>
+        <dt>已知输入</dt><dd>{tokens(usage.embedding_input_reported_requests > 0 ? usage.embedding_input_tokens : null)}
+          {usage.embedding_input_reported_requests < usage.embedding_requests
+            && ` · ${usage.embedding_input_reported_requests}/${usage.embedding_requests} 次已报告`}</dd>
+        <dt>向量已计算费用</dt><dd>{usage.embedding_requests > usage.embedding_unknown_cost_requests + usage.embedding_pending_cost_requests
+          ? formatUsd(usage.embedding_calculated_units, usage.units_per_currency) : '未确认'}</dd>
+      </dl>
+      {usage.embedding_unknown_cost_requests > 0 && <p>{usage.embedding_unknown_cost_requests} 次向量费用未知</p>}
+      {usage.embedding_pending_cost_requests > 0 && <p>{usage.embedding_pending_cost_requests} 次向量等待费用回执</p>}
+    </section>}
+    <p className="context-muted"><span>截至最近一次查询。</span><span>费用按记录用量和固定价格估算。</span></p>
   </div>;
 }
 
-function SessionUsage({ client, sessionId }: { client: RuntimeClient; sessionId: string }) {
+function SessionUsage({ client, sessionId, accountingRevision }: { client: RuntimeClient; sessionId: string; accountingRevision: string }) {
   const [result, setResult] = useState<{ usage?: SessionContextUsage; error?: string }>();
   const [retry, setRetry] = useState(0);
   useEffect(() => {
@@ -88,20 +102,22 @@ function SessionUsage({ client, sessionId }: { client: RuntimeClient; sessionId:
       if (!ignore) setResult({ error: error instanceof Error ? error.message : String(error) });
     });
     return () => { ignore = true; };
-  }, [client, sessionId, retry]);
+  }, [client, sessionId, retry, accountingRevision]);
   if (result?.usage) return <Usage usage={result.usage} />;
   if (result?.error) return <div role="alert" className="context-entry">
-    <p>{result.error}</p><Button size="sm" variant="outline" onClick={() => { setResult(undefined); setRetry(value => value + 1); }}>重新加载会话用量</Button>
+    <p>{result.error}</p><Button size="sm" variant="outline" onClick={() => { setResult(undefined); setRetry(value => value + 1); }}>重试</Button>
   </div>;
   return <p role="status" className="context-muted">正在加载会话用量…</p>;
 }
 
-export default function ContextPanel({ client, sessionId, revision, authorization, onInspect, onResources,
-  onUseFileVersion, fileSelectionDisabled }: {
+export default function ContextPanel({ client, sessionId, revision, accountingRevision, authorization, onInspect, onResources,
+  onUseFileVersion, fileSelectionDisabled, onOpenEvidence }: {
   client: RuntimeClient; sessionId: string; revision: string; authorization: string;
+  accountingRevision: string;
   onInspect: (id: string) => void; onResources: () => void;
   onUseFileVersion: (trigger: HTMLButtonElement, runId: string, resourceIds: readonly string[]) => void;
   fileSelectionDisabled: boolean;
+  onOpenEvidence?: (id: string) => void;
 }) {
   const [pagination, setPagination] = useState<{ runId: string; depth: number }>();
   const [usageOpen, setUsageOpen] = useState(false);
@@ -150,24 +166,40 @@ export default function ContextPanel({ client, sessionId, revision, authorizatio
   const data = snapshot?.authorization === authorization && snapshot.revision === revision ? snapshot.data : undefined;
   const round = data?.round;
   const requests = data?.activities.items.filter(item => item.kind === 'model') ?? [];
-  const fileOperations = data?.activities.items.filter(item => item.kind !== 'model') ?? [];
+  const fileOperations = data?.activities.items.filter(item => item.kind === 'read' || item.kind === 'inspect') ?? [];
+  const embeddings = data?.activities.items.filter(item => item.kind === 'embedding') ?? [];
   const changed = round?.file_changed || fileOperations.some(item => item.file_changed);
   return <section className="context-panel" aria-label="上下文详情">
-    {error && <div role="alert" className="context-entry"><p>{error.message}</p><Button variant="outline" size="sm" onClick={() => setRetry(value => value + 1)}>重新加载上下文</Button></div>}
+    {error && <div role="alert" className="context-entry"><p>{error.message}</p><Button variant="outline" size="sm" onClick={() => setRetry(value => value + 1)}>重试</Button></div>}
     {!data && !error && <p role="status" className="context-muted">正在加载上下文…</p>}
     {data && !round && <p className="context-muted">本会话尚无对话轮次。</p>}
     {data && round && <>
       <section className="context-group" aria-label="本轮来源">
         <h3>本轮来源</h3>
+        {(data.knowledge.length > 0 || data.hidden_knowledge_count > 0) && <section aria-label="已用于模型的项目资料" className="flex flex-col gap-2">
+          <h4>已用于模型的项目资料</h4>
+          {data.knowledge.length > 0 && <ul className="flex flex-col gap-3">{data.knowledge.map(item => <li key={item.evidence_id}
+            className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-col gap-1"><span className="wrap-anywhere">{item.name}</span>
+              <small className="text-muted-foreground">{item.start_line === item.end_line
+                ? `${item.start_line} 行` : `${item.start_line}–${item.end_line} 行`}</small>
+              {item.historical && <small className="text-muted-foreground">历史原文</small>}
+            </div>
+            {onOpenEvidence && <Button size="sm" variant="ghost" aria-label={`打开 ${item.name}`}
+              onClick={() => onOpenEvidence(item.evidence_id)}>打开</Button>}
+          </li>)}</ul>}
+          {data.hidden_knowledge_count > 0 && <p className="context-muted">{data.hidden_knowledge_count} 项资料已不可用。</p>}
+        </section>}
         {data.files.length > 0 && <><p className="context-muted">本轮固定文件</p><FileList files={data.files} /></>}
-        {data.files.length === 0 && !data.hidden_file_count && <p className="context-muted">本轮没有固定文件。</p>}
         {data.hidden_file_count > 0 && <p className="context-muted">{data.hidden_file_count} 个文件的历史来源不可见。</p>}
-        {fileOperations.length > 0 ? <ol className="context-entries">{fileOperations.map(item => <li className="context-entry" key={item.id}>
+        {fileOperations.length > 0 && <ol className="context-entries">{fileOperations.map(item => <li className="context-entry" key={item.id}>
           <div className="context-line"><strong>{item.kind === 'read' ? '读取文本' : '检查文件'}</strong><Status state={item.state} /></div>
           {!!item.files?.length && <FileList files={item.files} />}
           {!!item.hidden_file_count && <p className="context-muted">{item.hidden_file_count} 个文件的历史来源不可见。</p>}
           {item.file_changed && <p className="context-muted">来源已变化，操作未采用原文件版本。</p>}
-        </li>)}</ol> : <p className="context-muted">当前记录无文件检查或读取。</p>}
+        </li>)}</ol>}
+        {data.knowledge.length === 0 && data.hidden_knowledge_count === 0 && data.files.length === 0
+          && data.hidden_file_count === 0 && fileOperations.length === 0 && <p className="context-muted">本轮尚无已使用的资料。</p>}
         {changed && <>
           <p className="context-muted">来源版本已变化。重新选择文件可使用新版。</p>
           <Button size="sm" variant="outline" disabled={fileSelectionDisabled}
@@ -177,6 +209,16 @@ export default function ContextPanel({ client, sessionId, revision, authorizatio
           <Button size="sm" variant="outline" onClick={onResources}>查看当前授权</Button>}
         <ContextNotice usage={data.history} disclosureName={`context-history-${sessionId}`} onInspectRun={() => onInspect(round.run_id)} />
       </section>
+      {embeddings.length > 0 && <section className="context-group" aria-label="本轮向量用量">
+        <h3>向量用量</h3><ol className="context-entries">{embeddings.map(item => <li key={item.id} className="context-entry">
+          <div className="context-line"><strong>{item.embedding_kind === 'query' ? '资料检索向量' : '资料处理向量'}</strong><Status state={item.state} /></div>
+          <p className="context-muted">{item.model}</p><dl className="context-facts">
+            <dt>输入</dt><dd>{tokens(item.input_tokens)}</dd>
+            <dt>费用</dt><dd>{item.calculated_units != null ? formatUsd(item.calculated_units, data.units_per_currency)
+              : item.cost_pending ? '等待费用回执' : '费用未知'}</dd>
+          </dl>
+        </li>)}</ol>
+      </section>}
       <section className="context-group" aria-label="最近一次模型请求">
         <h3>最近一次模型请求</h3>
         {data.latest_request ? <div className="context-entry">
@@ -197,7 +239,7 @@ export default function ContextPanel({ client, sessionId, revision, authorizatio
       </Button>}
     <details className="context-group" onToggle={event => setUsageOpen(event.currentTarget.open)}>
       <summary>会话用量与费用</summary>
-      {usageOpen && <SessionUsage client={client} sessionId={sessionId} />}
+      {usageOpen && <SessionUsage client={client} sessionId={sessionId} accountingRevision={accountingRevision} />}
     </details>
   </section>;
 }

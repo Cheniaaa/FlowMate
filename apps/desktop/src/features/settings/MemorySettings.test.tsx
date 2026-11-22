@@ -27,7 +27,7 @@ it('读取与自动整理策略保存不创建发送授权；目的地授权明�
     if (path.endsWith('/workspaces')) return Response.json(page([{ id, version: 1, name: '项目', directory_resource_id: null }]));
     throw new Error(path);
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 }), store = createRuntimeStore(client);
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 }), store = createRuntimeStore(client);
   const user = userEvent.setup(); render(<MemorySettings client={client} store={store} />);
   const read = await screen.findByLabelText('启用个人画像读取');
   expect(read.getAttribute('aria-describedby')).toBeTruthy();
@@ -43,7 +43,7 @@ it('读取与自动整理策略保存不创建发送授权；目的地授权明�
   await user.selectOptions(screen.getByLabelText('授权目标模型'), model.id);
   await user.click(screen.getByRole('button', { name: '授权此范围发送到所选模型' }));
   await waitFor(() => expect(writes).toHaveLength(2));
-  expect(writes[1].path).toBe('/v3/memory/grants');
+  expect(writes[1].path).toBe('/v4/memory/grants');
   expect(writes[1].body.data).toEqual({ destination: connection.endpoint, scope: memoryPolicy.scope });
   await user.click(screen.getByRole('button', { name: '撤销此模型发送授权' }));
   await screen.findByText('已撤销');
@@ -65,7 +65,7 @@ it('全局策略更新不覆盖设置草稿或替聊天选择授权；关闭沿�
     if (path.endsWith('/memory/grants') || path.endsWith('/workspaces')) return Response.json(page([]));
     throw new Error(path);
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 }), store = createRuntimeStore(client);
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 }), store = createRuntimeStore(client);
   const user = userEvent.setup(); render(<Settings client={client} runtimeStore={store} section="memory" onClose={close} />);
   await user.click(await screen.findByLabelText('启用自动记忆整理'));
   policy = { ...memoryPolicy, version: 2, read_profile: false };
@@ -102,10 +102,10 @@ it.each([
     if (path.endsWith('/workspaces')) return Response.json(page([]));
     throw new Error(path);
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   const user = userEvent.setup();
   render(<MemorySettings client={client} store={createRuntimeStore(client)} />);
   await user.click(await screen.findByRole('button', { name: `撤销此${label}授权` }));
   await screen.findByText('已撤销');
-  expect(writes).toEqual([{ path: `/v3/grants/${memoryGrant.id}/revoke`, body: expect.objectContaining({ expected_version: 1 }) }]);
+  expect(writes).toEqual([{ path: `/v4/grants/${memoryGrant.id}/revoke`, body: expect.objectContaining({ expected_version: 1 }) }]);
 });

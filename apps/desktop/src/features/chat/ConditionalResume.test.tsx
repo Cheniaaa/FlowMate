@@ -10,7 +10,7 @@ import McpQueryRecovery from './McpQueryRecovery';
 afterEach(() => vi.unstubAllGlobals());
 
 it('同版本查询恢复动作在复查期间仍可点击，服务端取消动作后移除', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 });
   const interrupted: RunSnapshot = { ...run, state: 'interrupted', version: 7, reason: 'mcp_query_uncertain' };
   const recovery: PendingAction = { id, kind: 'recovery', workspace_id: id, session_id: id, run_id: id,
     task_id: run.root_task_id, version: 7, reason: 'mcp_query_uncertain',
@@ -47,7 +47,7 @@ it.each([
   const question = { id: secondId, version: 1, run_id: id, task_id: run.root_task_id, call_id: 'ask', message_id: id,
     question: '请选择范围', answer_schema: { type: 'string' }, status: 'pending' as const, answer_message_id: null, dependencies: [] };
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (init.method === 'POST') {
       writes.push({ path, query: new URL(url).search, body: JSON.parse(init.body as string) });
       current = { ...current, state: 'running', version: 8, reason: null }; return Response.json(current);
@@ -70,7 +70,7 @@ it.each([
     return Response.json(values[path]);
   });
   const user = userEvent.setup();
-  render(<Conversation compact={compact} client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 })} />);
+  render(<Conversation compact={compact} client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 })} />);
   if (interrupted) {
     await screen.findByText(/查询已发送，未收到结果/);
   } else {

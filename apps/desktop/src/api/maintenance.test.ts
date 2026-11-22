@@ -14,7 +14,7 @@ it('T7四根沿原HTTP边界，scope/page和记录关联各自绑定，边界Uni
     return Response.json(init.method === 'POST' ? maintenanceTask
       : parsed.pathname.includes('/source-boundaries/') ? sourceBoundary : page([maintenanceNotice]));
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   expect(await client.memorySourceBoundary(sourceBoundary.run_id)).toEqual(sourceBoundary);
   await client.memoryMaintenance({ scope_kind: 'user_global', limit: 10, cursor: 'opaque-next' });
   await client.recordMaintenance(memory.id, { limit: 10 });
@@ -23,7 +23,7 @@ it('T7四根沿原HTTP边界，scope/page和记录关联各自绑定，边界Uni
   expect(await client.submitMemoryMaintenance(command)).toEqual(maintenanceTask);
   expect(requests[1].url.searchParams.get('scope_kind')).toBe('user_global');
   expect(requests[1].url.searchParams.get('cursor')).toBe('opaque-next');
-  expect(requests[2].url.pathname).toBe(`/v3/memory/records/${memory.id}/maintenance`);
+  expect(requests[2].url.pathname).toBe(`/v4/memory/records/${memory.id}/maintenance`);
   expect(JSON.parse(String(requests[3].init.body))).toEqual(command);
 });
 

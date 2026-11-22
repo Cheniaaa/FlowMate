@@ -8,6 +8,7 @@ from flowmate.contracts.base import Contract, Count, Id, Units, Version, identif
 from flowmate.contracts.pricing import PricingSnapshot
 from flowmate.contracts.scopes import ScopeRef
 from flowmate.contracts.settings import AgentProfile, ReasoningEffort, ResolvedModelProfile
+from flowmate.knowledge.contracts import CitationRef
 
 
 class RunLimits(Contract):
@@ -25,7 +26,7 @@ TaskState = Literal[
     "queued", "running", "waiting_user", "waiting_approval", "waiting_children",
     "interrupted", "blocked_incompatible", "completed", "failed", "cancelled",
 ]
-RunKind = Literal["user", "managed", "follow_up", "maintenance"]
+RunKind = Literal["user", "managed", "follow_up", "maintenance", "knowledge"]
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
 
 
@@ -69,6 +70,7 @@ class ConfigSnapshot(Contract):
         {"properties": {"model_pricing": {"type": "object"}, "pricing_unknown_reason": {"type": "null"}}},
         {"properties": {"model_pricing": {"type": "null"}, "pricing_unknown_reason": {"type": "string"}}},
     ]})
+    kind: Literal["agent"] = "agent"
     agent_profile: AgentProfile
     model_profile: ResolvedModelProfile
     model_pricing: PricingSnapshot | None
@@ -83,8 +85,17 @@ class ConfigSnapshot(Contract):
         return self
 
 
+class DeterministicConfigSnapshot(Contract):
+    kind: Literal["deterministic"] = "deterministic"
+    catalog: CatalogVersions
+
+
+ExecutionConfig = Annotated[ConfigSnapshot | DeterministicConfigSnapshot, Field(discriminator="kind")]
+
+
 class SourceSelection(Contract):
     resource_ids: list[Id] = Field(default_factory=list)
+    knowledge_source_ids: list[Id] = Field(default_factory=list, exclude_if=lambda value: not value)
     memory_scopes: list[ScopeRef] = Field(default_factory=list)
     skill_versions: dict[Id, str] = Field(default_factory=dict)
     # null 表示本轮只用指导；许可 ID 固定所选版本和环境。
@@ -106,7 +117,7 @@ class SelectedFileVersion(Contract):
 class TaskExecutionBinding(Contract):
     execution_session_id: Id
     interaction_session_id: Id | None
-    config: ConfigSnapshot
+    config: ExecutionConfig
     sources: SourceSelection
     file_inputs: dict[Id, SelectedFileVersion] = Field(default_factory=dict)
     delegation_depth: Count
@@ -181,6 +192,13 @@ class RunOutput(Contract):
         "尚未满足的任务要求；非空时不能完成Run。用户要求在交付物中保留的业务待确认事项"
         "（如未确定日期）应写入summary或Artifact，不属于未完成要求。任务要求均已满足时传空列表。"))
     handled_failures: list[FailureDisposition] = Field(default_factory=list)
+    citations: list[CitationRef] = Field(default_factory=list, exclude_if=lambda value: not value)
+
+    @model_validator(mode="after")
+    def unique_citation_markers(self):
+        if len({item.marker for item in self.citations}) != len(self.citations):
+            raise ValueError("同一正文的引用标记不得重复")
+        return self
 
 
 class AgentResult(RunOutput):
@@ -207,7 +225,7 @@ class RunSnapshot(Contract):
     budget_group_id: Id
     kind: RunKind = "user"
     state: TaskState = "queued"
-    config: ConfigSnapshot
+    config: ExecutionConfig
     scope_dependencies: list[ScopeDependency]
     deadline_at: AwareDatetime
     output: AgentResult | RunOutput | None = None
@@ -221,6 +239,14 @@ class RunSnapshot(Contract):
     follow_up_closed: bool = False
     admission_generations: dict[Id, Version] = Field(default_factory=dict)
     vision_source_run_id: Id | None = None
+
+    @model_validator(mode="after")
+    def execution_kind_matches_config(self):
+        if (self.kind == "knowledge") != (self.config.kind == "deterministic"):
+            raise ValueError("知识任务须使用确定性配置，Agent运行须固定生成配置")
+        if self.kind == "knowledge" and self.interaction_session_id is not None:
+            raise ValueError("项目知识任务不占用交互会话")
+        return self
 
 
 class TaskSnapshot(Contract):
@@ -237,6 +263,12 @@ class TaskSnapshot(Contract):
     result_version: Version | None = None
     reason: str | None = None
     deadline_at: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def agent_requires_generation_config(self):
+        if self.kind == "agent" and self.binding.config.kind != "agent":
+            raise ValueError("Agent任务须固定真实生成模型配置")
+        return self
 
 
 class Checkpoint(Contract):
@@ -322,6 +354,7 @@ class ActivitySnapshot(Contract):
     receipt: ActivityReceipt | None = None
     result_digest: str | None = None
     content_committed: bool = False
+    embedding_query_abandoned: bool = Field(default=False, exclude_if=lambda value: not value)
     pricing_snapshot: dict[str, JsonValue] | None = None
     lease_generation: Version | None = None
     mcp_source: McpResultSource | None = None
@@ -406,6 +439,9 @@ class AccountingActivity(Contract):
     run_id: Id
     budget_id: Id
     attempt_id: Id
+    kind: Literal["model", "tool"]
+    operation: str
+    dispatched: bool
     state: Literal["prepared", "dispatched", "succeeded", "failed", "uncertain"]
     reserved_units: Units
     reserved_tokens: Count = 0

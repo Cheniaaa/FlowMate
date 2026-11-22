@@ -1,14 +1,46 @@
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, commandMeta, type RuntimeClient } from '../../api/client';
 import { mergeVersioned } from '../../api/events';
-import type { CommandMeta, DataUseGrant, ResourceRef } from '../../generated/contracts';
+import type { CommandMeta, DataUseGrant, KnowledgeSource, ResourceRef } from '../../generated/contracts';
 import { windowError } from '../../api/windows';
 import { mcpDestinationLabel } from '../../api/mcp';
 import { Button } from '../../components/ui/button';
 import { FieldDescription, FieldError } from '../../components/ui/field';
 import GrantForm from '../authorization/GrantForm';
 import type { EditorLifecycle } from '../settings/Settings';
-const purposes = { read: '读取', model_send: '发送至模型', export: '导出', tool_send: '发送到 MCP 工具', local_process_send: '发送到绑定的本机脚本' };
+const purposes = { read: '读取', model_send: '发送至模型', embedding_send: '发送至向量模型', export: '导出', tool_send: '发送到 MCP 工具', local_process_send: '发送到绑定的本机脚本' };
+
+export async function readKnowledgeGrantSources(client: RuntimeClient, workspaceId: string, grants: DataUseGrant[]) {
+  const needed = new Set(grants.flatMap(grant => grant.knowledge_source_ids ?? []));
+  const sources: Record<string, KnowledgeSource> = {};
+  let cursor: string | undefined;
+  while (needed.size) {
+    const page = await client.knowledgeSources(workspaceId, { cursor });
+    for (const source of page.items) {
+      sources[source.id] = source;
+      needed.delete(source.id);
+    }
+    if (!page.next_cursor) break;
+    cursor = page.next_cursor;
+  }
+  return sources;
+}
+
+export function KnowledgeGrantScope({ grant, sources }: { grant: DataUseGrant; sources: Record<string, KnowledgeSource> }) {
+  const [expanded, setExpanded] = useState(false);
+  const ids = grant.knowledge_source_ids ?? [], labels = ids.map(id => sources[id]?.label ?? '资料名称不可用');
+  return <div className="grid gap-1 text-sm">
+    {grant.knowledge_scopes?.map(scope => <p className="m-0" key={`${scope.kind}:${scope.workspace_id}`}>
+      {scope.kind === 'workspace' ? '本项目全部资料（含以后加入）' : '指定范围全部资料（含以后加入）'}</p>)}
+    {labels.length > 0 && <p className="m-0">{labels.length > 3
+      ? `${labels.length} 份资料：${labels.slice(0, 3).join('、')} 等` : labels.join('、')}</p>}
+    {labels.length > 3 && <details onToggle={event => setExpanded(event.currentTarget.open)}><summary className="cursor-pointer">查看全部文件</summary>
+      {expanded && <ul aria-label="授权资料清单" className="my-1 list-inside list-disc">
+        {ids.map((id, index) => <li key={id}>{labels[index]}</li>)}
+      </ul>}</details>}
+  </div>;
+}
+
 export default function ResourcePanel({ client, workspaceId, sessionId, workspaceName, sessionTitles, showHeading = true, onRevoke, onGrantsLoaded, refreshKey, isRevokePending, onBusyChange, onSaved }: {
   client: RuntimeClient; workspaceId: string; sessionId: string | null; onRevoke: (id: string, meta: CommandMeta) => Promise<unknown>;
   workspaceName?: string; sessionTitles?: Readonly<Record<string, string>>; showHeading?: boolean;
@@ -17,6 +49,7 @@ export default function ResourcePanel({ client, workspaceId, sessionId, workspac
 } & EditorLifecycle) {
   const [resources, setResources] = useState<Record<string, ResourceRef>>({});
   const [grants, setGrants] = useState<Record<string, DataUseGrant>>({});
+  const [knowledgeSources, setKnowledgeSources] = useState<Record<string, KnowledgeSource>>({});
   const [syncing, setSyncing] = useState(true);
   const [readError, setReadError] = useState('');
   const [confirmation, setConfirmation] = useState<string>();
@@ -26,13 +59,16 @@ export default function ResourcePanel({ client, workspaceId, sessionId, workspac
   const inflight = useRef(false);
   const [creating, setCreating] = useState(false);
   useEffect(() => {
-    let ignore = false; setResources({}); setGrants({}); setSyncing(true); setReadError(''); setConfirmation(undefined);
+    let ignore = false; setResources({}); setGrants({}); setKnowledgeSources({}); setSyncing(true); setReadError(''); setConfirmation(undefined);
     async function load() {
       let cursor: string | null = null;
       do { const page = await client.resources(workspaceId, cursor ? { cursor } : {}); if (ignore) return; setResources(current => mergeVersioned(current, page.items)); cursor = page.next_cursor; } while (cursor);
       const loaded: DataUseGrant[] = [];
       do { const page = await client.grants(workspaceId, cursor ? { cursor } : {}); if (ignore) return; setGrants(current => mergeVersioned(current, page.items)); loaded.push(...page.items); cursor = page.next_cursor; } while (cursor);
       onGrantsLoaded?.(loaded);
+      const sources = await readKnowledgeGrantSources(client, workspaceId, loaded.filter(grant =>
+        sessionId === null || grant.scope.session_id === null || grant.scope.session_id === sessionId));
+      if (!ignore) setKnowledgeSources(sources);
       if (!ignore) setSyncing(false);
     }
     load().catch(error => { if (!ignore) { setReadError(windowError(error)); setSyncing(false); } });
@@ -56,12 +92,14 @@ export default function ResourcePanel({ client, workspaceId, sessionId, workspac
         {!!Object.keys(grant.mcp_versions).length && <><dt>资料来源</dt><dd>MCP 服务返回的资料</dd></>}
       </dl></details>
       {!!grant.resource_ids.length && <ul>{grant.resource_ids.map(id => <li key={id}>{resources[id]?.label ?? '资料名称不可用'}</li>)}</ul>}
+      <KnowledgeGrantScope grant={grant} sources={knowledgeSources} />
       {!!grant.mcp_queries.length && <ul>{grant.mcp_queries.map(tool => <li key={`${tool.server_id}:${tool.original_name}`}>{tool.original_name}</li>)}</ul>}
       {grant.memory_scopes.map(scope => <p key={`${scope.kind}:${scope.workspace_id}`}>记忆范围：{scope.kind === 'user_global' ? '个人' : '项目记忆'}</p>)}
       <p>{grant.purposes.map(purpose => purposes[purpose]).join(' · ')}</p><p>目的地：{grant.destination
         ? grant.destination.startsWith('skill:') ? '已绑定的本地脚本' : mcpDestinationLabel(grant.destination)
         : '本机，无发送目的地'}</p>
       {confirmation === grant.id ? <div className="inline-confirmation"><p>将撤销此授权的全部来源及以上用途，阻止依赖它的新派发；已经发送的内容无法收回，历史不删除。</p>
+        <KnowledgeGrantScope grant={grant} sources={knowledgeSources} />
         <div className="flex flex-wrap items-center gap-2"><Button disabled={busy} onClick={() => setConfirmation(undefined)}>取消撤销</Button><Button variant="destructive" disabled={busy || syncing || !!readError || isRevokePending?.(grant.id)} onClick={async () => {
           if (inflight.current || isRevokePending?.(grant.id)) return;
           inflight.current = true;

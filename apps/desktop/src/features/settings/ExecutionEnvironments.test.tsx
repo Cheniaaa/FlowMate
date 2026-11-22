@@ -11,7 +11,7 @@ import Settings from './Settings';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks(); });
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:8999', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:8999', token: 'test', protocol_version: 4 });
 const environment: ExecutionEnvironmentView = {
   id: '00000000-0000-4000-8000-000000000010', revision: 1, kind: 'python',
   executable_path: 'C:\\用户选择\\existing venv\\Scripts\\python.exe', executable_identity: 'controlled',

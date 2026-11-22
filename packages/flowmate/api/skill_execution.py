@@ -13,7 +13,7 @@ from flowmate.skills.execution.contracts import SkillExecutionPermission, SkillS
 
 
 def router(runtime):
-    route = APIRouter(prefix="/v3/skills")
+    route = APIRouter(prefix="/v4/skills")
 
     def selected(scope_kind, workspace_id):
         if (scope_kind == "workspace") != (workspace_id is not None):

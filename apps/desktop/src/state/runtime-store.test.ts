@@ -5,7 +5,7 @@ import { contextUsage, event, grant, id, limits, page, publication, resource, ru
 import { createRuntimeStore, type UiCommand } from './runtime-store';
 import type { RunDetail } from '../generated/contracts';
 
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 });
 
 it('撤销响应未确认时保留原归属，不因之后切换项目快照而改变命令说明', async () => {
   vi.stubGlobal('fetch', async () => { throw new TypeError('response lost'); });
@@ -95,17 +95,20 @@ describe('RuntimeStore真实客户端边界', () => {
     } finally { abort.abort(); }
   });
 
-  it.each(['budget.settled', 'activity.received', 'activity.prepared'] as const)('%s 仅通过 SSE 刷新权威费用和上下文摘要', async kind => {
+  it.each(['budget.settled', 'activity.received', 'activity.prepared', 'accounting.settled'] as const)('%s 仅通过 SSE 刷新权威费用和上下文摘要', async kind => {
     const abort = new AbortController();
     const cursor = (BigInt(event.event_id) + 1n).toString();
-    const currentRun = { ...run, version: 2, state: kind === 'activity.received' ? 'cancelled' as const : kind === 'budget.settled' ? 'completed' as const : 'running' as const };
+    const currentRun = { ...run, version: kind === 'accounting.settled' ? 1 : 2, state: kind === 'activity.received' ? 'cancelled' as const : kind === 'budget.settled' ? 'completed' as const : 'running' as const };
     const latest: RunDetail = { ...detail(currentRun), watermark: cursor,
+      budget: { ...detail().budget, version: 2, spent_units: '2500000000' },
       cost_summary: { ...runDetailSummary.cost_summary, calculated_units: '2500000000', reserved_units: '17', unknown_request_count: 1 },
       context_usage: { ...contextUsage, activity_id: secondId, state: kind === 'activity.prepared' ? 'prepared' : 'succeeded', omitted_group_count: 1,
         omitted_message_count: 2, reason_counts: { outside_run_scope: 2 }, compaction_state: kind === 'activity.prepared' ? 'running' : 'committed',
         summary_count: kind === 'activity.prepared' ? 0 : 1, compacted_message_count: kind === 'activity.prepared' ? 0 : 2 } };
     const payload = { runs: [currentRun], tasks: [], activities: [], budgets: [{ ...latest.budget, version: 2, spent_units: '2500000000' }], messages: [], artifacts: [], questions: [], waits: [], consumptions: [], joins: [], pending_commands: [], follow_up_intents: [] };
-    const wire = { kind: 'durable', event_id: cursor, event: { ...event, kind, event_id: cursor, payload } };
+    const wire = { kind: 'durable', event_id: cursor, event: { ...event, kind, event_id: cursor,
+      ...(kind === 'accounting.settled' ? { workspace_id: null, session_id: null } : {}),
+      payload: kind === 'accounting.settled' ? { scopes: [], deletions: [] } : payload } };
     let reads = 0;
     vi.stubGlobal('fetch', async (url: string) => {
       if (url.endsWith(`/runs/${id}`)) { reads++; return Response.json(latest); }
@@ -115,7 +118,26 @@ describe('RuntimeStore真实客户端边界', () => {
     const store = createRuntimeStore(client());
     await store.loadWorkspace(id, { snapshot: () => { store.update(state => mergeRunDetail(state, detail())); }, event: () => { abort.abort(); } }, abort.signal);
     expect(store.getSnapshot().runSummaries[id]).toMatchObject({ cost_summary: latest.cost_summary, context_usage: latest.context_usage, watermark: cursor });
+    expect(store.getSnapshot().budgets[latest.budget.id].spent_units).toBe('2500000000');
     expect(reads).toBeGreaterThan(0);
+  });
+
+  it('accounting.settled 不读取未加载的其它 Run，也不重载工作区', async () => {
+    const abort = new AbortController(), reads: string[] = [];
+    const cursor = (BigInt(event.event_id) + 1n).toString();
+    const wire = { kind: 'durable', event_id: cursor, event: { ...event, kind: 'accounting.settled',
+      event_id: cursor, workspace_id: null, session_id: null, run_id: secondId, payload: { scopes: [], deletions: [] } } };
+    vi.stubGlobal('fetch', async (url: string) => {
+      reads.push(new URL(url).pathname);
+      if (url.includes('/events?')) return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(wire)}\n\n`));
+      } }));
+      return Response.json({ workspace: { id, version: 1, name: '工作区', directory_resource_id: null },
+        sessions: page([]), active_runs: page([run]), pending_questions: page([]), pending_approvals: page([]),
+        resources: page([]), grants: page([]), watermark: event.event_id });
+    });
+    await createRuntimeStore(client()).loadWorkspace(id, { snapshot() {}, event() { abort.abort(); } }, abort.signal);
+    expect(reads).toEqual([`/v4/workspaces/${id}/snapshot`, `/v4/workspaces/${id}/events`]);
   });
 
   it('普通 SSE 重连无新事件也重新读取已展示的终态摘要', async () => {

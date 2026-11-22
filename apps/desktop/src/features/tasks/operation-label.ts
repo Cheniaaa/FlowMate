@@ -1,6 +1,7 @@
-import type { TaskSnapshot } from '../../generated/contracts';
+import type { ActivityView, TaskSnapshot } from '../../generated/contracts';
 
 const labels: Record<string, string> = {
+  'embedding.query': '资料检索向量', 'embedding.document': '资料处理向量',
   'files.list': '列出文件', 'files.read_text': '读取文本', 'files.inspect_batch': '检查文件',
   'resources.read': '读取资料', 'artifacts.read': '读取产物', 'artifacts.export': '导出产物',
   'artifacts.create_text': '创建文本产物',
@@ -17,4 +18,10 @@ export function operationLabel(operation: string, task?: TaskSnapshot): string {
   const mcp = task?.binding.config.catalog.mcp_tools[operation];
   if (mcp) return `MCP · ${mcp.original_name}`;
   return knownOperationLabel(operation) ?? (operation.startsWith('mcp.') ? 'MCP 工具调用' : '工具调用');
+}
+
+export const isEmbeddingOperation = (operation: string) => operation === 'embedding.query' || operation === 'embedding.document';
+export function activityLabel(activity: ActivityView, task?: TaskSnapshot): string {
+  return isEmbeddingOperation(activity.operation) ? operationLabel(activity.operation)
+    : activity.kind === 'model' ? '模型回复' : operationLabel(activity.operation, task);
 }

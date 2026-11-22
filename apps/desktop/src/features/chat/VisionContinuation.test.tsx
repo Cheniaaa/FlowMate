@@ -8,7 +8,7 @@ import ToolCard from './ToolCard';
 import VisionContinuation from './VisionContinuation';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 4 });
 
 it('工具图片通过带认证的产物 API 打开原图，正文保留混合顺序', async () => {
   const requested: string[] = [];
@@ -28,7 +28,7 @@ it('工具图片通过带认证的产物 API 打开原图，正文保留混合�
   await user.click(screen.getByText('工具结果 · 源调用未加载'));
   await user.click(await screen.findByRole('button', { name: '打开原图' }));
   expect(screen.getByRole('dialog').querySelector('img')?.getAttribute('src')).toBe('blob:synthetic-image');
-  expect(requested).toEqual([`http://127.0.0.1:54321/v3/artifacts/${secondId}/image`]);
+  expect(requested).toEqual([`http://127.0.0.1:54321/v4/artifacts/${secondId}/image`]);
   expect(view.container.textContent!.indexOf('之前')).toBeLessThan(view.container.textContent!.indexOf('之后'));
   await user.click(screen.getByRole('button', { name: '关闭对话框' }));
   view.unmount();
@@ -44,7 +44,7 @@ it('选择视觉型号显示实际接收方，并由现有命令存储创建关�
     joins: page([]), watermark: event.event_id };
   const sent: unknown[] = [];
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path === '/models') return Response.json(page([model]));
     if (path.endsWith('/resolved')) return Response.json(modelResolution);
     if (path.endsWith('/continue-vision')) {

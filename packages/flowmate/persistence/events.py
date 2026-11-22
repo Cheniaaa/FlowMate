@@ -46,7 +46,7 @@ def apply_event(tx: "UnitOfWork", event: RunEvent) -> None:
             tx.save_profile("model", value)
         case "connection.saved":
             tx.save_connection(value)
-        case "memory.changed" | "memory.policy_changed" | "memory.maintenance_changed" | "skill.changed" | "environment.changed" | "mcp.changed" | "naming.policy_saved":
+        case "memory.changed" | "memory.policy_changed" | "memory.maintenance_changed" | "skill.changed" | "environment.changed" | "mcp.changed" | "naming.policy_saved" | "knowledge.changed":
             # 事实由事务内 MemoryProvider 写入；事件只保留不含正文的失效通知。
             pass
         case _:

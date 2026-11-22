@@ -1,11 +1,11 @@
 import { Fragment, type ReactNode } from 'react';
 import { FileText } from 'lucide-react';
-import type { ActivityView, ModelMessage, RunSnapshot } from '../../generated/contracts';
+import type { ActivityView, KnowledgeResult, ModelMessage, RunSnapshot } from '../../generated/contracts';
 import { latestContextUsage, messageSourceInvalid, terminal } from '../../api/events';
-import Markdown from '../../components/Markdown';
+import Markdown, { type EvidenceLabel } from '../../components/Markdown';
 import { Button } from '../../components/ui/button';
 import Status from '../../components/Status';
-import ToolCard, { toolLabel } from './ToolCard';
+import ToolCard, { knowledgeResult, toolLabel } from './ToolCard';
 import type { RuntimeClient } from '../../api/client';
 import type { RuntimeStore } from '../../state/runtime-store';
 import MemoryReview from '../memory/MemoryReview';
@@ -53,7 +53,7 @@ function renderReadingOrder(items: ReadingItem[]) {
 
 export default function MessageList({ messages, assistantName, onOpenResults, client, store, runs = [],
   activities = [], previews = {}, reasoningPreviews = {}, artifacts = [], onOpenArtifact, onOpenToolArtifact, onInspectRun,
-  hideInlineContext }: {
+  hideInlineContext, onOpenEvidence, evidenceLabels: currentEvidenceLabels }: {
   messages: ModelMessage[]; assistantName: string; onOpenResults?: (ids?: string[]) => void; client?: RuntimeClient; store?: RuntimeStore;
   runs?: RunSnapshot[];
   activities?: ActivityView[];
@@ -62,6 +62,8 @@ export default function MessageList({ messages, assistantName, onOpenResults, cl
   onOpenToolArtifact?: (id: string, runId: string, activityId: string) => void;
   onInspectRun?: (runId: string) => void;
   hideInlineContext?: boolean;
+  onOpenEvidence?: (workspaceId: string, evidenceId: string) => void;
+  evidenceLabels?: ReadonlyMap<string, EvidenceLabel>;
   previews?: Record<string, Record<number, string>>;
   reasoningPreviews?: Record<string, Record<number, string>>;
 }) {
@@ -79,8 +81,11 @@ export default function MessageList({ messages, assistantName, onOpenResults, cl
   const invalidMessages = new Set(messages.filter(message => messageSourceInvalid(message, projection)).map(message => message.id));
   const committedActivities = new Set(messages.map(message => message.activity_id));
   const runsById = new Map(runs.map(run => [run.id, run]));
+  const evidenceLabels = new Map<string, Map<string, EvidenceLabel>>();
   const tailAnchors = new Map<string, string>();
   const finalMessages = new Map<string, ModelMessage>();
+  const knowledgeResults: { runId: string; result: KnowledgeResult }[] = [];
+  const knowledgeSources = new Map<string, KnowledgeResult['sources'][number]>();
   for (const message of messages) {
     // 后台回告有自己的发布时间。它不能移动已经加载的原轮次内容。
     if (message.origin !== 'background_report' || !tailAnchors.has(message.run_id)) {
@@ -122,7 +127,9 @@ export default function MessageList({ messages, assistantName, onOpenResults, cl
           {previews[activity.id] && <div className="message-content" aria-label="未提交预览"><Markdown>{Object.values(previews[activity.id]).join('')}</Markdown></div>}
         </section>)}
       {run.output && outputAvailable && (!represented || run.output.unresolved.length > 0) && <article className="message message--assistant" aria-label="正式答复">
-        <div className="message-content">{!represented && <Markdown>{run.output.summary}</Markdown>}
+        <div className="message-content">{!represented && <Markdown citations={run.output.citations}
+          evidenceLabels={new Map([...evidenceLabels.get(run.id) ?? [], ...currentEvidenceLabels ?? []])}
+          onOpenEvidence={onOpenEvidence && (id => onOpenEvidence(run.workspace_id, id))}>{run.output.summary}</Markdown>}
           {run.output.unresolved.length > 0 && <ul>{run.output.unresolved.map((item, index) => <li key={index}>{item}</li>)}</ul>}
         </div>
       </article>}
@@ -195,6 +202,36 @@ export default function MessageList({ messages, assistantName, onOpenResults, cl
       }
     }
   }
+  for (const message of messages) {
+    if (invalidMessages.has(message.id) || message.role !== 'tool') continue;
+    for (const part of message.parts) {
+      if (part.kind !== 'tool_result' || part.error !== null) continue;
+      const paired = part.origin_message_id && !invalidMessages.has(part.origin_message_id)
+        ? callResults.get(part.origin_message_id)?.get(part.call_id) : undefined;
+      const operation = message.tool_operation ?? paired?.call.name;
+      if (operation !== 'knowledge.search' && operation !== 'knowledge.read' && operation !== 'knowledge.list_sources') continue;
+      const result = knowledgeResult(part.result);
+      if (!result) continue;
+      const workspaceId = runsById.get(message.run_id)?.workspace_id;
+      for (const source of result.sources) {
+        if (source.workspace_id === workspaceId && source.revision > (knowledgeSources.get(source.id)?.revision ?? 0))
+          knowledgeSources.set(source.id, source);
+      }
+      knowledgeResults.push({ runId: message.run_id, result });
+    }
+  }
+  for (const { runId, result } of knowledgeResults) {
+    const labels = evidenceLabels.get(runId) ?? new Map<string, EvidenceLabel>();
+    for (const item of result.evidence) {
+      const source = knowledgeSources.get(item.source_id);
+      if (source && source.workspace_id === runsById.get(runId)?.workspace_id
+        && !['revoked', 'deleted'].includes(source.status)) labels.set(item.id, {
+        name: source.label, start_line: item.locator.start_line, end_line: item.locator.end_line,
+        historical: source.status === 'removed' || source.active_version !== null && source.active_version !== item.source_version,
+      });
+    }
+    evidenceLabels.set(runId, labels);
+  }
   function renderMessage(message: ModelMessage): Pick<ReadingItem, 'node' | 'steps'> {
     const deliveryIds = message.delivery_ids;
     const unavailable = invalidMessages.has(message.id)
@@ -236,14 +273,22 @@ export default function MessageList({ messages, assistantName, onOpenResults, cl
     const run = runsById.get(message.run_id);
     const items: ReadingItem[] = [];
     for (const [key, part] of message.parts.entries()) {
-      if (part.kind === 'text') items.push({ key, node: <Markdown>{part.text}</Markdown> });
+      if (part.kind === 'text') {
+        const finalText = message.parts.filter(item => item.kind === 'text').map(item => item.text).join('');
+        const published = message.role === 'assistant' && message.origin === 'conversation'
+          && finalMessages.get(message.run_id) === message && run?.output?.summary === finalText;
+        items.push({ key, node: <Markdown citations={published ? run.output!.citations : undefined}
+          evidenceLabels={new Map([...evidenceLabels.get(message.run_id) ?? [], ...currentEvidenceLabels ?? []])}
+          onOpenEvidence={published && onOpenEvidence ? id => onOpenEvidence(run.workspace_id, id) : undefined}>{part.text}</Markdown> });
+      }
       if (part.kind === 'reasoning') items.push({ key, node: <PublicReasoning text={part.text} /> });
       if (part.kind === 'tool_result') {
         const origin = part.origin_message_id;
         if (origin && (invalidMessages.has(origin) || callResults.get(origin)?.has(part.call_id))) continue;
         items.push({ key, steps: part.error === null ? 1 : undefined, node: <ToolCard part={part} client={client}
           sourceOperation={message.tool_operation ?? (message.activity_id ? (projection?.activities[message.activity_id] ?? activitiesById.get(message.activity_id))?.operation : undefined)}
-          openReceipt={openReceipt} deliveryArtifacts={deliveryArtifacts.get(message.run_id)} /> });
+          openReceipt={openReceipt} deliveryArtifacts={deliveryArtifacts.get(message.run_id)}
+          onOpenEvidence={run && onOpenEvidence ? id => onOpenEvidence(run.workspace_id, id) : undefined} /> });
       }
       if (part.kind === 'tool_call') {
         const paired = callResults.get(message.id)?.get(part.call_id);
@@ -256,7 +301,8 @@ export default function MessageList({ messages, assistantName, onOpenResults, cl
         const control = controls.has(part.name);
         const card = <ToolCard part={part} client={client} label={run?.config.catalog.mcp_tools[part.name]?.original_name}
           showArguments={!memoryCalls.has(part.name) && part.name !== 'run.finish'} results={paired?.results}
-          openReceipt={openReceipt} deliveryArtifacts={deliveryArtifacts.get(message.run_id)} />;
+          openReceipt={openReceipt} deliveryArtifacts={deliveryArtifacts.get(message.run_id)}
+          onOpenEvidence={run && onOpenEvidence ? id => onOpenEvidence(run.workspace_id, id) : undefined} />;
         const groupable = !control && !paired?.results.some(result => result.error !== null);
         items.push({ key, steps: groupable ? 1 : undefined,
           node: control ? <details className="process-details"><summary>过程详情</summary>{card}</details> : card });

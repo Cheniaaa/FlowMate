@@ -288,6 +288,12 @@ class RunService:
         config = config.model_copy(update={
             "members": SettingsService.resolve_members(tx, config.catalog, command.sources.skill_versions),
         })
+        available_knowledge = self.policy.authorized_knowledge_sources(tx, session["workspace_id"])
+        chosen_knowledge = command.sources.knowledge_source_ids or available_knowledge
+        if not set(chosen_knowledge) <= set(available_knowledge):
+            raise DomainError("resource_selection_invalid", "所选知识来源不属于当前获准项目范围")
+        command = command.model_copy(update={"sources": command.sources.model_copy(update={
+            "knowledge_source_ids": sorted(set(chosen_knowledge) - set(command.sources.excluded_source_ids))})})
         if len(command.sources.resource_ids) != len(set(command.sources.resource_ids)) or len(command.sources.resource_ids) > 200:
             raise DomainError("resource_selection_invalid", "资料选择重复或超限")
         if command.session_file_adoptions and (command.inherit_session_files or command.model_selection is None
@@ -467,6 +473,79 @@ class RunService:
 
         return self._command("naming.project", {"workspace_id": workspace_id}, meta, RunSnapshot, apply)
 
+    def start_knowledge_import(self, tx, job, config):
+        from flowmate.contracts.execution import TaskHandle
+        from flowmate.contracts.settings import Session
+        from flowmate.knowledge.contracts import SourceVersion
+        from flowmate.knowledge.embedding import embedding_endpoint
+        from flowmate.knowledge.ingestion import KnowledgeImportState
+        from flowmate.knowledge.settings import KnowledgeSettingsService
+
+        if job.kind == "rebuild":
+            active = [SourceVersion.model_validate_json(row[0]) for row in tx.execute(
+                "SELECT v.document FROM knowledge_sources k JOIN knowledge_versions v "
+                "ON v.source_id=k.id AND v.version=json_extract(k.document,'$.active_version') "
+                "JOIN scopes s ON s.id=k.id WHERE k.workspace_id=? AND k.status='active' "
+                "AND s.status='active' ORDER BY k.rowid", (job.workspace_id,))]
+            source_versions = [source for source in active if self.policy.knowledge_grant(
+                tx, job.workspace_id, source.source_id, "read") is not None]
+        else:
+            source_versions = [SourceVersion.model_validate_json(tx.execute(
+                "SELECT document FROM knowledge_versions WHERE source_id=? AND version=?",
+                (job.source_id, job.source_version)).fetchone()[0])]
+        profile = KnowledgeSettingsService.resolve_tx(tx, job.target_profile) if job.target_profile else None
+        ids, source_dependencies, destination_dependencies = {job.workspace_id}, {}, {}
+        for source in source_versions:
+            grant = self.policy.knowledge_grant(tx, job.workspace_id, source.source_id, "read")
+            if grant is None:
+                raise DomainError("grant_required", "导入来源的读取许可已失效")
+            source_dependencies[source.source_id] = [
+                ScopeDependency(scope_id=source.source_id, epoch=tx.execute(
+                    "SELECT epoch FROM scopes WHERE id=?", (source.source_id,)).fetchone()[0]),
+                ScopeDependency(scope_id=grant.id, epoch=grant.epoch)]
+            if job.kind == "import":
+                ids.update((source.source_id, grant.id))
+            elif grant.knowledge_scopes or len(grant.knowledge_source_ids) > 1:
+                ids.add(grant.id)
+            if profile is not None and profile.connection is not None:
+                send = self.policy.knowledge_grant(tx, job.workspace_id, source.source_id,
+                    "embedding_send", embedding_endpoint(profile.connection))
+                if send is not None:
+                    dependency = ScopeDependency(scope_id=send.id, epoch=send.epoch)
+                    destination_dependencies[send.id] = dependency
+                    source_dependencies[source.source_id].append(dependency)
+        dependencies = [ScopeDependency(scope_id=id, epoch=tx.execute(
+            "SELECT epoch FROM scopes WHERE id=?", (id,)).fetchone()[0]) for id in sorted(ids)]
+        check_scopes(tx, dependencies)
+        session = Session(workspace_id=job.workspace_id, title="资料处理", kind="execution", agent_profile_id=None)
+        tx.append_event(NewEvent(kind="session.created", workspace_id=job.workspace_id,
+            session_id=session.id, payload=session))
+        group = BudgetGroupSnapshot(id=identifier(), limits=job.limits,
+            deadline_at=self.clock() + timedelta(seconds=job.limits.deadline_seconds))
+        sources = SourceSelection(knowledge_source_ids=[source.source_id for source in source_versions])
+        run = RunSnapshot(id=identifier(), workspace_id=job.workspace_id, interaction_session_id=None,
+            execution_session_id=session.id, root_task_id=identifier(), budget_id=identifier(),
+            budget_group_id=group.id, kind="knowledge", config=config, sources=sources,
+            scope_dependencies=dependencies, admission_generations=job.admission_generations,
+            deadline_at=group.deadline_at)
+        check_admission(tx, run)
+        task = TaskSnapshot(id=run.root_task_id, run_id=run.id, kind="tool",
+            executor_id="knowledge.import", created_seq=1,
+            binding=TaskExecutionBinding(execution_session_id=session.id, interaction_session_id=None,
+                config=config, sources=sources, delegation_depth=0))
+        state = KnowledgeImportState(job_id=job.id, generation=job.target_generation,
+            sources=source_versions, source_dependencies=source_dependencies,
+            destination_dependencies=list(destination_dependencies.values()), profile=profile)
+        phase = ("knowledge.publish" if not source_versions else
+            "knowledge.parse" if profile is not None else "knowledge.index")
+        emit(tx, run, task.id, "run.started", RuntimeChange(runs=[run], tasks=[task],
+            budget_groups=[group], budgets=[BudgetSnapshot(id=run.budget_id, run_id=run.id, limits=job.limits)],
+            budget_allocations=[BudgetAllocation(run_id=run.id, group_id=group.id, limits=job.limits)],
+            checkpoints=[Checkpoint(task_id=task.id, phase=phase,
+                context_manifest={"knowledge_import": state.model_dump(mode="json")})],
+            outbox=[OutboxItem(run_id=run.id, task_id=task.id, operation="step")]), job.command_id)
+        return TaskHandle(run_id=run.id, task_id=task.id, lifetime="managed")
+
     def start_maintenance_tx(self, tx, origin, config, limits, sources, dependencies, state, meta):
         """明确确认可建独立维护预算；自动/未确认只分配原组，不接管聊天lease。"""
         from flowmate.contracts.execution import TaskHandle, TaskSubmission
@@ -573,6 +652,9 @@ class RunService:
             tx.append_event(NewEvent(kind="admission.stopped",workspace_id=scope.workspace_id,
                 session_id=scope.session_id,causation_id=meta.command_id,
                 payload=RuntimeChange(admission_fences=[fence])))
+            if scope.kind == "workspace":
+                from flowmate.knowledge.service import KnowledgeService
+                KnowledgeService.cancel_pending(tx, scope.workspace_id, meta.command_id)
             column="interaction_session_id" if scope.kind == "session" else "workspace_id"
             from flowmate.runtime.followups import close_intents
             sessions = [id] if scope.kind == "session" else [row[0] for row in tx.execute(

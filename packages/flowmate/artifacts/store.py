@@ -2,12 +2,12 @@
 
 import hashlib
 import json
-import os
 from pathlib import Path
 
+from flowmate.artifacts.blobs import BlobStore
 from flowmate.artifacts.tool_results import mcp_receipt_text, receipt_json
 from flowmate.config import RuntimeConfig
-from flowmate.contracts.base import DomainError, identifier
+from flowmate.contracts.base import DomainError
 from flowmate.contracts.execution import (
     ActivitySnapshot,
     ArtifactRef,
@@ -32,22 +32,21 @@ class ArtifactStore:
         self.files = files
         self.config = config or RuntimeConfig()
         self.publication = ExportPublication(store, files, store.path.parent / "export-recovery")
-        self.root = store.path.parent / "artifacts" / "blobs"
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.blobs = BlobStore(store.path.parent / "artifacts" / "blobs")
+        self.root = self.blobs.root
 
     def _path(self, content_hash):
-        return self.root / (content_hash + ".blob")
+        return self.blobs.path(content_hash)
 
     def _bytes(self, ref):
         try:
-            with self._path(ref.content_hash).open("rb") as handle:
-                data = handle.read(self.config.max_file_bytes + 1)
-        except FileNotFoundError:
-            raise DomainError("artifact_missing", "产物内容缺失") from None
-        if (len(data) > self.config.max_file_bytes
-                or hashlib.sha256(data).hexdigest() != ref.content_hash):
-            raise DomainError("artifact_corrupt", "产物内容校验失败")
-        return data
+            return self.blobs.read(ref.content_hash, max_bytes=self.config.max_file_bytes)
+        except DomainError as error:
+            code, message = {
+                "blob_missing": ("artifact_missing", "产物内容缺失"),
+                "blob_corrupt": ("artifact_corrupt", "产物内容校验失败"),
+            }[error.code]
+            raise DomainError(code, message) from None
 
     @staticmethod
     def _allow(decision):
@@ -90,15 +89,7 @@ class ArtifactStore:
             if target.exists():
                 self._bytes(ref)
             else:
-                temporary = self.root / (identifier() + ".tmp")
-                try:
-                    with temporary.open("xb") as handle:
-                        handle.write(data)
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                    os.replace(temporary, target)
-                finally:
-                    temporary.unlink(missing_ok=True)
+                self.blobs.put(data)
         return StagedArtifact(ref=ref, blob_path=str(target), media_type=media_type)
 
     def publish(self, tx, staged):

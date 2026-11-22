@@ -8,7 +8,7 @@ import Settings from './Settings';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); vi.restoreAllMocks(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 it.each(['连接卡片', '新建连接'])('%s进入表单后仍可直接Escape退出', async entry => {
   vi.spyOn(document, 'hasFocus').mockReturnValue(true);
   vi.stubGlobal('fetch', async (url: string) => Response.json(url.endsWith('/provider-presets') ? [] : page([connection])));
@@ -140,7 +140,7 @@ it('资料分类复用完整授权管理，撤销走真实版本命令且不调�
   await user.click(await screen.findByRole('button', { name: '撤销这份授权并保留历史' }));
   await user.click(screen.getByRole('button', { name: '确认撤销整份授权' }));
   await screen.findByText(/已撤销/);
-  expect(writes).toEqual([{ path: `/v3/grants/${grant.id}/revoke`, body: expect.objectContaining({ expected_version: 1 }) }]);
+  expect(writes).toEqual([{ path: `/v4/grants/${grant.id}/revoke`, body: expect.objectContaining({ expected_version: 1 }) }]);
   expect(invoke).not.toHaveBeenCalled();
 });
 it('窗口快捷键 dirty 关闭可保存后继续；即时 pin 不伪清除未保存快捷键', async () => {

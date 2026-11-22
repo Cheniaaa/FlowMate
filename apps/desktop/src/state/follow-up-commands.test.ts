@@ -6,7 +6,7 @@ import { event, followUpIntent, id, page, pendingUserCommand, run, runDetailSumm
 import type { FollowUpIntent, PendingUserCommand } from '../generated/contracts';
 
 afterEach(() => vi.unstubAllGlobals());
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 const detail = { ...runDetailSummary, run, budget: { id: run.budget_id, run_id: run.id, version: 1, limits,
   spent_units: '0', reserved_units: '0', model_requests: 0, steps: 0, task_count: 1, total_tokens: 0, reserved_tokens: 0 },
   tasks: page([]), activities: page([]), messages: page([]), artifacts: page([]), questions: page([]), approvals: page([]),
@@ -22,7 +22,7 @@ it('enqueue丢响应后按原command_id核对当前applied，冻结参数并按�
     if (path.includes('/commands/')) return Response.json({ status: 'confirmed', result: receipt });
     if (path.endsWith('/commands')) return Response.json(page([receipt]));
     if (path.endsWith('/follow-ups')) return Response.json(page([]));
-    if (path === `/v3/runs/${id}`) return Response.json(detail);
+    if (path === `/v4/runs/${id}`) return Response.json(detail);
     throw new Error(`未定义 ${path}`);
   });
   const store = createRuntimeStore(client());
@@ -32,7 +32,7 @@ it('enqueue丢响应后按原command_id核对当前applied，冻结参数并按�
   expect(store.getSnapshot().pendingUserCommands[meta.command_id!].state).toBe('applied');
   expect(store.getSnapshot().runs[id].budget_group_id).toBe(run.budget_group_id);
   expect(requests.filter(request => request.body)).toHaveLength(1);
-  expect(requests[0].path).toBe(`/v3/sessions/${id}/commands`);
+  expect(requests[0].path).toBe(`/v4/sessions/${id}/commands`);
   expect(requests[0].body.data.text).toBe('新的用户目标');
   expect(requests.some(request => request.path.endsWith(`/commands/${meta.command_id}`))).toBe(true);
 });

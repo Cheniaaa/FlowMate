@@ -1,8 +1,10 @@
-import { Children, isValidElement, useState, type CSSProperties, type MouseEvent, type ReactElement, type ReactNode } from 'react';
+import { Children, createContext, isValidElement, useContext, useState, type CSSProperties, type MouseEvent, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { invoke } from '@tauri-apps/api/core';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { Element, Root, RootContent } from 'hast';
+import type { RunSnapshot, SessionContext } from '../generated/contracts';
 import { Button } from './ui/button';
 import readingCss from '../styles/reading.css?raw';
 
@@ -16,6 +18,14 @@ function absoluteHttpUrl(value: string): string {
 
 const components: Components = { img: ({ alt }) => <span>{alt}</span> };
 const policy = { skipHtml: true, remarkPlugins: [remarkGfm], urlTransform: absoluteHttpUrl };
+const CitationContext = createContext<((id: string) => void) | undefined>(undefined);
+export type EvidenceLabel = Pick<SessionContext['knowledge'][number], 'name' | 'start_line' | 'end_line' | 'historical'>;
+const CitationButton: Components['button'] = ({ node, children }) => {
+  const open = useContext(CitationContext);
+  return <Button variant="link" size="xs" className="inline-flex px-0.5 text-left align-baseline whitespace-normal wrap-anywhere"
+    aria-label={`查看引用 ${node!.properties.marker}${node!.properties.label ? ` · ${node!.properties.label}` : ''}`}
+    onClick={() => open!(String(node!.properties.evidenceId))}>{children}</Button>;
+};
 
 function ChatCodeBlock({ children }: { children?: ReactNode }) {
   const code = Children.only(children) as ReactElement<{ className?: string; children?: string }>;
@@ -32,8 +42,41 @@ function ChatCodeBlock({ children }: { children?: ReactNode }) {
   </div>;
 }
 
-export default function Markdown({ children }: { children: string }) {
+export default function Markdown({ children, citations, onOpenEvidence, evidenceLabels }: {
+  children: string; citations?: NonNullable<RunSnapshot['output']>['citations']; onOpenEvidence?: (id: string) => void;
+  evidenceLabels?: ReadonlyMap<string, EvidenceLabel>;
+}) {
   const [error, setError] = useState('');
+  const references = new Map((citations ?? []).filter(item => Number.isSafeInteger(item.marker) && item.marker > 0)
+    .map(item => [String(item.marker), item.evidence_id]));
+  // 只替换普通正文中的已发布标号；链接与代码始终走既有 Markdown 边界。
+  function citationMarkers() {
+    return (tree: Root) => {
+      function walk(parent: Root | Element) {
+        parent.children = parent.children.flatMap((node): RootContent[] => {
+          if (node.type === 'element') {
+            if (!['a', 'code', 'pre'].includes(node.tagName)) walk(node);
+            return [node];
+          }
+          if (node.type !== 'text') return [node];
+          const parts: RootContent[] = [];
+          let offset = 0;
+          for (const match of node.value.matchAll(/\[([1-9]\d*)\]/g)) {
+            const evidenceId = references.get(match[1]);
+            if (!evidenceId) continue;
+            const item = evidenceLabels?.get(evidenceId);
+            const label = item && `${item.name} · ${item.start_line === item.end_line ? `${item.start_line} 行` : `${item.start_line}–${item.end_line} 行`}${item.historical ? ' · 历史原文' : ''}`;
+            parts.push({ type: 'text', value: node.value.slice(offset, match.index) },
+              { type: 'element', tagName: 'button', properties: { evidenceId, marker: match[1], label },
+                children: [{ type: 'text', value: label || match[0] }] });
+            offset = match.index + match[0].length;
+          }
+          return parts.length ? [...parts, { type: 'text', value: node.value.slice(offset) }] : [node];
+        }) as typeof parent.children;
+      }
+      walk(tree);
+    };
+  }
   async function open(event: MouseEvent<HTMLAnchorElement>, url: string) {
     event.preventDefault();
     setError('');
@@ -41,9 +84,12 @@ export default function Markdown({ children }: { children: string }) {
     catch { setError('无法打开外部链接，请检查系统浏览器设置'); }
   }
   return <div className="markdown-body">
-    <ReactMarkdown {...policy} components={{ ...components, pre: ChatCodeBlock, a: ({ href, children }) => href
+    <CitationContext value={onOpenEvidence}><ReactMarkdown {...policy} rehypePlugins={onOpenEvidence && references.size ? [citationMarkers] : []}
+      components={{ ...components, pre: ChatCodeBlock,
+      button: CitationButton,
+      a: ({ href, children }) => href
       ? <a href={href} onClick={event => { void open(event, href); }} onAuxClick={event => { void open(event, href); }}>{children}</a>
-      : <span>{children}</span> }}>{children}</ReactMarkdown>
+      : <span>{children}</span> }}>{children}</ReactMarkdown></CitationContext>
     {error && <p role="alert">{error}</p>}
   </div>;
 }

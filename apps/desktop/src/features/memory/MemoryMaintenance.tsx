@@ -51,7 +51,9 @@ export default function MemoryMaintenance({ client, store, scope, scopeLabel = s
   }, [client, proofKey]);
   const sourcePage = sources?.identity === sourceIdentity ? sources.page : undefined;
   const selectedInitial = initialSource && initialSource.kind === kind && (scope.kind === 'user_global' || scope.workspace_id === initialSource.workspace_id) ? initialSource : undefined;
-  const options = [...new Map([...(selectedInitial ? [selectedInitial] : []), ...(sourcePage?.items.map(item => item.run) ?? [])].map(run => [run.id, run])).values()];
+  const options = [...new Map([...(selectedInitial ? [selectedInitial] : []), ...(sourcePage?.items.map(item => item.run) ?? [])].map(run => [run.id, run])).values()]
+    .filter((run): run is RunSnapshot & { config: Extract<RunSnapshot['config'], { kind: 'agent' }> } =>
+      (run.kind === 'user' || run.kind === 'managed') && run.config.kind === 'agent');
   const current = proof?.key === proofKey && options.some(run => run.id === sourceId) ? proof : undefined;
   const names = options.map(run => {
     const session = run.interaction_session_id ? projection.sessions[run.interaction_session_id] : undefined;

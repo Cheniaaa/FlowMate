@@ -31,13 +31,14 @@ export const modelResolution: ModelResolution = {
 };
 export const limits = { max_steps: 64, max_model_requests: 24, max_tasks: 64, deadline_seconds: 900, max_cost_units: null,
   max_total_tokens: null, max_delegation_depth: 4, max_parallel_agents: 3 };
-export const run: RunSnapshot = {
+type ConfigSnapshot = PendingUserCommand['config'];
+export const run: RunSnapshot & { config: ConfigSnapshot } = {
   allow_managed: false, allow_follow_up: false, yield_requested: false, follow_up_closed: false,
   vision_source_run_id: null,
   admission_generations: { [id]: 1 },
   id, version: 1, workspace_id: id, interaction_session_id: id, execution_session_id: id,
   root_task_id: secondId, budget_id: secondId, budget_group_id: id, kind: 'user', state: 'running',
-  config: { members: {}, agent_profile: agent, model_profile: { ...model, context_window_tokens: 8192,
+  config: { kind: 'agent', members: {}, agent_profile: agent, model_profile: { ...model, context_window_tokens: 8192,
     canonical_model_id: null, max_input_tokens: null, max_supported_output_tokens: null,
     connection_version: connection.version, protocol: connection.protocol, endpoint: connection.endpoint,
     secret_ref: connection.secret_ref, provider_preset_id: connection.provider_preset_id, metadata_sources: {} },

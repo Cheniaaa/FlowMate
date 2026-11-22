@@ -14,7 +14,7 @@ import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet 
 import { Input } from '../../components/ui/input';
 import { NativeSelect, NativeSelectOption } from '../../components/ui/native-select';
 
-const purposeLabels = { read: '读取', model_send: '模型发送', export: '导出', tool_send: 'MCP 工具发送', local_process_send: '本机脚本发送' };
+const purposeLabels = { read: '读取', model_send: '模型发送', embedding_send: '向量模型发送', export: '导出', tool_send: 'MCP 工具发送', local_process_send: '本机脚本发送' };
 
 export default function MemorySettings({ client, store, initialScope = personalScope, onBusyChange, onSaved, onDiscard, guard = action => action() }: {
   client: RuntimeClient; store: RuntimeStore; initialScope?: MemoryScope;

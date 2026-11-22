@@ -1,4 +1,5 @@
-# PyInstaller 6.22.3：M2 base+models+capabilities onedir；只收集选定能力。
+# PyInstaller 6.22.3：M3 base+models+capabilities+knowledge onedir；本地embedding须明确选择。
+import os
 import sys
 from pathlib import Path
 
@@ -6,22 +7,27 @@ from PyInstaller.utils.hooks import collect_data_files
 
 root = Path(SPECPATH).parent
 sys.path.insert(0, str(root / "scripts"))
-from build_sidecar import collection_excludes, metadata_files
+from build_sidecar import collection_excludes, knowledge_collection, metadata_files
+
+local_embedding = os.environ.get("FLOWMATE_BUNDLE_LOCAL_EMBEDDING", "0") == "1"
+knowledge_datas, knowledge_binaries, knowledge_hidden = knowledge_collection(local_embedding=local_embedding)
 
 datas = collect_data_files("flowmate.persistence", includes=["schema.sql"])
 datas += collect_data_files("flowmate.models", includes=["provider_presets.json", "model_metadata.json"])
 # 当前genai-prices 0.2.1价格目录是data.py，随PYZ导入；不存在价格JSON。
-datas += metadata_files()
+datas += knowledge_datas
+datas += metadata_files(local_embedding=local_embedding)
 hiddenimports = ["uvicorn.logging", "uvicorn.loops.auto", "uvicorn.protocols.http.h11_impl",
     "uvicorn.protocols.websockets.auto", "uvicorn.lifespan.on", "pydantic_ai.direct",
     "pydantic_ai.models.openai", "pydantic_ai.models.anthropic", "genai_prices.data",
     "pydantic_ai.providers.openai_compatible",
     # pywin32 的 GetProcessTimes 在 native 层延迟导入时区，静态 Analysis 无法发现。
-    "win32timezone"]
+    "win32timezone", *knowledge_hidden]
 a = Analysis([str(root / "scripts/runtime_entry.py")], pathex=[str(root / "packages")],
-    binaries=[], datas=datas, hiddenimports=hiddenimports, excludes=collection_excludes(), noarchive=False)
+    binaries=knowledge_binaries, datas=datas, hiddenimports=hiddenimports,
+    excludes=collection_excludes(local_embedding=local_embedding), noarchive=False)
 # 仅给实际Analysis模块补齐版本身份，不collect模块，也不按全环境installed列表打包。
-for source, destination in metadata_files([name for name, _, _ in a.pure]):
+for source, destination in metadata_files([name for name, _, _ in a.pure], local_embedding=local_embedding):
     metadata_root = Path(source)
     for path in metadata_root.rglob("*"):
         if path.is_file():

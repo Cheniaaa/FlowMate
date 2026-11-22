@@ -6,8 +6,8 @@ from flowmate.contracts.base import Contract
 from flowmate.contracts.execution import RunLimits
 from flowmate.integrations.contracts import McpLimits
 
-SCHEMA_VERSION = 3
-API_VERSION = 3
+SCHEMA_VERSION = 4
+API_VERSION = 4
 APPLICATION_ID = 0x464D4154
 MAX_QUESTION_FIELDS = 12
 MAX_QUESTION_OPTIONS = 20

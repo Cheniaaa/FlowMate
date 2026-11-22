@@ -34,6 +34,10 @@ pub struct ResourceRef {
 #[serde(deny_unknown_fields)]
 pub struct Selection { pub resources: Vec<ResourceRef> }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KnowledgeDirectoryPage { pub resources: Vec<ResourceRef>, pub next_cursor: Option<String> }
+
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommandMeta { pub command_id: String, pub expected_version: Option<u64> }
@@ -241,6 +245,13 @@ async fn register_paths_at(channel: &Channel, scope: Scope, kind: &str, paths: V
     Ok(selection)
 }
 
+pub async fn expand_knowledge_directory(channel: &Channel, directory_id: String, cursor: Option<String>,
+    limit: u32) -> Result<KnowledgeDirectoryPage, String> {
+    let result = channel.request("knowledge.expand_directory",
+        serde_json::json!({"directory_id":directory_id,"cursor":cursor,"limit":limit}), Duration::from_secs(60)).await?;
+    serde_json::from_value(result).map_err(|_| "invalid_resource_reply".into())
+}
+
 fn paths(values: Option<Vec<FilePath>>) -> Result<Vec<PathBuf>, String> {
     values.unwrap_or_default().into_iter().map(|path| path.into_path().map_err(|_| "invalid_native_path".into())).collect()
 }
@@ -311,13 +322,13 @@ mod tests {
     fn receive(peer: &mut BufReader<TcpStream>, method: &str) -> serde_json::Value {
         let mut line = String::new(); peer.read_line(&mut line).unwrap();
         let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(frame["protocol_version"], 3);
+        assert_eq!(frame["protocol_version"], 4);
         assert!(frame["stream_seq"].as_u64().unwrap() > 0);
         assert_eq!(frame["method"], method);
         frame
     }
     fn reply(peer: &mut BufReader<TcpStream>, frame: &serde_json::Value, result: serde_json::Value) {
-        writeln!(peer.get_mut(), "{}", json!({"protocol_version":3,"request_id":frame["request_id"],"kind":"reply","method":frame["method"],"result":result})).unwrap();
+        writeln!(peer.get_mut(), "{}", json!({"protocol_version":4,"request_id":frame["request_id"],"kind":"reply","method":frame["method"],"result":result})).unwrap();
     }
     fn not_found(peer: &mut BufReader<TcpStream>) {
         let frame = receive(peer, "workspace.directory_command_status");
@@ -325,6 +336,35 @@ mod tests {
         reply(peer, &frame, json!({"status":"not_found","result":null}));
     }
     const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+    #[test]
+    fn knowledge_directory_private_request_keeps_literal_method_and_opaque_cursor() {
+        let (channel, mut peer) = pair();
+        let worker = std::thread::spawn(move || {
+            for (cursor, limit, result) in [
+                (None, 200, json!({"resources":[{
+                    "id":"00000000-0000-4000-8000-000000000004","scope":scope(),
+                    "label":"资料.md","version":1,"kind":"file","source_version":null,
+                }],"next_cursor":"opaque:下一页/+="})),
+                (Some("opaque:下一页/+="), 7, json!({"resources":[],"next_cursor":null})),
+            ] {
+                let frame = receive(&mut peer, "knowledge.expand_directory");
+                assert_eq!(frame["params"], json!({
+                    "directory_id":"00000000-0000-4000-8000-000000000002","cursor":cursor,"limit":limit,
+                }));
+                reply(&mut peer, &frame, result);
+            }
+        });
+        let first = tauri::async_runtime::block_on(expand_knowledge_directory(&channel,
+            "00000000-0000-4000-8000-000000000002".into(), None, 200)).unwrap();
+        assert_eq!(first.resources.len(), 1);
+        assert_eq!(first.resources[0].label, "资料.md");
+        assert_eq!(first.next_cursor.as_deref(), Some("opaque:下一页/+="));
+        let second = tauri::async_runtime::block_on(expand_knowledge_directory(&channel,
+            "00000000-0000-4000-8000-000000000002".into(), first.next_cursor, 7)).unwrap();
+        assert_eq!(serde_json::to_value(second).unwrap(), json!({"resources":[],"next_cursor":null}));
+        worker.join().unwrap(); channel.close();
+    }
 
     #[test]
     fn skill_selection_uses_its_binary_host_profile_and_preserves_registered_reference() {
@@ -485,7 +525,7 @@ mod tests {
         let (channel, mut peer) = pair();
         let worker = std::thread::spawn(move || {
             let frame = receive(&mut peer, "workspace.directory_command_status");
-            writeln!(peer.get_mut(), "{}", json!({"protocol_version":3,"request_id":frame["request_id"],"kind":"reply",
+            writeln!(peer.get_mut(), "{}", json!({"protocol_version":4,"request_id":frame["request_id"],"kind":"reply",
                 "method":frame["method"],"error":{"code":"scope_deleted"}})).unwrap();
         });
         let commands = Arc::new(WorkspaceDirectories::default());
@@ -529,7 +569,7 @@ mod tests {
             let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(frame["method"], "resource.register");
             assert_eq!(frame["params"], json!({"scope":{"kind":"workspace","workspace_id":"00000000-0000-4000-8000-000000000001","session_id":null},"kind":"file","paths":["C:\\public-fixture\\选择.md"]}));
-            writeln!(peer.get_mut(), "{}", json!({"protocol_version":3,"request_id":frame["request_id"],"kind":"reply","method":"resource.register","result":{"resources":[{"id":"00000000-0000-4000-8000-000000000002","scope":{"kind":"workspace","workspace_id":"00000000-0000-4000-8000-000000000001","session_id":null},"label":"选择.md","version":1,"kind":"file","source_version":null}]}})).unwrap();
+            writeln!(peer.get_mut(), "{}", json!({"protocol_version":4,"request_id":frame["request_id"],"kind":"reply","method":"resource.register","result":{"resources":[{"id":"00000000-0000-4000-8000-000000000002","scope":{"kind":"workspace","workspace_id":"00000000-0000-4000-8000-000000000001","session_id":null},"label":"选择.md","version":1,"kind":"file","source_version":null}]}})).unwrap();
         });
         let result = tauri::async_runtime::block_on(register_paths(&channel, scope(), "file", vec![PathBuf::from("C:\\public-fixture\\选择.md")]));
         let value = serde_json::to_value(result.unwrap()).unwrap();

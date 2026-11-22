@@ -20,7 +20,7 @@ it('任务中心真实来源进入整理，任务详情/取消和原待办恢复
   const workspace = { id, version: 1, name: '来源项目', directory_resource_id: null };
   const session = { id, workspace_id: id, version: 1, title: '保持原对话', kind: 'interaction', archived: false, agent_profile_id: id };
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (init.method === 'POST') {
       const body = JSON.parse(String(init.body)); writes.push({ path, body });
       if (path === '/memory/maintenance') return Response.json(maintenanceTask);
@@ -52,7 +52,7 @@ it('任务中心真实来源进入整理，任务详情/取消和原待办恢复
     if (!(path in values)) throw new Error(`未定义 ${path}`);
     return Response.json(values[path]);
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 }), user = userEvent.setup();
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 }), user = userEvent.setup();
   render(<WorkbenchWindow client={client} />);
   await screen.findByRole('heading', { name: '保持原对话' });
   const input = screen.getByLabelText('消息'); await user.type(input, '整理期间保留的新目标');

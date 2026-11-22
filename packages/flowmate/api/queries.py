@@ -13,6 +13,7 @@ from flowmate.api.contracts import (
     CommandStatus,
     ContextActivity,
     ContextFile,
+    ContextKnowledge,
     ContextRound,
     InboxApproval,
     InboxItem,
@@ -44,7 +45,14 @@ from flowmate.api.projections import (
     run_views,
     task_view,
 )
-from flowmate.api.summaries import context_usage, cost_summary, model_cost_pending
+from flowmate.api.summaries import (
+    EMBEDDING_OPERATIONS,
+    context_usage,
+    cost_summary,
+    metering_rows,
+    model_cost_pending,
+    project_budget,
+)
 from flowmate.contracts.base import DomainError
 from flowmate.contracts.events import RunEvent
 from flowmate.contracts.execution import (
@@ -252,11 +260,13 @@ _CHAT_MODEL_DISPATCH = """
       AND json_extract(e.document,'$.kind')='activity.dispatched'
       AND json_extract(e.document,'$.task_id')=r.root_task_id
       AND json_extract(e.document,'$.payload.activities[0].intent.kind')='model'
+      AND json_extract(e.document,'$.payload.activities[0].intent.operation') NOT IN ('embedding.query','embedding.document')
       AND NOT EXISTS (
           SELECT 1 FROM events previous WHERE previous.run_id=e.run_id AND previous.seq<e.seq
             AND json_extract(previous.document,'$.kind')='activity.dispatched'
             AND json_extract(previous.document,'$.task_id')=r.root_task_id
             AND json_extract(previous.document,'$.payload.activities[0].intent.kind')='model'
+            AND json_extract(previous.document,'$.payload.activities[0].intent.operation') NOT IN ('embedding.query','embedding.document')
       )
 """
 
@@ -289,7 +299,9 @@ def run_feedback(tx, id, run_ids):
     rows = tx.execute(
         "SELECT r.id,r.document,a.document AS activity FROM runs r LEFT JOIN activities a ON a.rowid=("
         "SELECT rowid FROM activities WHERE run_id=r.id AND task_id=r.root_task_id "
-        "AND json_extract(document,'$.intent.kind')='model' ORDER BY rowid DESC LIMIT 1) "
+        "AND json_extract(document,'$.intent.kind')='model' "
+        "AND json_extract(document,'$.intent.operation') NOT IN ('embedding.query','embedding.document') "
+        "ORDER BY rowid DESC LIMIT 1) "
         f"WHERE r.id IN ({placeholders}) AND r.interaction_session_id=? AND r.execution_session_id=?",
         [*run_ids, id, id]).fetchall()
     if {row["id"] for row in rows} != set(run_ids):
@@ -327,6 +339,14 @@ def command_status(tx, session_id, command_id):
         entry = SessionInboxEntry.model_validate_json(row["response"])
         result = visible_entry(tx, entry).model_dump(mode="json")
     return CommandStatus(status="confirmed", result=result)
+
+
+def workspace_command_status(tx, workspace_id, command_id):
+    workspace(tx, workspace_id)
+    row = tx.previous_command(command_id)
+    if row is None or row["workspace_id"] != workspace_id or row["session_id"] is not None:
+        return CommandStatus(status="not_found", result=None)
+    return CommandStatus(status="confirmed", result=json.loads(row["response"]))
 
 
 def pending_commands(tx, session_id, **paging):
@@ -463,6 +483,8 @@ def hidden_file_dependency_ids(tx, run, resource_ids, grant_ids, stale_files):
 
 
 def fixed_file_names(tx, run):
+    if not run.file_inputs:
+        return {}
     return {id: resource.label for id, resource in visible_file_inputs(tx, run.workspace_id,
         run.interaction_session_id, run.file_inputs, run.config.model_profile.endpoint).items()}
 
@@ -470,6 +492,7 @@ def fixed_file_names(tx, run):
 _CONTEXT_FILES = {"files.inspect_batch": "inspect", "files.read_text": "read"}
 _FILE_VERSION_ERRORS = {"file_identity_changed", "file_source_changed", "source_version_conflict"}
 _DISPATCHED_MODEL = ("json_extract(document,'$.intent.kind')='model' "
+                     "AND json_extract(document,'$.intent.operation') NOT IN ('embedding.query','embedding.document') "
                      "AND json_extract(document,'$.request_digest') IS NOT NULL")
 
 
@@ -487,36 +510,40 @@ def _session_context_usage(tx, session_id):
     from flowmate.contracts.execution import Usage
 
     usage = Counter()
-    for row in tx.execute(
-        "SELECT a.state,r.state AS run_state,t.state AS task_state,"
-        "json_type(a.document,'$.receipt') = 'object' AS receipt_present,"
-        "json_extract(a.document,'$.receipt.usage') AS usage,"
-        "json_extract(a.document,'$.receipt.actual_units') AS cost "
-        "FROM runs r JOIN activities a ON a.run_id=r.id JOIN tasks t ON t.id=a.task_id "
-        "WHERE r.interaction_session_id=? AND json_extract(a.document,'$.intent.kind')='model' "
-        "AND json_extract(a.document,'$.request_digest') IS NOT NULL", (session_id,)
-    ):
-        usage["requests"] += 1
+    for row in metering_rows(tx, session_id=session_id):
+        if (not row["dispatched"]
+                or row["kind"] != "model" and row["operation"] not in EMBEDDING_OPERATIONS):
+            continue
+        embedding = row["operation"] in EMBEDDING_OPERATIONS
+        prefix = "embedding_" if embedding else ""
+        usage[prefix + "requests"] += 1
         input_tokens, output_tokens, cached = _model_metering(
             Usage.model_validate_json(row["usage"]) if row["usage"] is not None else None)
         if input_tokens is not None:
-            usage["input_reported_requests"] += 1
-            usage["input_tokens"] += input_tokens
-        if output_tokens is not None:
+            usage[prefix + "input_reported_requests"] += 1
+            usage[prefix + "input_tokens"] += input_tokens
+        if not embedding and output_tokens is not None:
             usage["output_reported_requests"] += 1
             usage["output_tokens"] += output_tokens
-        if cached is not None:
+        if not embedding and cached is not None:
             usage["cache_reported_requests"] += 1
             usage["cached_input_tokens"] += cached
             if input_tokens is not None and cached <= input_tokens:
                 usage["cache_reported_input_tokens"] += input_tokens
                 usage["cached_tokens_with_reported_input"] += cached
         if row["cost"] is not None:
-            usage["calculated_units"] += int(row["cost"])
-        elif model_cost_pending(row["state"], row["receipt_present"], row["run_state"], row["task_state"]):
-            usage["pending_cost_requests"] += 1
+            if not row["archived_budget"]:
+                usage["calculated_units"] += int(row["cost"])
+            if embedding:
+                usage["embedding_calculated_units"] += int(row["cost"])
+        elif not row["retired"] and model_cost_pending(
+                row["state"], row["receipt_present"], row["run_state"], row["task_state"]):
+            usage[prefix + "pending_cost_requests"] += 1
         else:
-            usage["unknown_cost_requests"] += 1
+            usage[prefix + "unknown_cost_requests"] += 1
+    usage["calculated_units"] += sum(int(row[0]) for row in tx.execute(
+        "SELECT json_extract(retired.document,'$.spent_units') FROM runs r "
+        "JOIN accounting_budgets retired ON retired.run_id=r.id WHERE r.interaction_session_id=?", (session_id,)))
     return SessionContextUsage(units_per_currency=SCALE, **usage)
 
 
@@ -527,9 +554,20 @@ def session_context_usage(tx, session_id):
 
 
 def _model_context_activity(activity, task, run_state):
-    profile = task.binding.config.model_profile
     receipt = activity.receipt
     input_tokens, output_tokens, cached = _model_metering(receipt.usage if receipt else None)
+    pending = True if model_cost_pending(activity.state, receipt is not None, run_state, task.state) else None
+    if activity.intent.operation in EMBEDDING_OPERATIONS:
+        # 只读固定向量profile的显示名；不公开文本、连接、定价规则或本地路径。
+        from flowmate.knowledge.contracts import EmbeddingProfile
+
+        profile = EmbeddingProfile.model_validate(activity.intent.arguments["profile"]["profile"])
+        return ContextActivity(id=activity.id, kind="embedding", state=activity.state,
+            embedding_kind="query" if activity.intent.operation == "embedding.query" else "document",
+            model=profile.display_name, input_tokens=input_tokens,
+            output_tokens=receipt.usage.output_tokens if receipt else None,
+            calculated_units=receipt.actual_units if receipt else None, cost_pending=pending)
+    profile = task.binding.config.model_profile
     limit = None
     window_source = profile.metadata_sources.get("context_window_tokens")
     max_output = activity.intent.arguments.get("max_output_tokens")
@@ -540,7 +578,7 @@ def _model_context_activity(activity, task, run_state):
         input_tokens=input_tokens, output_tokens=output_tokens, cached_input_tokens=cached,
         calculated_units=receipt.actual_units if receipt else None, input_limit=limit,
         compaction=activity.intent.origin == "runtime" and activity.intent.operation == "model.generate",
-        cost_pending=True if model_cost_pending(activity.state, receipt is not None, run_state, task.state) else None)
+        cost_pending=pending)
 
 
 def _context_file_ids(activity):
@@ -586,6 +624,55 @@ def _file_context_activity(tx, activity, resources, names, fixed_ids):
         hidden_file_count=sum(id not in visible for id in ids)), changed_ids)
 
 
+def _context_knowledge(tx, run, source_current):
+    from flowmate.knowledge.evidence import visible_evidence_tx
+    from flowmate.runtime.transitions import context_for
+
+    recorded, visible, sources = set(), {}, {}
+    requests = tx.execute(
+        "SELECT a.document,json_extract(c.value,'$.context_manifest') AS manifest FROM events e "
+        "JOIN json_each(e.document,'$.payload.checkpoints') c "
+        "JOIN activities a ON a.id=json_extract(c.value,'$.context_manifest.activity_id') "
+        "WHERE e.run_id=? AND json_extract(e.document,'$.kind')='activity.prepared' "
+        f"AND ({_DISPATCHED_MODEL.replace('document', 'a.document')}) ORDER BY e.seq",
+        (run.id,)).fetchall()
+    for row in requests:
+        manifest = json.loads(row["manifest"])
+        ids = set(manifest.get("knowledge_evidence_ids", []))
+        recorded.update(ids)
+        if not ids or not source_current:
+            continue
+        activity = ActivitySnapshot.model_validate_json(row["document"])
+        messages = [ModelMessage.model_validate(item) for item in activity.intent.arguments["messages"]]
+        try:
+            evidence = visible_evidence_tx(tx, context_for(tx, activity.task_id), messages)
+        except DomainError as error:
+            if error.code not in {"scope_revoked", "grant_required", "knowledge_evidence_missing"}:
+                raise
+            # 已失效的派生对象沿原权限边界整体隐藏，不能从旧请求重新揭示正文。
+            continue
+        for id, item in evidence.items():
+            if id not in ids:
+                continue
+            if item.source_id not in sources:
+                row = tx.execute(
+                    "SELECT k.document,s.status AS scope_status FROM knowledge_sources k "
+                    "JOIN scopes s ON s.id=k.id WHERE k.id=? AND k.workspace_id=?",
+                    (item.source_id, run.workspace_id)).fetchone()
+                source = json.loads(row["document"]) if row is not None else None
+                sources[item.source_id] = (source if source is not None
+                    and (row["scope_status"] == "active" or source["status"] == "removed")
+                    and PolicyService.knowledge_grant(tx, run.workspace_id, item.source_id, "read") is not None else None)
+            source = sources[item.source_id]
+            if source is None or source["status"] in {"revoked", "deleted"}:
+                continue
+            visible[id] = ContextKnowledge(evidence_id=id, name=source["label"],
+                start_line=item.locator.start_line, end_line=item.locator.end_line,
+                historical=source["status"] == "removed"
+                    or source["active_version"] is not None and source["active_version"] != item.source_version)
+    return list(visible.values()), len(recorded - visible.keys())
+
+
 def session_context(tx, session_id, **paging):
     if session(tx, session_id).kind != "interaction":
         raise DomainError("not_found", "交互会话不存在")
@@ -600,6 +687,8 @@ def session_context(tx, session_id, **paging):
     run = RunSnapshot.model_validate_json(selected[0])
     page = _page(tx, ActivitySnapshot, f"context_activity:{run.id}",
         f"SELECT rowid AS event_id,document FROM activities WHERE run_id=? AND (({_DISPATCHED_MODEL}) "
+        "OR (json_extract(document,'$.intent.operation') IN ('embedding.query','embedding.document') "
+        "AND json_extract(document,'$.request_digest') IS NOT NULL) "
         "OR json_extract(document,'$.intent.operation') IN ('files.inspect_batch','files.read_text'))",
         [run.id], keys=("event_id",), **paging)
     latest_row = tx.execute(
@@ -607,6 +696,7 @@ def session_context(tx, session_id, **paging):
         "ON a.id=json_extract(e.document,'$.payload.activities[0].id') "
         "WHERE e.run_id=? AND json_extract(e.document,'$.kind')='activity.dispatched' "
         "AND json_extract(e.document,'$.payload.activities[0].intent.kind')='model' "
+        "AND json_extract(e.document,'$.payload.activities[0].intent.operation') NOT IN ('embedding.query','embedding.document') "
         "AND json_extract(a.document,'$.request_digest') IS NOT NULL "
         "ORDER BY e.seq DESC LIMIT 1", (run.id,)).fetchone()
     if latest_row is None:
@@ -615,7 +705,7 @@ def session_context(tx, session_id, **paging):
     source_current = run_sources_current(tx, run)
     resource_ids = set(run.file_inputs)
     for activity in page.items:
-        if activity.intent.kind == "tool":
+        if activity.intent.operation in _CONTEXT_FILES:
             resource_ids.update(_context_file_ids(activity))
     resources, lineages = _fixed_file_resources(tx, run.workspace_id, session_id, resource_ids) if source_current else ({}, {})
     missing, _ = PolicyService._cover_resources(tx, run.workspace_id, session_id, lineages, "read", None)
@@ -645,13 +735,14 @@ def session_context(tx, session_id, **paging):
 
     activities = []
     for item in page.items:
-        if item.intent.kind == "model":
+        if item.intent.kind == "model" or item.intent.operation in EMBEDDING_OPERATIONS:
             detail = project_model(item)
         else:
             detail, changed_ids = _file_context_activity(tx, item, resources, names, fixed_ids)
             replacement_ids.update(changed_ids)
         activities.append(detail)
     hidden = len(run.file_inputs) - len(files)
+    knowledge, hidden_knowledge = _context_knowledge(tx, run, source_current)
     changed = bool(replacement_ids or run.reason in _FILE_VERSION_ERRORS or any(item.file_changed for item in activities))
     return SessionContext(round=ContextRound(run_id=run.id, state=run.state, file_changed=True if changed else None,
         replacement_file_ids=sorted(replacement_ids),
@@ -659,7 +750,7 @@ def session_context(tx, session_id, **paging):
         files=files, hidden_file_count=hidden, history=context_usage(tx, run),
         latest_request=project_model(ActivitySnapshot.model_validate_json(latest_row[0])) if latest_row else None,
         activities=Page[ContextActivity](items=activities, next_cursor=page.next_cursor, watermark=page.watermark),
-        units_per_currency=SCALE)
+        units_per_currency=SCALE, knowledge=knowledge, hidden_knowledge_count=hidden_knowledge)
 
 
 def project_message_attachments(tx, workspace_id, session_id, views):
@@ -706,7 +797,7 @@ def run_detail(tx, id):
     current = run_sources_current(tx, run)
     if not current:
         run = run.model_copy(update={"output": None})
-    budget = load(tx, BudgetSnapshot, run.budget_id)
+    budget = project_budget(tx, load(tx, BudgetSnapshot, run.budget_id))
     root = load(tx, TaskSnapshot, run.root_task_id)
     goal = run_goal(tx, run, root) if current else None
     pages = {kind: run_items(tx, id, kind) for kind in (

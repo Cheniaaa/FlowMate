@@ -4,9 +4,30 @@ from collections import Counter
 
 from flowmate.api.contracts import ContextUsageSummary, PricingBasis, RunCostSummary
 from flowmate.contracts.base import DomainError
-from flowmate.contracts.execution import TERMINAL, ActivitySnapshot, Checkpoint, TaskSnapshot
+from flowmate.contracts.execution import (
+    TERMINAL,
+    AccountingBudget,
+    ActivitySnapshot,
+    Checkpoint,
+    TaskSnapshot,
+)
 from flowmate.models.pricing import SCALE
 from flowmate.runtime.transitions import check_scopes, load
+
+EMBEDDING_OPERATIONS = ("embedding.query", "embedding.document")
+
+
+def project_budget(tx, budget):
+    """保留Run额度与执行计数，费用和请求事实以已退役的无正文归档为准。"""
+    if tx is None:
+        return budget
+    row = tx.execute("SELECT document FROM accounting_budgets WHERE id=? AND run_id=?",
+        (budget.id, budget.run_id)).fetchone()
+    if row is None:
+        return budget
+    archived = AccountingBudget.model_validate_json(row[0])
+    return budget.model_copy(update=archived.model_dump(include={
+        "version", "spent_units", "reserved_units", "model_requests", "total_tokens", "reserved_tokens"}))
 
 
 def model_cost_pending(activity_state, receipt_present, run_state, task_state):
@@ -14,23 +35,48 @@ def model_cost_pending(activity_state, receipt_present, run_state, task_state):
             and run_state not in TERMINAL and task_state not in TERMINAL)
 
 
+def metering_rows(tx, *, run_id=None, session_id=None):
+    """按原活动身份读取计量事实；无正文归档优先，退休行不重建执行配置。"""
+    selected = "WHERE (? IS NULL OR r.id=?) AND (? IS NULL OR r.interaction_session_id=?) "
+    parameters = (run_id, run_id, session_id, session_id)
+    return tx.execute(
+        "SELECT a.state,r.state AS run_state,t.state AS task_state,"
+        "json_extract(a.document,'$.intent.kind') AS kind,"
+        "json_extract(a.document,'$.intent.operation') AS operation,"
+        "json_extract(a.document,'$.request_digest') IS NOT NULL AS dispatched,"
+        "json_type(a.document,'$.receipt')='object' AS receipt_present,"
+        "json_extract(a.document,'$.receipt.usage') AS usage,"
+        "json_extract(a.document,'$.receipt.actual_units') AS cost,0 AS retired,"
+        "EXISTS(SELECT 1 FROM accounting_budgets b WHERE b.run_id=r.id) AS archived_budget "
+        "FROM activities a JOIN runs r ON r.id=a.run_id JOIN tasks t ON t.id=a.task_id "
+        + selected +
+        "AND NOT EXISTS(SELECT 1 FROM accounting_activities retired WHERE retired.id=a.id) "
+        "UNION ALL SELECT json_extract(a.document,'$.state'),r.state,NULL,"
+        "json_extract(a.document,'$.kind'),json_extract(a.document,'$.operation'),"
+        "json_extract(a.document,'$.dispatched'),json_type(a.document,'$.receipt')='object',"
+        "json_extract(a.document,'$.receipt.usage'),json_extract(a.document,'$.receipt.actual_units'),1,1 "
+        "FROM accounting_activities a JOIN runs r ON r.id=a.run_id "
+        + selected, (*parameters, *parameters))
+
+
 def cost_summary(tx, run, budget):
+    # 云向量同样占用model预算并计费；总费用直接来自账本，不使用生成单价重算。
+    budget = project_budget(tx, budget)
     pending = unknown = 0
-    for row in tx.execute("SELECT a.document,t.state AS task_state FROM activities a JOIN tasks t ON t.id=a.task_id "
-                          "WHERE a.run_id=?", (run.id,)):
-        activity = ActivitySnapshot.model_validate_json(row["document"])
-        if (activity.intent.kind != "model" or activity.request_digest is None
-                or (activity.receipt is not None and activity.receipt.actual_units is not None)):
+    for row in metering_rows(tx, run_id=run.id):
+        if row["kind"] != "model" or not row["dispatched"] or row["cost"] is not None:
             continue
-        if model_cost_pending(activity.state, activity.receipt is not None, run.state, row["task_state"]):
+        if not row["retired"] and model_cost_pending(
+                row["state"], row["receipt_present"], row["run_state"], row["task_state"]):
             pending += 1
-        elif activity.state != "prepared":
+        elif row["state"] != "prepared":
             unknown += 1
-    pricing = run.config.model_pricing
+    pricing = run.config.model_pricing if run.config.kind == "agent" else None
     basis = PricingBasis(source=pricing.source if pricing else None, snapshot_id=pricing.snapshot_id if pricing else None,
         catalog_version=pricing.catalog_version if pricing else None,
         effective_multiplier=pricing.effective_multiplier if pricing else None,
-        assumptions=pricing.assumptions if pricing else [], unknown_reason=run.config.pricing_unknown_reason)
+        assumptions=pricing.assumptions if pricing else [],
+        unknown_reason=run.config.pricing_unknown_reason if run.config.kind == "agent" else None)
     return RunCostSummary(calculated_units=budget.spent_units, reserved_units=budget.reserved_units,
         pending_request_count=pending, unknown_request_count=unknown, units_per_currency=SCALE, pricing_basis=basis)
 

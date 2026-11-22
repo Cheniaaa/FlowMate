@@ -9,7 +9,7 @@ pub enum ChatWindow { Workbench, Quick }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum SettingsSection { Models, Assistant, Resources, Windows, Memory, Environments, Appearance }
+pub enum SettingsSection { Models, Assistant, Resources, Windows, Memory, Environments, Appearance, Retrieval }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq)]
 pub struct SettingsNavigation { pub section: SettingsSection, pub from_quick: bool }
@@ -25,6 +25,8 @@ pub enum WorkbenchTarget {
     Capabilities {},
     Mcp { server_id: Option<String>, workspace_id: Option<String> },
     Connection { connection_id: String },
+    Knowledge { workspace_id: String, source_id: Option<String> },
+    Evidence { workspace_id: String, evidence_id: String },
 }
 
 impl WorkbenchTarget {
@@ -35,11 +37,18 @@ impl WorkbenchTarget {
             Self::Tasks { workspace_id } => workspace_id.as_ref(),
             Self::Mcp { server_id, .. } => server_id.as_ref(),
             Self::Connection { connection_id } => Some(connection_id),
+            Self::Knowledge { workspace_id, .. } | Self::Evidence { workspace_id, .. } => Some(workspace_id),
             Self::Assistants {} | Self::Memory {} | Self::Capabilities {} => None,
         };
         if let Self::Mcp { workspace_id: Some(id), .. } = self {
             if uuid::Uuid::parse_str(id).is_err() { return Err("invalid_navigation_id".into()); }
         }
+        let reference = match self {
+            Self::Knowledge { source_id, .. } => source_id.as_ref(),
+            Self::Evidence { evidence_id, .. } => Some(evidence_id),
+            _ => None,
+        };
+        if reference.is_some_and(|id| uuid::Uuid::parse_str(id).is_err()) { return Err("invalid_navigation_id".into()); }
         if id.is_some_and(|id| uuid::Uuid::parse_str(id).is_err()) { return Err("invalid_navigation_id".into()); }
         Ok(())
     }
@@ -276,6 +285,41 @@ pub fn fit_visible_area<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retrieval_settings_section_is_separate_from_chat_models() {
+        let section: super::SettingsSection = serde_json::from_value(serde_json::json!("retrieval")).unwrap();
+        assert_ne!(section, super::SettingsSection::Models);
+        assert_eq!(serde_json::to_value(section).unwrap(), serde_json::json!("retrieval"));
+    }
+    #[test]
+    fn knowledge_targets_keep_project_and_evidence_identity() {
+        let workspace = "00000000-0000-4000-8000-000000000001";
+        let source = "00000000-0000-4000-8000-000000000002";
+        for value in [
+            serde_json::json!({"kind":"knowledge","workspace_id":workspace,"source_id":null}),
+            serde_json::json!({"kind":"knowledge","workspace_id":workspace,"source_id":source}),
+            serde_json::json!({"kind":"evidence","workspace_id":workspace,"evidence_id":source}),
+        ] {
+            let target: super::WorkbenchTarget = serde_json::from_value(value.clone()).unwrap();
+            target.validate().unwrap();
+            assert_eq!(serde_json::to_value(&target).unwrap(), value);
+            let (directory, mut windows, _) = fixture();
+            windows.navigate(Some(target.clone()), true);
+            assert_eq!(windows.take_navigation().unwrap().target, Some(target));
+            assert!(windows.take_navigation().is_none());
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+        for value in [
+            serde_json::json!({"kind":"knowledge","workspace_id":"bad","source_id":null}),
+            serde_json::json!({"kind":"knowledge","workspace_id":workspace,"source_id":"bad"}),
+            serde_json::json!({"kind":"evidence","workspace_id":"bad","evidence_id":source}),
+            serde_json::json!({"kind":"evidence","workspace_id":workspace,"evidence_id":"bad"}),
+        ] {
+            assert!(serde_json::from_value::<super::WorkbenchTarget>(value).unwrap().validate().is_err());
+        }
+        assert!(serde_json::from_value::<super::WorkbenchTarget>(
+            serde_json::json!({"kind":"evidence","workspace_id":workspace,"evidence_id":source,"path":"private"})).is_err());
+    }
     use super::*;
     use std::{cell::RefCell, collections::HashSet};
 

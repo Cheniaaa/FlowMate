@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ApiError, commandMeta, RuntimeClient } from '../../api/client';
-import { mergeApprovals, mergeGrants, mergeMessages, mergePublications, mergeQuestions, mergeResources, mergeRunDetail, mergeRunFeedback, mergeRunPage, mergeRunSnapshot, mergeSessions, mergeVersioned, mergeWorkspaces, messageSourceInvalid, orderedMessageIds, scopeDeleted, terminal, type RunPageInput } from '../../api/events';
+import { laterCursor, mergeApprovals, mergeGrants, mergeMessages, mergePublications, mergeQuestions, mergeResources, mergeRunDetail, mergeRunFeedback, mergeRunPage, mergeRunSnapshot, mergeSessions, mergeVersioned, mergeWorkspaces, messageSourceInvalid, orderedMessageIds, scopeDeleted, terminal, type RunPageInput } from '../../api/events';
 import { validate } from '../../api/validation';
 import { openSettings, showWorkbench, type WorkbenchTarget } from '../../api/windows';
-import type { AgentProfile, AgentProfilePage, AnswerCommand, ArtifactRef, InboxPage, ModelResolution, PendingAction, ProviderPresetList, ResourceCoverage, ResourceRef, RunDetail, RunSnapshot, ScopeRef, Session, Workspace, WorkspaceSnapshot } from '../../generated/contracts';
+import type { AgentProfile, AgentProfilePage, AnswerCommand, ArtifactRef, InboxPage, ModelResolution, PendingAction, ProviderPresetList, ResourceCoverage, ResourceRef, RunDetail, RunSnapshot, ScopeRef, Session, SessionContext, Workspace, WorkspaceSnapshot } from '../../generated/contracts';
 import { createRuntimeStore, uiCommandId, type CommandOutcome, type UiCommand, type RuntimeStore } from '../../state/runtime-store';
 import { createDraftStore, type Draft, type DraftKey } from '../../state/draft-store';
 import { Button } from '../../components/ui/button';
@@ -45,6 +45,10 @@ import { Sheet, SheetContent, SheetTitle } from '../../components/ui/sheet';
 import { toast } from 'sonner';
 import AssistantsPage from '../assistants/AssistantsPage';
 import MemoryPage from '../memory/MemoryPage';
+import KnowledgePage from '../knowledge/KnowledgePage';
+import KnowledgeImport from '../knowledge/KnowledgeImport';
+import EvidenceReader from '../knowledge/EvidenceReader';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu';
 import type { MemoryScope } from '../../api/memory';
 import { Checkbox } from '../../components/ui/checkbox';
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet } from '../../components/ui/field';
@@ -59,8 +63,8 @@ import './conversation-details.css';
 type Confirmation = { kind: 'session' | 'workspace'; id: string; workspaceId: string; version: number; name: string };
 const detailSections = { results: '结果', tasks: '任务', artifacts: '产物', context: '上下文' } as const;
 type DetailSection = keyof typeof detailSections;
-type DetailPanel = DetailSection | 'trace' | 'resources';
-const detailTitles = { results: '后台交付结果', tasks: '任务详情', artifacts: '产物', context: '上下文', trace: 'Trace', resources: '管理授权' };
+type DetailPanel = DetailSection | 'trace' | 'resources' | 'evidence';
+const detailTitles = { results: '后台交付结果', tasks: '任务详情', artifacts: '产物', context: '上下文', trace: 'Trace', resources: '管理授权', evidence: '引用原文' };
 const wideConversation = '(min-width: 1200px)';
 const wideContext = '(min-width: 1000px)';
 type ModelUse = NonNullable<WorkspaceSnapshot['recent_model_uses']>[number];
@@ -86,7 +90,7 @@ interface ConversationProps {
   navigation?: WorkbenchNavigation;
   onSelectedRunChange?: (id: string | null) => void;
   onFormActiveChange?: (active: boolean) => Promise<void>;
-  onSettings?: (section: 'models' | 'resources' | 'memory', connectionId?: string, memoryScope?: MemoryScope) => void;
+  onSettings?: (section: 'models' | 'resources' | 'memory' | 'retrieval', connectionId?: string, memoryScope?: MemoryScope) => void;
   headerActions?: ReactNode;
   onReturnToQuick?: () => Promise<void>;
   onProfilesChange?: (revision: string) => void;
@@ -127,6 +131,10 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   const runConfigurationTrigger = useRef<HTMLButtonElement>(null);
   const [assistantsOpen, setAssistantsOpen] = useState(false);
   const [memoryPage, setMemoryPage] = useState<{ source?: RunSnapshot }>();
+  const [knowledgePage, setKnowledgePage] = useState<{ workspaceId: string; sourceId: string | null }>();
+  const [evidenceTarget, setEvidenceTarget] = useState<{ workspaceId: string; evidenceId: string }>();
+  const [evidenceReturn, setEvidenceReturn] = useState<{ origin: HTMLElement; panel: 'results' | 'context' | 'tasks' | null }>();
+  const evidenceReturnFocus = useRef<HTMLElement>(undefined);
   const pageGuard = useRef<((action: () => void) => void) | null>(null);
   const navTrigger = useRef<HTMLButtonElement>(null);
   const pageOrigin = useRef<HTMLElement | null>(null);
@@ -134,6 +142,7 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   const [directoryTarget, setDirectoryTarget] = useState<{ workspace: Workspace; origin: HTMLElement }>();
   const [renameTarget, setRenameTarget] = useState<{ target: Session | Workspace; origin: HTMLElement; suggest?: boolean }>();
   const [sessionId, setSessionId] = useState('');
+  const [accountingRevision, setAccountingRevision] = useState('0');
   const mcpAdmission = useMcpAdmission(client, workspaceId, sessionId, projection.mcpRevision);
   const [agentId, setAgentId] = useState('');
   const [firstAgent, setFirstAgent] = useState<AgentProfile>();
@@ -142,6 +151,7 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   const [modelHistoryReadySession, setModelHistoryReadySession] = useState('');
   const [projectModelUse, setProjectModelUse] = useState<ProjectModelUse>();
   const [sidebarFormActive, setSidebarFormActive] = useState(false);
+  const [knowledgeFormActive, setKnowledgeFormActive] = useState(false);
   const [sessionTitle, setSessionTitle] = useState('');
   const [newSessionWorkspace, setNewSessionWorkspace] = useState<string>();
   const sessionReturnFocus = useRef<(() => void) | undefined>(undefined);
@@ -173,6 +183,9 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     setSkillLibrary(undefined);
     setAssistantsOpen(false);
     setMemoryPage(undefined);
+    setKnowledgePage(undefined);
+    setEvidenceTarget(undefined);
+    setEvidenceReturn(undefined);
     returnToInboxFromTask.current = undefined;
   }
   function showPage(action: () => void) {
@@ -193,10 +206,28 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     pageOrigin.current = document.activeElement as HTMLElement;
     setMemoryPage({ source });
   }
+  function openKnowledge(targetWorkspace = workspaceId, sourceId: string | null = null) {
+    if (compact) { void perform(() => showWorkbench({ kind: 'knowledge', workspace_id: targetWorkspace, source_id: sourceId })); return; }
+    clearPages();
+    pageOrigin.current = document.activeElement as HTMLElement;
+    if (view.current.workspaceId !== targetWorkspace) chooseWorkspace(targetWorkspace);
+    setKnowledgePage({ workspaceId: targetWorkspace, sourceId });
+  }
+  function openEvidence(targetWorkspace: string, evidenceId: string) {
+    if (compact) { void perform(() => showWorkbench({ kind: 'evidence', workspace_id: targetWorkspace, evidence_id: evidenceId })); return; }
+    if (panel === 'results' || panel === 'context' || panel === 'tasks' || management === 'detail')
+      setEvidenceReturn({ origin: document.activeElement as HTMLElement,
+        panel: panel === 'results' || panel === 'context' || panel === 'tasks' ? panel : null });
+    else clearPages();
+    if (view.current.workspaceId !== targetWorkspace) chooseWorkspace(targetWorkspace);
+    setEvidenceTarget({ workspaceId: targetWorkspace, evidenceId });
+    openPanel('evidence');
+  }
   function closeSecondaryPage() {
     returnPageFocus.current = true;
     setAssistantsOpen(false);
     setMemoryPage(undefined);
+    setKnowledgePage(undefined);
   }
   const draftKey = { workspaceId, sessionId };
   const draft = useSyncExternalStore(drafts.subscribe, () => drafts.read(draftKey));
@@ -242,7 +273,8 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   const [detailRunId, setDetailRunId] = useState<string>();
   const [selectedNode, setSelectedNode] = useState<{ id: string; kind: 'task' | 'activity' }>();
   const [panel, setPanel] = useState<DetailPanel | null>(null);
-  const detailBreakpoint = panel === 'context' ? wideContext : wideConversation;
+  const detailBreakpoint = panel === 'context' || panel === 'evidence' && (!evidenceReturn || evidenceReturn.panel === 'context')
+    ? wideContext : wideConversation;
   const wide = useSyncExternalStore(subscribeToWidth, () => !!window.matchMedia?.(detailBreakpoint).matches);
   function subscribeToWidth(update: () => void) {
     const screen = window.matchMedia?.(detailBreakpoint);
@@ -259,7 +291,11 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
       detailsPane.current?.querySelector<HTMLElement>('h2')?.focus();
     }
   }, [panel, docked]);
-  const activePage = memoryPage ? 'memory' : assistantsOpen ? 'assistants' : skillLibrary ? 'capabilities' : management ? 'tasks' : undefined;
+  const activePage = knowledgePage ? 'knowledge' : memoryPage ? 'memory' : assistantsOpen ? 'assistants' : skillLibrary ? 'capabilities' : management && panel !== 'evidence' ? 'tasks' : undefined;
+  useEffect(() => {
+    if (evidenceTarget && readyWorkspace === evidenceTarget.workspaceId
+      && (!sessionId || workReadySession === sessionId)) setPanel('evidence');
+  }, [evidenceTarget, readyWorkspace, sessionId, workReadySession]);
   useLayoutEffect(() => {
     if (!returnPageFocus.current) return;
     returnPageFocus.current = false;
@@ -320,9 +356,19 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     setPanel(next);
   }
   function closePanel() {
+    if (panel === 'evidence' && evidenceReturn) {
+      evidenceReturnFocus.current = evidenceReturn.origin;
+      setPanel(evidenceReturn.panel); setEvidenceTarget(undefined); setEvidenceReturn(undefined); return;
+    }
     if (docked) restorePanelFocus(detailsPane.current ?? undefined);
     setPanel(null);
+    setEvidenceTarget(undefined);
   }
+  useLayoutEffect(() => {
+    if (panel !== 'evidence' && evidenceReturnFocus.current) {
+      evidenceReturnFocus.current.focus(); evidenceReturnFocus.current = undefined;
+    }
+  }, [panel]);
   function focusBackgroundForm() {
     backgroundFocus.current = undefined;
     const form = interactionPanel.current;
@@ -478,6 +524,8 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     let ignore = false;
     async function locate() {
       const target = navigation!.target;
+      if (target.kind === 'knowledge') { openKnowledge(target.workspace_id, target.source_id); return; }
+      if (target.kind === 'evidence') { openEvidence(target.workspace_id, target.evidence_id); return; }
       if (target.kind === 'assistants') { openAssistants(); return; }
       if (target.kind === 'memory') { openMemory(); return; }
       if (target.kind === 'mcp') {
@@ -561,6 +609,13 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
         event: envelope => {
           if (abort.signal.aborted) return;
           const next = store.getSnapshot();
+          if (envelope.kind === 'durable' && envelope.event.kind === 'accounting.settled') {
+            const runId = envelope.event.run_id;
+            const owner = runId ? next.runs[runId]?.interaction_session_id ?? next.runSummaries[runId]?.session_id : null;
+            if (owner && owner === view.current.sessionId) {
+              setAccountingRevision(previous => laterCursor(previous, envelope.event_id));
+            }
+          }
           if (envelope.kind === 'durable' && 'activities' in envelope.event.payload) {
             const use = envelope.event.payload.chat_model_use;
             if (use && envelope.event.workspace_id === workspaceId
@@ -592,24 +647,28 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
               if (notifiedErrors.current.has(key)) continue;
               notifiedErrors.current.add(key);
               const run = next.runs[activity.run_id];
-              if (!run || run.interaction_session_id !== view.current.sessionId || !document.hasFocus()) continue;
+              if (!run || run.config.kind !== 'agent' || run.interaction_session_id !== view.current.sessionId || !document.hasFocus()) continue;
+              const config = run.config;
               const modelError = activity.kind === 'model';
               toast.error(modelError ? modelFailures[activity.error!] ?? '模型请求未完成，请查看任务。' : '工具调用未完成，请查看任务中的处理方式。', {
                 id: key,
                 action: modelError ? { label: '检查连接', onClick: () => {
-                  if (activity.task_id === run.root_task_id) openConnection(run.config.model_profile.connection_id);
-                  else void client.task(activity.task_id).then(task => openConnection(task.binding.config.model_profile.connection_id)).catch(report);
+                  if (activity.task_id === run.root_task_id) openConnection(config.model_profile.connection_id);
+                  else void client.task(activity.task_id).then(task => {
+                    if (task.binding.config.kind === 'agent') openConnection(task.binding.config.model_profile.connection_id);
+                  }).catch(report);
                 } }
                   : { label: '查看任务', onClick: () => openTask(run.id) },
               });
             }
             for (const run of payload.runs) {
-              if (!run.reason || !Object.hasOwn(modelFailures, run.reason) || failures.some(activity => activity.run_id === run.id)) continue;
+              if (run.config.kind !== 'agent' || !run.reason || !Object.hasOwn(modelFailures, run.reason) || failures.some(activity => activity.run_id === run.id)) continue;
+              const config = run.config;
               const key = `run:${run.id}:${run.reason}`;
               if (notifiedErrors.current.has(key)) continue;
               notifiedErrors.current.add(key);
               if (run.interaction_session_id === view.current.sessionId && document.hasFocus()) toast.error(modelFailures[run.reason], {
-                id: key, action: { label: '检查连接', onClick: () => openConnection(run.config.model_profile.connection_id) },
+                id: key, action: { label: '检查连接', onClick: () => openConnection(config.model_profile.connection_id) },
               });
             }
           }
@@ -669,7 +728,8 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     }).catch(error => { if (!ignore) report(error); });
     return () => { ignore = true; };
   }, [client, agentId, agent, profilePage]);
-  const runs = Object.values(projection.runs).filter(run => run.interaction_session_id === sessionId);
+  const runs = Object.values(projection.runs).filter((run): run is RunSnapshot & { config: Extract<RunSnapshot['config'], { kind: 'agent' }> } =>
+    run.interaction_session_id === sessionId && run.config.kind === 'agent');
   const workspaceModelUse = projectModelUse?.workspaceId === workspaceId ? projectModelUse : undefined;
   const recentModelIds = workspaceModelUse?.recent.map(use => use.model_profile_id) ?? [];
   const sessionChoice = workspaceModelUse?.sessions[sessionId];
@@ -837,6 +897,23 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
   const selectedRunSources = selectedRun && dependenciesVisible(selectedRun.scope_dependencies);
   const fileAuthorization = [...Object.values(projection.grants), ...Object.values(projection.scopes)]
     .map(scope => `${scope.id}:${scope.epoch}:${scope.status}`).join(',');
+  const citationIds = [...new Set(runs.flatMap(run => run.output?.citations?.map(item => item.evidence_id) ?? []))].sort().join(',');
+  const citationContextKey = sessionId && citationIds
+    ? `${sessionId}:${citationIds}:${projection.snapshotWatermark}:${fileAuthorization}:${projection.knowledgeNotices[workspaceId]?.watermark ?? ''}` : '';
+  const [citationContext, setCitationContext] = useState<{ key: string; data?: SessionContext; error?: string }>();
+  const [citationRetry, retryCitations] = useState(0);
+  useEffect(() => {
+    if (!citationContextKey) return;
+    let ignore = false;
+    client.sessionContext(sessionId).then(data => {
+      if (!ignore) setCitationContext({ key: citationContextKey, data });
+    }, error => {
+      if (!ignore) setCitationContext({ key: citationContextKey, error: error instanceof Error ? error.message : String(error) });
+    });
+    return () => { ignore = true; };
+  }, [client, sessionId, citationContextKey, citationRetry]);
+  const currentCitationContext = citationContext?.key === citationContextKey ? citationContext : undefined;
+  const citationLabels = new Map(currentCitationContext?.data?.knowledge.map(item => [item.evidence_id, item]));
   const selectedRunLabels = runLabels?.runId === selectedRun?.id && runLabels && runLabels.source_valid !== false
     && runLabels.authorization === fileAuthorization && BigInt(runLabels.watermark) >= BigInt(projection.snapshotWatermark) ? runLabels : undefined;
   const questions = Object.values(projection.questions).filter(question => question.status === 'pending'
@@ -890,6 +967,7 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
       const runId = context.runId ?? projection.pendingUserCommands[commandId]?.run_id;
       if (!runId || !context.submitted || context.missingHandled) continue;
       const run = projection.runs[runId], feedback = projection.runFeedback[runId];
+      if (!run || run.config.kind !== 'agent') continue;
       if ((feedback?.model_activity?.error ?? run?.reason) !== 'credential_missing') continue;
       if (scopeDeleted(projection, { workspace_id: context.key.workspaceId, session_id: context.key.sessionId })) continue;
       context.missingHandled = true;
@@ -970,7 +1048,7 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     return () => { ignore = true; };
   }, [client, coverageKey]);
 
-  const formActive = busy || nativeSelecting || sidebarFormActive || newSessionWorkspace !== undefined || !!text || !!sessionTitle || resources.length > 0 || !!confirmation || !!renameTarget
+  const formActive = busy || nativeSelecting || sidebarFormActive || knowledgeFormActive || newSessionWorkspace !== undefined || !!text || !!sessionTitle || resources.length > 0 || !!confirmation || !!renameTarget
     || draft.allowManaged || draft.allowFollowUp || !!draft.sourceResult || draft.memoryScopes.length > 0 || Object.keys(draft.skillVersions).length > 0
     || Object.values(projection.questions).some(question => question.status === 'pending' && projection.runs[question.run_id]?.interaction_session_id === sessionId)
     || Object.values(projection.approvals).some(approval => approval.status === 'pending' && approval.session_id === sessionId);
@@ -1365,7 +1443,7 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     }
   }
 
-  function requestSettings(section: 'models' | 'resources' | 'memory') {
+  function requestSettings(section: 'models' | 'resources' | 'memory' | 'retrieval') {
     setRunConfigurationOpen(false);
     setPanel(null);
     if (onSettings) { onSettings(section); return; }
@@ -1444,11 +1522,16 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
       const text = firstUserGoal?.parts.find(part => part.kind === 'text')?.text;
       if (text || run.output?.summary) return text || run.output!.summary;
     }
-    return `${runKinds[run.kind]} · ${run.config.agent_profile.display_name}`;
+    return run.config.kind === 'agent' ? `${runKinds[run.kind]} · ${run.config.agent_profile.display_name}` : runKinds[run.kind];
   }
 
   const detailContent = <>
-    {panel === 'results' && sessionId && <ResultInbox client={client} store={store} sessionId={sessionId} onCommand={dispatchCommand}
+    {panel === 'evidence' && evidenceTarget && <EvidenceReader client={client}
+      workspaceId={evidenceTarget.workspaceId} evidenceId={evidenceTarget.evidenceId} onClose={closePanel}
+      refreshKey={`${projection.knowledgeNotices[evidenceTarget.workspaceId]?.watermark ?? ''}:${projection.snapshotWatermark}:${fileAuthorization}`} />}
+    {(panel === 'results' || evidenceReturn?.panel === 'results') && sessionId && <div hidden={panel !== 'results'} inert={panel !== 'results'}>
+      <ResultInbox client={client} store={store} sessionId={sessionId} onCommand={dispatchCommand}
+      onOpenEvidence={id => openEvidence(workspaceId, id)}
       deliveryIds={deliveryIds} onOpen={showConversationTask} activities={fixedActivities}
       messageDeliveryIds={new Set(reportMessages.keys())} onMessage={deliveryId => {
         const id = reportMessages.get(deliveryId);
@@ -1475,20 +1558,23 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
         showArtifact(artifact.id);
       })}
       summaryBlocked={busy || pendingSubmission || activeRun?.kind === 'user' || projection.sessions[sessionId]?.archived}
-      onSummarize={entry => { drafts.update(draftKey, { sourceResult: entry.id, summaryRunId: null }); setPanel(null); requestAnimationFrame(() => document.getElementById('message-input')?.focus()); }} />}
+      onSummarize={entry => { drafts.update(draftKey, { sourceResult: entry.id, summaryRunId: null }); setPanel(null); requestAnimationFrame(() => document.getElementById('message-input')?.focus()); }} /></div>}
     {panel === 'resources' && workspaceId && <ResourcePanel client={client} workspaceId={workspaceId} sessionId={sessionId || null} refreshKey={Object.values(projection.grants).map(item => `${item.id}:${item.version}`).join(',') + Object.values(projection.scopes).map(item => `${item.id}:${item.epoch}`).join(',')} isRevokePending={id => pendingCommands.some(command => command.type === 'revoke' && commandContexts.current.get(command.commandId)?.targetId === id)} onGrantsLoaded={items => setProjection(state => mergeGrants(state, items))} onRevoke={(id, meta) => dispatchCommand({ type: 'revoke', args: [id, meta] })} />}
-    {panel === 'tasks' && detailRunId && <>
+    {(panel === 'tasks' || evidenceReturn?.panel === 'tasks') && detailRunId && <div hidden={panel !== 'tasks'} inert={panel !== 'tasks'}>
       <IconButton icon="back" label="返回会话任务" onClick={() => setDetailRunId(undefined)} />
       <TaskDetail client={client} store={store} runId={detailRunId} onCommand={(command, key) => dispatchCommand(command, { key })}
-        onQuestion={(runId, itemId, trigger) => void perform(() => openBackground(runId, itemId, trigger))} onOpen={showConversationTask} onOpenConnection={openConnection}
+        onQuestion={(runId, itemId, trigger) => void perform(() => openBackground(runId, itemId, trigger))} onOpen={showConversationTask} onOpenConnection={openConnection} onOpenEvidence={openEvidence}
         onExport={chooseExport} exportBlocked={nativeSelecting || pendingCommands.some(command => command.type === 'exportArtifact')} />
-    </>}
-    {panel === 'context' && sessionId && <ContextPanel key={sessionId} client={client} sessionId={sessionId}
-      revision={projection.cursor} authorization={`${projection.snapshotWatermark}:${fileAuthorization}`}
+    </div>}
+    {(panel === 'context' || evidenceReturn?.panel === 'context') && sessionId && <div hidden={panel !== 'context'} inert={panel !== 'context'}>
+      <ContextPanel key={sessionId} client={client} sessionId={sessionId}
+      revision={`${projection.contextWatermark}:${accountingRevision}:${projection.knowledgeNotices[workspaceId]?.watermark ?? ''}`}
+      accountingRevision={accountingRevision} authorization={`${projection.snapshotWatermark}:${fileAuthorization}`}
+      onOpenEvidence={id => openEvidence(workspaceId, id)}
       onInspect={openTask} onResources={() => openPanel('resources')}
       fileSelectionDisabled={busy || configurationLocked || nativeSelecting || !!projection.sessions[sessionId]?.archived}
       onUseFileVersion={(trigger, observedRunId, resourceIds) => void perform(() => selectResources('file', trigger,
-        { kind: 'version', observedRunId, resourceIds }))} />}
+        { kind: 'version', observedRunId, resourceIds }))} /></div>}
     {panel === 'tasks' && !detailRunId && <>
       {feedbackQuery?.request === view.current && feedbackQuery.failed && <div className="status-message" role="status">
         <p>暂时无法读取本会话的任务反馈。</p>
@@ -1592,6 +1678,7 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
       refreshKey={`${projection.cursor}:${Object.values(projection.sessions).map(item => `${item.id}:${item.version}`).join(',')}:${Object.values(projection.workspaces).map(item => `${item.id}:${item.version}`).join(',')}`}
       onTaskCenter={() => showPage(openTaskCenter)} onCapabilities={() => showPage(() => openSkillLibrary('personal'))}
       onMemory={() => showPage(() => openMemory())} onAssistants={() => showPage(openAssistants)}
+      onKnowledge={() => showPage(() => openKnowledge())}
       onPendingOpen={openPending} onPendingAction={pendingAction} onOpenInbox={showPage} onFormActiveChange={setSidebarFormActive} allowDirectoryCreation={!compact} deletedWorkspaceIds={Object.keys(projection.deletedWorkspaces)} deletedSessionIds={Object.keys(projection.deletedSessions)} onDefaultWorkspace={id => {
       defaultWorkspaceId.current = id;
       if (id && !userNavigated.current && view.current.workspaceId && view.current.workspaceId !== id && !scopeDeleted(store.getSnapshot(), { workspace_id: id, session_id: null })) chooseWorkspace(id);
@@ -1618,10 +1705,14 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
           <Button variant="outline" size="sm" onClick={() => requestSettings('models')}>配置模型</Button>
         </div>}
       </section>}
+      {currentCitationContext?.error && <div role="status"><p>引用资料名称暂不可用：{currentCitationContext.error}</p>
+        <Button size="sm" variant="ghost" onClick={() => retryCitations(value => value + 1)}>重试</Button></div>}
       <MessageList client={client} store={store} messages={messageIds.map(id => projection.messages[id]).filter(Boolean)} assistantName={agent?.display_name ?? '主助理'}
+        evidenceLabels={citationLabels}
         activities={Object.values(projection.activities)} previews={projection.previews} reasoningPreviews={projection.reasoningPreviews}
         runs={runs} artifacts={chatArtifacts} onOpenArtifact={showDeliveryArtifact} onOpenToolArtifact={loadPublishedArtifact} onInspectRun={openTask}
         hideInlineContext={panel === 'context'}
+        onOpenEvidence={openEvidence}
         onOpenResults={ids => { setDeliveryIds(ids); openPanel('results'); }} />
       {historyCursor && <Button variant="ghost" size="sm" disabled={busy} onClick={() => perform(async () => { const request = view.current; const page = await client.messages(sessionId, { cursor: historyCursor }); if (!currentView(request)) return; setHistoryCursor(page.next_cursor); setProjection(state => mergeMessages(state, sessionId, page)); })}>更多历史</Button>}
       <section className="run-actions" aria-label="运行与待办">
@@ -1676,21 +1767,27 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
       {currentCoverage?.error && <p role="alert">{currentCoverage.error}<Button variant="outline" size="sm" onClick={() => setCoverageRevision(value => value + 1)}>重新核对授权</Button></p>}
       {resourceCursors?.resources && <Button variant="outline" size="sm" disabled={busy || !sessionId} onClick={() => perform(() => loadResourcePage('resources'))}>更多资料</Button>}
       {resourceCursors?.grants && <Button variant="outline" size="sm" disabled={busy || !sessionId} onClick={() => perform(() => loadResourcePage('grants'))}>更多授权</Button>}
-      <ul aria-label="本次附件">{draft.resourceIds.map((id, index) => {
+      {!activePage && <KnowledgeImport key={workspaceId} client={client} workspaceId={workspaceId}
+        onFormActiveChange={setKnowledgeFormActive} trigger={(review, importing) => <ul aria-label="本次附件">{draft.resourceIds.map((id, index) => {
         const name = projection.resources[id]?.label ?? `附件 ${index + 1}（正在同步）`;
         return <li key={id} className="inline-flex max-w-full items-center gap-1">
           <span className="min-w-0 wrap-anywhere">{name}</span>
+          {projection.resources[id]?.kind === 'file' && <DropdownMenu>
+            <DropdownMenuTrigger asChild><IconButton icon="more" size="icon-xs" label={`附件「${name}」的更多操作`} /></DropdownMenuTrigger>
+            <DropdownMenuContent><DropdownMenuItem disabled={importing}
+              onSelect={() => review([projection.resources[id]])}>加入项目资料</DropdownMenuItem></DropdownMenuContent>
+          </DropdownMenu>}
           <IconButton icon="close" size="icon-xs" label={`移除附件「${name}」`} disabled={busy || configurationLocked}
             onClick={event => {
               const row = event.currentTarget.closest('li')!;
               const adjacent = row.nextElementSibling ?? row.previousElementSibling;
-              const focusTarget = adjacent?.querySelector<HTMLButtonElement>('button')
+              const focusTarget = adjacent?.querySelector<HTMLButtonElement>('button[data-icon-action="close"]')
                 ?? workbenchRoot.current?.querySelector<HTMLTextAreaElement>('#message-input');
               focusTarget?.focus();
               drafts.update(draftKey, { resourceIds: draft.resourceIds.filter(item => item !== id) });
             }} />
         </li>;
-      })}</ul>
+      })}</ul>} />}
       <p>点击发送即同意本次读取所列文件并发送至：{connection ? `${connection.display_name} · ${connection.endpoint}` : model ? '连接尚未同步，无法确认目的地' : '请先选择模型'}。此授权仅用于当前会话。{directoryIds.length > 0 && '目录范围需要另行授权。'}</p></div>
       {directoryIds.length > 0 && <footer className="interaction-footer"><Button variant="outline" size="sm" disabled={busy || !connection || directoriesGranted || resourcesSyncing || !missingCoverage || configurationLocked || unconfirmed('grant')} onClick={() => perform(() => dispatchCommand({ type: 'grant', args: [{ meta: commandMeta(), data: { scope: { kind: 'session', workspace_id: workspaceId, session_id: sessionId }, resource_ids: directoryIds as [string, ...string[]], purposes: ['read', 'model_send'], destination: connection.endpoint } }] }))}>{directoriesGranted ? '当前目录已授权' : resourcesSyncing ? '授权状态同步中' : '授权读取并发送目录'}</Button></footer>}
     </section>}
@@ -1866,7 +1963,8 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
     </div></div>
     </section>
     {docked && panel && <aside ref={detailsPane} className="conversation-details" aria-label={detailTitles[panel]}>
-      <header className="panel-header"><h2 tabIndex={panel === 'context' ? -1 : undefined}>{detailTitles[panel]}</h2><IconButton icon="close" label="关闭详情" onClick={closePanel} /></header>
+      <header className="panel-header"><h2 tabIndex={panel === 'context' ? -1 : undefined}>{detailTitles[panel]}</h2>
+        {panel !== 'evidence' && <IconButton icon="close" label="关闭详情" onClick={closePanel} />}</header>
       <div className="conversation-details-body">{detailContent}</div>
     </aside>}
     <nav ref={detailsRail} className="conversation-detail-rail" aria-label="会话详情入口">{detailButtons(false)}</nav>
@@ -1882,12 +1980,13 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
         }}
         onEscapeKeyDown={event => { if (event.isComposing || event.keyCode === 229) event.preventDefault(); }}>
         <header className="panel-header"><SheetTitle asChild><h2>{panel ? detailTitles[panel] : '会话详情'}</h2></SheetTitle>
-          <IconButton icon="close" label="关闭详情" onClick={closePanel} /></header>
-        {panel !== 'resources' && <nav className="conversation-sheet-tabs" aria-label="会话详情入口">{detailButtons(true)}</nav>}
+          {panel === 'evidence' && onReturnToQuick && <IconButton icon="quick" label="返回快捷小窗" onClick={() => void perform(onReturnToQuick)} />}
+          {panel !== 'evidence' && <IconButton icon="close" label="关闭详情" onClick={closePanel} />}</header>
+        {panel !== 'resources' && panel !== 'evidence' && <nav className="conversation-sheet-tabs" aria-label="会话详情入口">{detailButtons(true)}</nav>}
         <div className="conversation-details-body">{detailContent}</div>
       </SheetContent>
     </Sheet>
-    {management && <section className="task-management workbench-page ui-page-motion" hidden={!!memoryPage} aria-label="任务管理页面">
+    {management && <section className="task-management workbench-page ui-page-motion" hidden={!!memoryPage || panel === 'evidence'} inert={panel === 'evidence'} aria-label="任务管理页面">
       <header className="panel-header">
         <IconButton icon="back" size="icon-sm"
           label={backToTaskCenter ? '返回任务中心' : returnToInboxFromTask.current ? '返回待办' : '返回对话与草稿'}
@@ -1899,7 +1998,7 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
         workspaces={Object.values(projection.workspaces)} sessionNames={Object.fromEntries(Object.values(projection.sessions).map(session => [session.id, session.title]))}
         onOpen={id => { taskDetailOrigin.current = document.activeElement as HTMLElement; openTask(id); }}
          onOrganize={!compact ? openMemory : undefined} /></div>
-      {management === 'detail' && <TaskDetail key={managedRunId} client={client} store={store} runId={managedRunId} onCommand={(command, key) => dispatchCommand(command, { key })} onQuestion={(runId, itemId) => void perform(() => openBackground(runId, itemId))} onOpen={openTask} onOpenConnection={openConnection}
+      {management === 'detail' && <TaskDetail key={managedRunId} client={client} store={store} runId={managedRunId} onCommand={(command, key) => dispatchCommand(command, { key })} onQuestion={(runId, itemId) => void perform(() => openBackground(runId, itemId))} onOpen={openTask} onOpenConnection={openConnection} onOpenEvidence={openEvidence}
         onExport={chooseExport} exportBlocked={nativeSelecting || pendingCommands.some(command => command.type === 'exportArtifact' || command.type === 'grant' && !!commandContexts.current.get(command.commandId)?.afterConfirmed)} />}
     </section>}
     {assistantsOpen && <AssistantsPage client={client} refreshKey={profileRevision} skillsRevision={projection.skillsRevision}
@@ -1908,6 +2007,17 @@ export function Conversation({ client, compact = false, navigation, onSelectedRu
       onClose={closeSecondaryPage}
       onOpenTask={task => { setMemoryPage(undefined); openTask(task.run_id); }}
       onSettings={scope => onSettings?.('memory', undefined, scope)} onReturnToQuick={onReturnToQuick} />}
+    {knowledgePage && <section className="workbench-page ui-page-motion p-5 max-[760px]:px-4 max-[760px]:pt-14" aria-label="项目资料页面">
+      <header className="panel-header">
+        <IconButton icon="back" label="返回对话与草稿" onClick={closeSecondaryPage} />
+        <span className="text-sm text-muted-foreground">{projection.workspaces[knowledgePage.workspaceId]?.name}</span>
+        {onReturnToQuick && <IconButton className="ml-auto" icon="quick" label="返回快捷小窗" onClick={() => void perform(onReturnToQuick)} />}
+      </header>
+      <KnowledgePage client={client} workspaceId={knowledgePage.workspaceId} sourceId={knowledgePage.sourceId}
+        refreshKey={projection.knowledgeNotices[knowledgePage.workspaceId]?.watermark}
+        profileRefreshKey={projection.knowledgeNotices.global?.watermark} onConfigureModels={() => requestSettings('retrieval')}
+        onOpenTask={task => { clearPages(); void perform(async () => { const target = await client.task(task.task_id); openTask(target.run_id); }); }} />
+    </section>}
     {skillLibrary && <CapabilityLibrary compact={compact} embedded={!compact} navigationGuard={pageGuard} mcpTarget={skillLibrary.mcpTarget} mcpRevision={projection.mcpRevision}
       initialMcpScope={skillLibrary.mcpScope}
       onReturnToQuick={onReturnToQuick} client={client} workspaceId={skillLibrary.key.workspaceId || undefined} refreshKey={projection.skillsRevision}

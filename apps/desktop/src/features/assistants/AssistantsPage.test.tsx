@@ -20,7 +20,7 @@ it('管理真实Profile/目录工具，保留未装配允许名与Skill；脏表
     if (url.endsWith('/profiles')) return Response.json(page([{ ...agent, allowed_tools: ['unmounted.old'], skill_ids: [id] }]));
     return Response.json(url.includes('/model-connections') ? page([connection]) : page([model]));
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   render(<AssistantsPage client={client} onClose={close} />);
   await screen.findByLabelText('显示名称');
   expect(screen.getByLabelText(/unmounted.old/)).toBeTruthy();
@@ -54,7 +54,7 @@ it('agent.saved唤醒配置查询但不覆盖正在编辑的Profile草稿，明�
     if (url.endsWith('/profiles')) return Response.json(page([{ ...agent, version, display_name: version === 1 ? '原配置' : '新版本配置' }]));
     return Response.json(url.includes('/model-connections') ? page([connection]) : page([model]));
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   const props = { client, onClose: vi.fn() };
   const view = render(<AssistantsPage {...props} refreshKey="profile:1" />);
   await screen.findByLabelText('显示名称');

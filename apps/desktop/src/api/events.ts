@@ -1,7 +1,7 @@
 import type {
   ActivityView, AgentProfile, Approval, ArtifactRef, BudgetSnapshot, DataUseGrant,
   MessagePage, ModelConnection, ModelMessage, ModelProfile, PublicEvent, Question, ResourceRef, RunDetail, RunSnapshot,
-  ScopeState, Session, StreamEvent, TaskSnapshot, Workspace, WorkspaceSnapshot, MemoryRecord,
+  ScopeState, Session, StreamEvent, TaskSnapshot, Workspace, WorkspaceSnapshot, MemoryRecord, KnowledgeNotice,
   WaitRecord, ResultConsumption, JoinFact, DeletionReceipt, PublicationView, SessionInboxEntry, SessionResultPage, AdmissionFence, PendingUserCommand, FollowUpIntent, RunFeedback, RunFeedbackPage,
 } from '../generated/contracts';
 
@@ -18,7 +18,11 @@ export interface Projection {
   memoryRevision: number;
   maintenanceRevision: number;
   memoryNotices: Entities<Pick<MemoryRecord, 'id' | 'scope' | 'revision' | 'status'>>;
+  // 项目 ID 为键，global 单独保存应用级 profile 通知；这里只保存失效身份和修订。
+  knowledgeNotices: Entities<KnowledgeNotice & { watermark: string }>;
   cursor: string;
+  // 普通上下文随持久事件更新；晚结算由消费者按 Run 归属单独失效。
+  contextWatermark: string;
   snapshotWatermark: string;
   workspaces: Entities<Workspace>;
   sessions: Entities<Session>;
@@ -70,7 +74,7 @@ export function emptyProjection(): Projection {
     resources: {}, grants: {}, publications: {}, previews: {}, reasoningPreviews: {}, fencedActivities: {}, scopes: {},
     deletedWorkspaces: {}, deletedSessions: {}, entityScopes: {}, waits: {}, consumptions: {}, joins: {},
     deliveries: {}, resultPages: {}, deliveryWatermarks: {}, admissions: {},
-    pendingUserCommands: {}, commandWatermarks: {}, followUpIntents: {}, followUpWatermarks: {} };
+    pendingUserCommands: {}, commandWatermarks: {}, followUpIntents: {}, followUpWatermarks: {}, knowledgeNotices: {}, contextWatermark: '0' };
 }
 
 export function mergePendingUserCommands(state: Projection, commands: readonly PendingUserCommand[], watermark: string): Projection {
@@ -274,6 +278,8 @@ function eraseScope(state: Projection, scope: Scope, epoch: number): Projection 
   const messages = retain(state.messages);
   const activities = retain(state.activities);
   return { ...state, deletedSessions,
+    knowledgeNotices: scope.session_id ? state.knowledgeNotices
+      : Object.fromEntries(Object.entries(state.knowledgeNotices).filter(([id]) => id !== scope.workspace_id)),
     deletedWorkspaces: scope.session_id ? state.deletedWorkspaces : {
       ...state.deletedWorkspaces, [scope.workspace_id]: Math.max(epoch, state.deletedWorkspaces[scope.workspace_id] ?? 0) },
     workspaces: Object.fromEntries(Object.entries(state.workspaces).filter(([id]) => scope.session_id || id !== scope.workspace_id)),
@@ -322,6 +328,27 @@ export function mergeMemoryNotices(state: Projection, records: readonly Projecti
     if (!memoryNotices[id] || memoryNotices[id].revision < revision) memoryNotices[id] = { id, scope, revision, status };
   }
   return { ...state, memoryNotices, memoryRevision: state.memoryRevision + 1 };
+}
+
+function mergeKnowledgeNotice(state: Projection, notice: KnowledgeNotice, watermark: string): Projection {
+  const key = notice.workspace_id ?? 'global';
+  const previous = state.knowledgeNotices[key];
+  const merged = { ...notice, watermark: laterCursor(previous?.watermark ?? '0', watermark),
+    settings_revision: notice.settings_revision === null ? previous?.settings_revision ?? null
+      : Math.max(notice.settings_revision, previous?.settings_revision ?? notice.settings_revision) };
+  let changed = !previous || merged.watermark !== previous.watermark || merged.settings_revision !== previous.settings_revision;
+  // 累计身份，而非只保留最后一条通知；双订阅交错或 React 批处理都不会丢前项失效。
+  for (const field of ['source_revisions', 'job_revisions', 'profile_revisions'] as const) {
+    let revisions = previous?.[field] ?? {};
+    for (const [id, revision] of Object.entries(notice[field])) {
+      if (revision <= (revisions[id] ?? 0)) continue;
+      if (revisions === previous?.[field]) revisions = { ...revisions };
+      revisions[id] = revision;
+      changed = true;
+    }
+    merged[field] = revisions;
+  }
+  return changed ? { ...state, knowledgeNotices: { ...state.knowledgeNotices, [key]: merged } } : state;
 }
 
 function fence(state: Projection): Projection {
@@ -407,6 +434,7 @@ function mergeEvent(state: Projection, event: PublicEvent): Projection {
       : { ...state, environmentsRevision: state.environmentsRevision + 1, environmentsWatermark: event.event_id };
     case 'memory.maintenance_changed': return { ...state, maintenanceRevision: state.maintenanceRevision + 1 };
     case 'memory.changed': case 'memory.policy_changed': return mergeMemoryNotices(state, event.payload.records);
+    case 'knowledge.changed': return mergeKnowledgeNotice(state, event.payload, event.event_id);
     case 'delivery.changed': return mergeDeliveries(state, event.payload.deliveries, event.event_id);
     case 'admission.stopped': return mergeAdmissions(state, event.payload.admission_fences);
     case 'workspace.created': case 'workspace.default_created': case 'workspace.directory_changed': case 'workspace.renamed': return mergeWorkspaces(state, [event.payload]);
@@ -436,7 +464,9 @@ export function reduceStream(state: Projection, event: StreamEvent): Projection 
     }
     if (['scope.deleted', 'scope.revoked', 'grant.revoked', 'grant.created'].includes(event.event.kind)) next = { ...next, memoryRevision: next.memoryRevision + 1 };
     const cursor = laterCursor(next.cursor, event.event_id);
-    return cursor === next.cursor ? next : { ...next, cursor };
+    const contextWatermark = event.event.kind === 'accounting.settled' ? next.contextWatermark
+      : laterCursor(next.contextWatermark, event.event_id);
+    return cursor === next.cursor && contextWatermark === next.contextWatermark ? next : { ...next, cursor, contextWatermark };
   }
   const activity = state.activities[event.activity_id];
   if (!activity || state.fencedActivities[event.activity_id] || terminal(state.runs[activity.run_id]?.state)) return state;
@@ -448,7 +478,7 @@ export function reduceStream(state: Projection, event: StreamEvent): Projection 
 
 export function resetWorkspace(state: Projection, snapshot: WorkspaceSnapshot): Projection {
   if (scopeDeleted(state, { workspace_id: snapshot.workspace.id, session_id: null })) return state;
-  let next = fence({ ...emptyProjection(), cursor: snapshot.watermark, snapshotWatermark: snapshot.watermark,
+  let next = fence({ ...emptyProjection(), cursor: snapshot.watermark, contextWatermark: snapshot.watermark, snapshotWatermark: snapshot.watermark,
     mcpRevision: state.mcpRevision + 1,
     mcpWatermark: state.mcpWatermark,
     environmentsRevision: state.environmentsRevision + 1,
@@ -458,6 +488,7 @@ export function resetWorkspace(state: Projection, snapshot: WorkspaceSnapshot): 
     memoryRevision: state.memoryRevision + 1,
     maintenanceRevision: state.maintenanceRevision + 1,
     memoryNotices: state.memoryNotices,
+    knowledgeNotices: state.knowledgeNotices,
     deliveries: state.deliveries, deliveryWatermarks: state.deliveryWatermarks, resultPages: state.resultPages, admissions: state.admissions,
     pendingUserCommands: state.pendingUserCommands, commandWatermarks: state.commandWatermarks,
     followUpIntents: state.followUpIntents, followUpWatermarks: state.followUpWatermarks,
@@ -471,6 +502,10 @@ export function resetWorkspace(state: Projection, snapshot: WorkspaceSnapshot): 
     workspaces: { ...state.workspaces, [snapshot.workspace.id]: snapshot.workspace },
     sessions: mergeVersioned({}, snapshot.sessions.items), runs: mergeVersioned({}, snapshot.active_runs.items),
     questions: {}, approvals: mergeVersioned({}, snapshot.pending_approvals.items) });
+  // 快照不含知识实体；重连跨过通知后，项目与应用级配置需要按快照水位重新查询。
+  for (const workspace_id of [snapshot.workspace.id, null]) next = mergeKnowledgeNotice(next, {
+    workspace_id, source_revisions: {}, job_revisions: {}, settings_revision: null, profile_revisions: {},
+  }, snapshot.watermark);
   next = mergeGrants(mergeResources(next, snapshot.resources.items), snapshot.grants.items);
   for (const session of snapshot.sessions.items) next.entityScopes[session.id] = { workspace_id: session.workspace_id, session_id: session.id };
   for (const run of snapshot.active_runs.items) next.entityScopes[run.id] = { workspace_id: run.workspace_id, session_id: run.interaction_session_id };

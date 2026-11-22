@@ -6,7 +6,7 @@ import ScriptActivity from '../tasks/ScriptActivity';
 import McpIdentity from '../authorization/McpIdentity';
 import Status from '../../components/Status';
 import { Button } from '../../components/ui/button';
-import { operationLabel } from '../tasks/operation-label';
+import { activityLabel, operationLabel } from '../tasks/operation-label';
 
 const eventLabels: Record<string, string> = {
   'run.started': '运行开始', 'run.stepped': '运行进度', 'run.finished': '运行结束',
@@ -63,7 +63,7 @@ export function TracePanel({ events, selectedId, onSelect, nextCursor, onLoadMor
               {event.seq !== null && <span>步骤 {event.seq}</span>}</header>
             {event.activities.length > 0 && <ul className="trace-activities">{event.activities.map(activity => <li key={activity.id}>
               <div className="task-step-heading">
-                <strong>{activity.kind === 'model' ? '模型回复' : operationLabel(activity.operation, knownTasks.get(activity.task_id))}</strong>
+                <strong>{activityLabel(activity, knownTasks.get(activity.task_id))}</strong>
                 <Status state={activity.state} />
               </div>
               {activity.operation.startsWith('mcp.') && <section aria-label="MCP 调用">
@@ -81,7 +81,7 @@ export function TracePanel({ events, selectedId, onSelect, nextCursor, onLoadMor
             {onSelect && <div className="flex flex-wrap gap-2">{[...references.values()].map(reference => {
               const task = knownTasks.get(reference.id);
               const activity = event.activities.find(item => item.id === reference.id);
-              const label = reference.kind === 'task' ? task?.binding.agent_work?.goal ?? task?.binding.config.agent_profile.display_name ?? '关联任务'
+              const label = reference.kind === 'task' ? task?.binding.agent_work?.goal ?? (task?.binding.config.kind === 'agent' ? task.binding.config.agent_profile.display_name : '关联任务')
                 : activity ? operationLabel(activity.operation, knownTasks.get(activity.task_id)) : '关联步骤';
               return <Button type="button" size="sm" className="whitespace-normal text-start wrap-anywhere" key={`${reference.kind}:${reference.id}`} onClick={() => onSelect(reference.id, reference.kind)}>
                 定位{reference.kind === 'task' ? '任务' : '步骤'} · {label}

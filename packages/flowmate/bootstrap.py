@@ -27,6 +27,15 @@ from flowmate.host.resources import HostResources
 from flowmate.host.secrets import HostSecrets
 from flowmate.host.skills import SkillHost
 from flowmate.host.stdio import open_stdio
+from flowmate.knowledge.embedding import FastEmbedProvider, OpenAIEmbeddingProvider
+from flowmate.knowledge.embedding_runtime import EmbeddingRuntime
+from flowmate.knowledge.ingestion import KnowledgeImportExecutor, KnowledgeIngestion
+from flowmate.knowledge.lifecycle import KnowledgeLifecycle
+from flowmate.knowledge.parsing import Chunker, Parser, TextChunker, TextParser
+from flowmate.knowledge.provider import RetrieverFactory, open_lance_retriever
+from flowmate.knowledge.service import KnowledgeService
+from flowmate.knowledge.settings import KnowledgeSettingsService
+from flowmate.knowledge.tools import register_knowledge_tools
 from flowmate.memory.maintenance import MemoryMaintenance, register_maintenance_tools
 from flowmate.memory.provider import MemoryProvider
 from flowmate.memory.service import MemoryService
@@ -135,6 +144,8 @@ class _AgentProvider(_Provider):
         scheduler.executors["builtin.tool"] = agent.tools
 
         async def drive_tool(ctx, activity, cancel, before_send):
+            if activity.intent.operation in {"embedding.query", "embedding.document"}:
+                return await agent.knowledge.embedding.drive(ctx, activity, cancel, before_send)
             driver = agent.tools.drive if scheduler.task(ctx.task_id).kind == "tool" else agent.drive_tool
             return await driver(ctx, activity, cancel, before_send)
 
@@ -171,6 +182,8 @@ class Runtime:
     script_execution: SkillExecutionService
     memory: MemoryService
     maintenance: MemoryMaintenance
+    knowledge: KnowledgeService
+    knowledge_lifecycle: KnowledgeLifecycle
     model_discovery: ModelDiscovery
     mcp: "McpConfiguration" = field(init=False)
     mcp_tools: "McpTools" = field(init=False)
@@ -212,6 +225,8 @@ class Runtime:
 def build_runtime(
     data_dir: Path, host: HostChannel, *, overrides: Mapping[str, object] | None = None,
     memory_provider: MemoryProvider | None = None,
+    knowledge_parser: Parser | None = None, knowledge_chunker: Chunker | None = None,
+    knowledge_retriever_factory: RetrieverFactory | None = None,
 ) -> Runtime:
     """先获得目录独占权再打开Store；不启动或接管调用方的HostChannel。"""
     selected = dict(overrides) if overrides is not None else {}
@@ -267,9 +282,22 @@ def build_runtime(
         plugins.register(PluginManifest(plugin_id="builtin.memory", version=__version__,
             provides=(SlotSpec(name="memory_provider", exclusive=True),)),
             lambda config, dependencies: _Provider(memory.provider))
+        knowledge = KnowledgeService(store, policy, files, config=config,
+            parser=knowledge_parser if knowledge_parser is not None else TextParser(),
+            chunker=knowledge_chunker if knowledge_chunker is not None else TextChunker(),
+            retriever_factory=(knowledge_retriever_factory if knowledge_retriever_factory is not None
+                else open_lance_retriever))
+        knowledge.embedding = EmbeddingRuntime(knowledge, KnowledgeSettingsService(knowledge), {
+            "openai": OpenAIEmbeddingProvider(policy, secrets, clock=clock),
+            "fastembed": FastEmbedProvider(policy, clock=clock),
+        })
+        plugins.register(PluginManifest(plugin_id="builtin.knowledge", version=__version__,
+            provides=(SlotSpec(name="knowledge_service", exclusive=True),)),
+            lambda config, dependencies: _Provider(knowledge))
         plugins.register(PluginManifest(plugin_id="builtin.tools", version=__version__,
             provides=(SlotSpec(name="tool_executor", exclusive=True),)),
-            lambda config, dependencies: _Provider(ToolExecutor(ToolGateway(catalog, policy, approvals, scheduler))))
+            lambda config, dependencies: _Provider(ToolExecutor(
+                ToolGateway(catalog, policy, approvals, scheduler), knowledge=knowledge)))
         plugins.register(PluginManifest(plugin_id="builtin.model", version=f"{__version__}+sdk.{SDK_VERSION}",
             provides=(SlotSpec(name="model_gateway", exclusive=True),)),
             lambda config, dependencies: _Provider(selected["model"] if "model" in selected else
@@ -282,17 +310,22 @@ def build_runtime(
                 artifacts=artifacts, skills=skills)))
         plugins.register(PluginManifest(plugin_id="builtin.agent", version=__version__,
             provides=(SlotSpec(name="agent_executor", exclusive=True),),
-            requires=("builtin.tools", "builtin.model", "builtin.context")),
+            requires=("builtin.tools", "builtin.model", "builtin.context", "builtin.knowledge")),
             lambda config, dependencies: _AgentProvider(AgentExecutor(store, catalog,
                 dependencies["builtin.model"].service, dependencies["builtin.tools"].service,
                 policy=policy, artifacts=artifacts,
                 context=dependencies["builtin.context"].service, clock=clock, emit_delta=streams.publish,
-                emit_reasoning_delta=streams.publish_reasoning, maintenance=maintenance),
+                 emit_reasoning_delta=streams.publish_reasoning, maintenance=maintenance,
+                 knowledge=dependencies["builtin.knowledge"].service),
                 scheduler, service.catalog.snapshot()))
         service = RunService(store, RuntimeCatalog(tools=catalog.snapshot(), plugins=plugins.snapshot(),
             agent_executor_id="builtin.agent", tool_catalog=catalog), clock=clock, policy=policy,
              prepare_inputs=script_execution.pin_inputs, scheduler=scheduler)
         maintenance = MemoryMaintenance(store, memory, policy, service, settings=settings, clock=clock)
+        register_knowledge_tools(catalog, knowledge)
+        ingestion = KnowledgeIngestion(knowledge, service)
+        scheduler.configure_knowledge(ingestion)
+        scheduler.executors["knowledge.import"] = KnowledgeImportExecutor(ingestion)
         register_maintenance_tools(catalog, maintenance)
         service.catalog.tools = catalog.snapshot()
         scheduler.configure_maintenance(maintenance)
@@ -303,7 +336,8 @@ def build_runtime(
             plugins=plugins, config=config, streams=streams, tasks=scheduler.tasks,
             host_resources=HostResources(policy, files, config), skills=skills, skill_host=skill_host,
             environments=environments, script_execution=script_execution,
-            memory=memory, maintenance=maintenance, model_discovery=ModelDiscovery(settings, secrets),
+            memory=memory, maintenance=maintenance, knowledge=knowledge,
+            knowledge_lifecycle=ingestion.lifecycle, model_discovery=ModelDiscovery(settings, secrets),
             _resources=resources.pop_all())
         settings.model_discovery = runtime.model_discovery
         from flowmate.integrations.bootstrap import register_mcp
@@ -458,6 +492,7 @@ async def serve_runtime(data_dir: Path) -> None:
         host.handlers["skills.register"] = runtime.skill_host.register
         host.handlers["workspace.create_from_directory"] = runtime.host_resources.create_workspace_from_directory
         host.handlers["workspace.directory_command_status"] = runtime.host_resources.directory_command_status
+        host.handlers["knowledge.expand_directory"] = runtime.host_resources.expand_knowledge_directory
         await runtime.start()
         await _serve_http(runtime, host, startup, disconnected)
     except Exception as error:

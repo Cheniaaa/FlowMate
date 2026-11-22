@@ -5,7 +5,7 @@ import type { MemberLane } from '../../generated/contracts';
 import { agent, binding, id, secondId } from '../../test/fixtures';
 import MemberLanes from './MemberLanes';
 
-export const lane: MemberLane = { profile: { ...agent, display_name: '固定研究成员', version: 4 },
+export const lane: MemberLane & { task: { binding: { config: typeof binding.config } } } = { profile: { ...agent, display_name: '固定研究成员', version: 4 },
   task: { id: secondId, run_id: id, version: 1, kind: 'agent', executor_id: 'builtin.agent', parent_task_id: id, origin_task_id: id, created_seq: 2,
     state: 'waiting_user', deadline_at: null, result_version: null, reason: 'context_authorization_required',
     binding: { ...binding, config: { ...binding.config, agent_profile: { ...agent, display_name: '固定研究成员', version: 4 },

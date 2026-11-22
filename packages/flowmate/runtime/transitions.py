@@ -142,6 +142,9 @@ def emit(tx, run, task_id, kind, change, causation_id=None):
     for changed in change.runs:
         if changed.state in TERMINAL:
             BudgetService().return_unused(tx, changed.id)
+            if changed.kind == "knowledge" and load(tx, TaskSnapshot, changed.root_task_id).executor_id == "knowledge.import":
+                from flowmate.knowledge.ingestion import KnowledgeIngestion
+                KnowledgeIngestion.finish_run(tx, changed)
             if changed.kind == "user":
                 from flowmate.runtime.delivery import publish_managed_report
                 publish_managed_report(tx, changed)

@@ -2,16 +2,18 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { RuntimeClient } from '../../api/client';
-import type { ContextUsageSummary, ModelMessage, PublicEvent, RunDetail, SessionContextSchema } from '../../generated/contracts';
-import { agent, connection, contextUsage, event, grant, id, limits, model, page, run, runDetailSummary, secondId } from '../../test/fixtures';
+import type { ContextUsageSummary, MemberLane, ModelMessage, PublicEvent, RunDetail, SessionContextSchema } from '../../generated/contracts';
+import { agent, binding, connection, contextUsage, event, grant, id, limits, model, page, run, runDetailSummary, secondId } from '../../test/fixtures';
 import { Conversation } from './Conversation';
 import { invoke } from '@tauri-apps/api/core';
+import { evidence, evidenceId, source } from '../knowledge/knowledge-fixtures';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 function contextResponse(usage: ContextUsageSummary, runId = id) {
   return { round: { run_id: runId, state: 'completed', source_attention: false },
-    files: [], hidden_file_count: 0, history: usage, latest_request: null, activities: page([]), units_per_currency: '1000000' };
+    files: [], hidden_file_count: 0, history: usage, latest_request: null, activities: page([]), units_per_currency: '1000000',
+    knowledge: [], hidden_knowledge_count: 0 };
 }
 
 const sessionUsage = {
@@ -19,10 +21,147 @@ const sessionUsage = {
   cached_input_tokens: 0, cache_reported_requests: 0, cache_reported_input_tokens: 0,
   cached_tokens_with_reported_input: 0, calculated_units: '0', unknown_cost_requests: 0, pending_cost_requests: 0,
   units_per_currency: '1000000',
+  embedding_requests: 0, embedding_input_tokens: 0, embedding_input_reported_requests: 0,
+  embedding_calculated_units: '0', embedding_unknown_cost_requests: 0, embedding_pending_cost_requests: 0,
 };
 
 const contextFile = (name: string): SessionContextSchema.ContextFile => ({
   name, origin: 'attached', changed: false, size_bytes: null, line_count: null, start: null, end: null, total_chars: null,
+});
+
+it.each([520, 1000])('%s宽上下文资料打开受控原文，关闭返回同一资料按钮并保留草稿', async width => {
+  vi.stubGlobal('matchMedia', (query: string) => ({ matches: width >= Number(query.match(/min-width: (\d+)/)?.[1] ?? 0),
+    media: query, onchange: null, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+    dispatchEvent: () => true }));
+  server(contextUsage, 'completed');
+  const base = fetch, reads: string[] = [];
+  vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname; reads.push(path);
+    if (path.endsWith('/context')) return Response.json({ ...contextResponse(contextUsage),
+      knowledge: [{ evidence_id: evidenceId, name: source.label, start_line: 18, end_line: 20, historical: true }] });
+    if (path.includes('/knowledge/evidence/')) return Response.json(evidence);
+    if (path.endsWith('/knowledge/sources')) return Response.json(page([{ ...source,
+      latest_job: null, origin_hint: null, added_at: null }]));
+    return base(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
+  await screen.findByRole('heading', { name: '原上下文目标' });
+  await user.type(screen.getByRole('textbox', { name: '消息' }), '阅读资料时保留的草稿');
+  await user.click(screen.getByRole('button', { name: '上下文' }));
+  const trigger = await screen.findByRole('button', { name: '打开 项目说明.md' });
+  expect(reads.filter(path => path.includes('/knowledge/evidence/'))).toHaveLength(0);
+  await user.click(trigger);
+  const reader = await screen.findByRole('region', { name: '引用原文' });
+  await within(reader).findByRole('heading', { name: source.label });
+  expect(screen.getAllByRole('button', { name: /^关闭(?:原文|详情)$/ })).toHaveLength(1);
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+  expect(screen.getByRole('region', { name: '上下文详情' })).toBeTruthy();
+  expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('阅读资料时保留的草稿');
+});
+
+it.each([520, 1000])('%s宽任务中心成员原文关闭后保留泳道选中与原引用焦点', async width => {
+  vi.stubGlobal('matchMedia', (query: string) => ({ matches: width >= Number(query.match(/min-width: (\d+)/)?.[1] ?? 0),
+    media: query, onchange: null, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+    dispatchEvent: () => true }));
+  server(contextUsage, 'completed');
+  const base = fetch;
+  let resultReads = 0;
+  const lane: MemberLane = { profile: { ...agent, display_name: '资料成员' }, activities: [], handoffs: [],
+    task: { id: secondId, version: 2, run_id: id, kind: 'agent', executor_id: 'builtin.agent', parent_task_id: id,
+      origin_task_id: id, created_seq: 2, state: 'completed', result_version: 1, reason: null, deadline_at: null,
+      binding: { ...binding, agent_work: { kind: 'agent', profile_id: id, goal: '查证', input_refs: [], output_schema: {}, success_criteria: [] } } } };
+  vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith(`/tasks/${secondId}`)) return Response.json(lane.task);
+    if (path.endsWith('/member-lanes')) return Response.json([lane]);
+    if (path.endsWith(`/tasks/${secondId}/result`)) {
+      resultReads++;
+      return Response.json({ handle: { task_id: secondId, run_id: id, lifetime: 'run_bound', submitted_state: 'completed' },
+        result_version: 1, state: 'completed', artifacts: [], dependencies: [], error: null,
+        result: { status: 'completed', summary: '真实成员引用[1]。', artifact_ids: [], unresolved: [], handled_failures: [],
+          citations: [{ marker: 1, evidence_id: evidenceId }], evidence_refs: [], verification: [], structured_result: null } });
+    }
+    if (path.includes('/knowledge/evidence/')) return Response.json(evidence);
+    if (path.endsWith('/knowledge/sources')) return Response.json(page([{ ...source, latest_job: null, origin_hint: null, added_at: null }]));
+    return base(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })}
+    navigation={{ target: { kind: 'task', task_id: secondId }, sequence: 1 }} />);
+  await user.click(await screen.findByRole('button', { name: '成员泳道' }));
+  await user.click(await screen.findByRole('button', { name: '查看资料成员的任务' }));
+  const citation = await screen.findByRole('button', { name: '查看引用 1' });
+  await user.click(citation);
+  const reader = await screen.findByRole('region', { name: '引用原文' });
+  await within(reader).findByRole('heading', { name: source.label });
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(document.activeElement).toBe(citation));
+  expect(screen.getByRole('button', { name: '成员泳道' }).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByRole('region', { name: '成员结果预览' })).toBeTruthy();
+  expect(resultReads).toBe(1);
+});
+
+it('本项目知识通知重新投影上下文摘要，刷新完成前即遮去旧名称', async () => {
+  server(contextUsage, 'completed');
+  const base = fetch;
+  const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+  let contextReads = 0, reply!: (value: Response) => void;
+  vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(stream) { streams.push(stream); } }));
+    if (path.endsWith('/context')) {
+      if (++contextReads === 1) return Response.json({ ...contextResponse(contextUsage),
+        knowledge: [{ evidence_id: evidenceId, name: source.label, start_line: 18, end_line: 20, historical: false }] });
+      return new Promise<Response>(resolve => { reply = resolve; });
+    }
+    return base(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
+  await screen.findByRole('heading', { name: '原上下文目标' });
+  await user.click(screen.getByRole('button', { name: '上下文' }));
+  await screen.findByText(source.label);
+  async function notify(workspace_id: string, step: number) {
+    const event_id = String(BigInt(event.event_id) + BigInt(step));
+    const fact: PublicEvent = { ...event, kind: 'knowledge.changed', workspace_id, session_id: null, run_id: null, seq: null,
+      event_id, payload: { workspace_id, source_revisions: { [source.id]: step }, job_revisions: {},
+        settings_revision: null, profile_revisions: {} } };
+    await act(async () => { for (const stream of streams) stream.enqueue(new TextEncoder().encode(
+      `data: ${JSON.stringify({ kind: 'durable', event_id, event: fact })}\n\n`)); });
+  }
+  await notify(id, 1);
+  expect(screen.queryByText(source.label)).toBeNull();
+  await waitFor(() => expect(contextReads).toBe(2));
+  await act(async () => reply(Response.json({ ...contextResponse(contextUsage), hidden_knowledge_count: 1 })));
+  await screen.findByText('1 项资料已不可用。');
+  expect(screen.queryByText(source.label)).toBeNull();
+});
+
+it('无需先打开上下文，整轮正式引用共用一次已有摘要查询，不预取正文', async () => {
+  server(contextUsage, 'completed');
+  const base = fetch, reads: string[] = [];
+  const completed = { ...run, state: 'completed', output: { summary: '两个依据[1]和[2]。',
+    citations: [{ marker: 1, evidence_id: evidenceId }, { marker: 2, evidence_id: evidenceId }],
+    artifact_ids: [], unresolved: [], handled_failures: [] } };
+  vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname; reads.push(path);
+    if (path.endsWith(`/sessions/${id}/runs`)) return Response.json(page([completed]));
+    if (path.endsWith(`/workspaces/${id}/snapshot`)) {
+      const snapshot = await (await base(url, init)).json();
+      return Response.json({ ...snapshot, active_runs: page([completed]) });
+    }
+    if (path.endsWith('/context')) return Response.json({ ...contextResponse(contextUsage),
+      knowledge: [{ evidence_id: evidenceId, name: source.label, start_line: 18, end_line: 20, historical: true }] });
+    return base(url, init);
+  });
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
+  await screen.findByRole('button', { name: '查看引用 1 · 项目说明.md · 18–20 行 · 历史原文' });
+  expect(screen.getByRole('button', { name: '查看引用 2 · 项目说明.md · 18–20 行 · 历史原文' })).toBeTruthy();
+  expect(reads.filter(path => path.endsWith('/context'))).toHaveLength(1);
+  expect(reads.filter(path => path.includes('/knowledge/evidence/') || path.endsWith('/knowledge/sources'))).toHaveLength(0);
+  expect(screen.queryByRole('region', { name: '上下文详情' })).toBeNull();
 });
 
 async function deliver(stream: ReadableStreamDefaultController<Uint8Array>, fact: PublicEvent) {
@@ -46,7 +185,7 @@ function server(usage: ContextUsageSummary, runState?: 'completed') {
   const workspace = { id, version: 1, name: '上下文项目', directory_resource_id: null };
   const session = { id, version: 1, workspace_id: id, title: '原上下文目标', agent_profile_id: id, kind: 'interaction', archived: false };
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', ''); reads.push(path);
+    const path = new URL(url).pathname.replace('/v4', ''); reads.push(path);
     if (init.method && init.method !== 'GET') throw new Error('查看状态不应重交、恢复或授权');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path.endsWith('/context')) return Response.json(contextResponse(usage));
@@ -79,7 +218,7 @@ it.each([
     state: compaction_state === 'running' ? 'prepared' : null, compaction_state, compaction_reason,
     summary_count: compaction_state === 'committed' ? 1 : 0, compacted_message_count: compaction_state === 'committed' ? 20 : 0 });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   await screen.findByRole('heading', { name: '原上下文目标' });
   await user.click(await screen.findByRole('button', { name: '上下文' }));
   const notice = await screen.findByRole('complementary', { name: '历史使用说明' });
@@ -100,7 +239,7 @@ it.each([
 it('小窗同样显示零省略/无Activity阻塞，既有Task导航使用RunDetail真实根任务，原输入保留', async () => {
   server({ ...contextUsage, compaction_state: 'blocked', compaction_reason: 'context_authorization_required' });
   const user = userEvent.setup();
-  render(<Conversation compact client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  render(<Conversation compact client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   const notice = await screen.findByRole('complementary', { name: '历史使用说明' });
   const input = screen.getByLabelText('消息'); await user.type(input, '保留的原对话输入');
   await user.click(within(notice).getByText('上下文压缩受阻'));
@@ -124,7 +263,7 @@ it.each([false, true])('重开和分页保留历史消息，面板只展示当�
   const base = fetch;
   const batches: string[][] = [];
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', '');
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', '');
     if (path.endsWith('/context')) return Response.json(contextResponse(summary));
     if (path.endsWith('/messages')) return Response.json(parsed.searchParams.has('cursor') ? page(messages.slice(0, 2))
       : paged ? { ...page(messages.slice(2)), next_cursor: 'older' } : page(messages));
@@ -137,7 +276,7 @@ it.each([false, true])('重开和分页保留历史消息，面板只展示当�
     }
     return base(url, init);
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   const view = render(<Conversation client={client} />);
   async function verifyHistory() {
     const thread = within(await screen.findByRole('region', { name: '持久对话' }));
@@ -193,7 +332,7 @@ it('撤权刷新同版本历史说明，立即遮去答复和正式输出，冷�
   let releaseFeedback!: () => void;
   const feedbackReady = new Promise<void>(resolve => { releaseFeedback = resolve; });
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     const isRevoked = mark !== event.event_id;
     if (path.endsWith('/context')) {
       if (isRevoked) await feedbackReady;
@@ -220,7 +359,7 @@ it('撤权刷新同版本历史说明，立即遮去答复和正式输出，冷�
       grants: page([isRevoked ? revoked : grant]), watermark: mark });
     return base(url, init);
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   const view = render(<Conversation client={client} />);
   const user = userEvent.setup();
   await screen.findByRole('heading', { name: '原上下文目标' });
@@ -280,7 +419,7 @@ it('新回复到达时自动跟随当前轮', async () => {
       activities: { ...data.activities, watermark: arrived ? newEventId : event.event_id } });
   });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   await screen.findByRole('heading', { name: '原上下文目标' });
   await user.click(screen.getByRole('button', { name: '上下文' }));
   await screen.findByText('前一轮文件');
@@ -333,7 +472,7 @@ it('分页期间新回复和撤权一同到达，迟到的旧分页无法恢复�
       { ...current, files: [contextFile('首页文件名')], activities: { ...page([]), next_cursor: 'older' } });
   });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   await screen.findByRole('heading', { name: '原上下文目标' });
   await user.click(screen.getByRole('button', { name: '上下文' }));
   await screen.findByText('首页文件名');
@@ -376,7 +515,7 @@ it('文件变化可打开原生选择入口，终态费用和用量都显示未�
   });
   vi.mocked(invoke).mockResolvedValueOnce({ resources: [] });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   await screen.findByRole('heading', { name: '原上下文目标' });
   await user.click(screen.getByRole('button', { name: '上下文' }));
   const panel = within(await screen.findByRole('region', { name: '上下文详情' }));
@@ -410,7 +549,7 @@ it.each([[0, '0%'], [20, '25%'], [null, '无缓存读数']] as const)(
         activities: { ...page([cursor ? latest : earlier]), next_cursor: cursor ? null : 'next' } });
     });
     const user = userEvent.setup();
-    render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+    render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
     await screen.findByRole('heading', { name: '原上下文目标' });
     await user.click(screen.getByRole('button', { name: '上下文' }));
     const section = within(await screen.findByRole('region', { name: '最近一次模型请求' }));
@@ -426,7 +565,7 @@ it.each([[0, '0%'], [20, '25%'], [null, '无缓存读数']] as const)(
     await screen.findByText('第 2 次请求');
     expect(reads).not.toContain(usagePath);
     await user.click(screen.getByText(/^会话用量与费用/, { selector: 'summary' }));
-    await screen.findByText('已计算费用');
+    await screen.findByText('已计算总费用');
     expect(reads.filter(path => path === usagePath)).toHaveLength(1);
   },
 );
@@ -455,7 +594,7 @@ it('展开期间保留会话累计快照，折叠后再次展开会读取新值'
     return base(url, init);
   });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   await screen.findByRole('heading', { name: '原上下文目标' });
   await user.click(screen.getByRole('button', { name: '上下文' }));
   await screen.findByText('当前资料');
@@ -473,4 +612,47 @@ it('展开期间保留会话累计快照，折叠后再次展开会读取新值'
   await user.click(disclosure);
   await screen.findByText('$0.02');
   expect(calls).toBe(2);
+});
+
+it('无正文晚结算只刷新当前所属会话的上下文与已展开累计用量，不相关 Run 保持快照', async () => {
+  server(contextUsage, 'completed');
+  const base = fetch, reads: string[] = [];
+  const otherRun = { ...run, id: secondId, interaction_session_id: secondId, execution_session_id: secondId };
+  let activeStream!: ReadableStreamDefaultController<Uint8Array>;
+  let settled = false;
+  vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+    const { pathname } = new URL(url); reads.push(pathname);
+    if (pathname.endsWith('/events')) return new Response(new ReadableStream({ start(value) { activeStream = value; } }));
+    if (pathname.endsWith('/snapshot')) {
+      const snapshot = await (await base(url, init)).json();
+      return Response.json({ ...snapshot, active_runs: page([...snapshot.active_runs.items, otherRun]) });
+    }
+    if (pathname.endsWith(`/runs/${secondId}`)) return Response.json({ ...runDetailSummary, run: otherRun,
+      tasks: page([]), activities: page([]), artifacts: page([]), messages: page([]), questions: page([]),
+      approvals: page([]), waits: page([]), consumptions: page([]), joins: page([]),
+      budget: { id: secondId, run_id: secondId, version: 2, limits, spent_units: '0', reserved_units: '0',
+        model_requests: 0, task_count: 1, steps: 0, total_tokens: 0, reserved_tokens: 0 }, watermark: event.event_id });
+    if (pathname.endsWith('/context/usage')) return Response.json({ ...sessionUsage, requests: 1,
+      calculated_units: settled ? '20000' : '10000' });
+    return base(url, init);
+  });
+  const user = userEvent.setup();
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
+  await screen.findByRole('heading', { name: '原上下文目标' });
+  await user.click(screen.getByRole('button', { name: '上下文' }));
+  await screen.findByText('本轮尚无已使用的资料。');
+  await user.click(screen.getByText('会话用量与费用', { selector: 'summary' }));
+  await screen.findByText('$0.01');
+  const before = reads.filter(path => path.endsWith('/context')).length;
+  const notice = (runId: string, step: bigint): PublicEvent => ({ ...event, kind: 'accounting.settled',
+    event_id: (BigInt(event.event_id) + step).toString(), workspace_id: null, session_id: null, run_id: runId,
+    payload: { scopes: [], deletions: [] } });
+  await deliver(activeStream, notice(secondId, 1n));
+  expect(reads.filter(path => path.endsWith('/context'))).toHaveLength(before);
+  expect(reads.filter(path => path.endsWith('/context/usage'))).toHaveLength(1);
+  settled = true;
+  await deliver(activeStream, notice(id, 2n));
+  await screen.findByText('$0.02');
+  expect(reads.filter(path => path.endsWith('/context'))).toHaveLength(before + 1);
+  expect(reads.filter(path => path.endsWith('/context/usage'))).toHaveLength(2);
 });

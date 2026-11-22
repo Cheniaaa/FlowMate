@@ -25,7 +25,7 @@ it.each(['allowed', 'revoked', 'revoked-after-grant', 'destination-changed-after
   let grantSaved = false;
   const requiresGrant = scenario.endsWith('after-grant');
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path.endsWith('/resource-coverage')) {
       calls.push('coverage');
@@ -65,7 +65,7 @@ it.each(['allowed', 'revoked', 'revoked-after-grant', 'destination-changed-after
     return Response.json(values[path] ?? page([]));
   });
   render(<><Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321',
-    token: 'synthetic', protocol_version: 3 })} draftStore={drafts} /><Toaster /></>);
+    token: 'synthetic', protocol_version: 4 })} draftStore={drafts} /><Toaster /></>);
   const send = await screen.findByRole('button', { name: /^发送$/ });
   await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
   await userEvent.click(send);

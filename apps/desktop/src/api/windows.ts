@@ -11,12 +11,14 @@ export interface WindowSettings {
   shortcut_error: string | null;
 }
 export interface PendingCounts { pending_questions: number; pending_approvals: number; pending_actions: number; unviewed_results: number }
-export type WorkbenchTarget = { kind: 'run'; run_id: string } | { kind: 'task'; task_id: string } | { kind: 'tasks'; workspace_id: string | null } | { kind: 'assistants' } | { kind: 'memory' } | { kind: 'capabilities' } | { kind: 'mcp'; server_id: string | null; workspace_id: string | null } | { kind: 'connection'; connection_id: string };
+export type WorkbenchTarget = { kind: 'run'; run_id: string } | { kind: 'task'; task_id: string } | { kind: 'tasks'; workspace_id: string | null } | { kind: 'assistants' } | { kind: 'memory' } | { kind: 'capabilities' } | { kind: 'mcp'; server_id: string | null; workspace_id: string | null } | { kind: 'connection'; connection_id: string }
+  | { kind: 'knowledge'; workspace_id: string; source_id: string | null }
+  | { kind: 'evidence'; workspace_id: string; evidence_id: string };
 export interface WorkbenchRequest { target: WorkbenchTarget | null; from_quick: boolean }
 export const showWorkbench = (target: WorkbenchTarget | null) => invoke<void>('show_workbench', { target });
 export const windowError = (error: unknown) => error instanceof Error ? error.message : String(error);
 export const setQuickFormActive = (active: boolean) => invoke<void>('set_quick_form_active', { active });
-export type SettingsSection = 'models' | 'assistant' | 'resources' | 'windows' | 'memory' | 'environments' | 'appearance';
+export type SettingsSection = 'models' | 'assistant' | 'resources' | 'windows' | 'memory' | 'environments' | 'appearance' | 'retrieval';
 export interface SettingsNavigation { section: SettingsSection; from_quick: boolean }
 export const openSettings = (section: SettingsSection) => invoke<void>('open_settings', { section });
 

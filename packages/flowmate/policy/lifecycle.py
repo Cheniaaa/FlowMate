@@ -93,6 +93,21 @@ def apply_deletion(tx, receipt, event_id):
                f"SELECT content_hash FROM artifact_staging WHERE {where}", params)
     tx.execute(f"DELETE FROM artifact_staging WHERE {where}", params)
     tx.execute(f"DELETE FROM consumptions WHERE consumer_run_id IN ({runs})",run_params)
+    tx.execute(f"DELETE FROM knowledge_searches WHERE run_id IN ({runs})", run_params)
+    tx.execute("DELETE FROM knowledge_evidence WHERE activity_id IN "
+               f"(SELECT id FROM activities WHERE run_id IN ({runs}))", run_params)
+    if scope.session_id is None:
+        from flowmate.knowledge.lifecycle import enqueue_workspace_cleanup
+        if tx.execute("SELECT 1 FROM knowledge_settings WHERE workspace_id=? UNION ALL "
+                "SELECT 1 FROM knowledge_sources WHERE workspace_id=? LIMIT 1", (scope.workspace_id, scope.workspace_id)).fetchone():
+            enqueue_workspace_cleanup(tx, scope.workspace_id)
+        tx.execute("INSERT OR IGNORE INTO content_cleanup(content_hash) "
+                   "SELECT content_hash FROM knowledge_versions WHERE source_id IN "
+                   "(SELECT id FROM knowledge_sources WHERE workspace_id=?)", params)
+        tx.execute("DELETE FROM knowledge_versions WHERE source_id IN "
+                   "(SELECT id FROM knowledge_sources WHERE workspace_id=?)", params)
+        for table in ("knowledge_evidence", "knowledge_jobs", "knowledge_settings", "knowledge_sources"):
+            tx.execute(f"DELETE FROM {table} WHERE workspace_id=?", params)
     tx.execute(f"DELETE FROM session_leases WHERE run_id IN ({runs})",run_params)
     tx.execute(f"DELETE FROM budget_allocations WHERE run_id IN ({runs})",run_params)
     for table in ("private_states", "questions", "approvals", "waits", "joins",
@@ -133,12 +148,14 @@ def _dependent_runs(tx, grant_id):
         ("runs", ("$.scope_dependencies",)),
         ("activities", ("$.intent.dependencies", "$.receipt.source_dependencies")),
         ("checkpoints", ("$.tool_call.dependencies", "$.context_manifest.source_dependencies",
+                         "$.context_manifest.knowledge_import.destination_dependencies",
                          "$.output_dependencies")),
         ("messages", ("$.source_dependencies",)),
         ("artifacts", ("$.dependencies",)),
         ("approvals", ("$.dependencies",)),
         ("questions", ("$.dependencies",)),
         ("private_states", ("$.source_dependencies",)),
+        ("tasks", ("$.binding.input_result.dependencies",)),
     ):
         owner = "item.id" if table == "runs" else "item.run_id"
         join = ""
@@ -180,13 +197,18 @@ def invalidate_mcp_sources(tx, server_id, *, retained_names=(), causation_id=Non
 
 
 def _interrupt_dependents(tx, source_id, causation_id=None):
+    from flowmate.knowledge.ingestion import retire_rebuild_sources
     from flowmate.runtime.followups import revoked_managed_follow_up_before_dispatch
 
+    continued = retire_rebuild_sources(tx, source_id, causation_id)
     for run_id in sorted(_dependent_runs(tx, source_id)):
+        if run_id in continued:
+            continue
         run = _document(tx, "runs", RunSnapshot, run_id)
         if run.state in TERMINAL:
             continue
-        state = "failed" if revoked_managed_follow_up_before_dispatch(tx, run, source_id) else "interrupted"
+        state = ("failed" if run.kind == "knowledge"
+            or revoked_managed_follow_up_before_dispatch(tx, run, source_id) else "interrupted")
         stopped = stop_run(tx, run, state, "scope_revoked")
         approvals = [bump(Approval.model_validate_json(row[0]), status="superseded")
             for row in tx.execute("SELECT document FROM approvals WHERE run_id=? "
@@ -313,6 +335,8 @@ class ScopeLifecycle:
         if scope.session_id is None:
             owners.update((row[0], ScopeRef(kind="session",workspace_id=scope.workspace_id, session_id=row[0]))
                           for row in tx.execute("SELECT id FROM sessions WHERE workspace_id=?", params))
+            owners.update((row[0], scope) for row in tx.execute(
+                "SELECT id FROM knowledge_sources WHERE workspace_id=?", params))
         for owned in ("resources", "grants"):
             owners.update((row[0], ScopeRef(kind="session" if row[2] else "workspace",workspace_id=row[1], session_id=row[2])) for row in tx.execute(
                 f"SELECT id,workspace_id,session_id FROM {owned} WHERE {where}", params))
@@ -331,8 +355,11 @@ class ScopeLifecycle:
         for row in tx.execute(f"SELECT document FROM budgets WHERE run_id IN ({runs})", run_params):
             budget = BudgetSnapshot.model_validate_json(row[0])
             group_id = tx.execute("SELECT budget_group_id FROM runs WHERE id=?", (budget.run_id,)).fetchone()[0]
-            budgets.append(AccountingBudget(**budget.model_dump(include=AccountingBudget.model_fields.keys()),
-                                            budget_group_id=group_id))
+            retired = tx.execute("SELECT document FROM accounting_budgets WHERE id=?", (budget.id,)).fetchone()
+            # 来源隐私删除后可能已收到迟到计账，不能以原Run壳覆盖该权威事实。
+            budgets.append(AccountingBudget.model_validate_json(retired[0]) if retired else
+                AccountingBudget(**budget.model_dump(include=AccountingBudget.model_fields.keys()),
+                    budget_group_id=group_id))
             for item in tx.execute("SELECT document FROM activities WHERE run_id=?", (budget.run_id,)):
                 activity = ActivitySnapshot.model_validate_json(item[0])
                 archived = activity.receipt
@@ -343,7 +370,8 @@ class ScopeLifecycle:
                 activities.append(AccountingActivity(
                     **activity.model_dump(include={"id", "version", "run_id", "attempt_id", "state",
                                                     "reserved_units", "reserved_tokens", "result_digest"}),
-                    budget_id=budget.id, receipt=archived))
+                    budget_id=budget.id, receipt=archived, kind=activity.intent.kind,
+                    operation=activity.intent.operation, dispatched=activity.request_digest is not None))
         tx.append_event(NewEvent(kind="scope.deleted", workspace_id=scope.workspace_id,
             session_id=scope.session_id, causation_id=meta.command_id,
             payload=LifecycleChange(scopes=scopes, deletions=[receipt],
@@ -388,6 +416,9 @@ class ScopeLifecycle:
                 "SELECT DISTINCT a.content_hash FROM artifacts a JOIN runs r ON r.id=a.run_id "
                 "JOIN scopes w ON w.id=r.workspace_id JOIN scopes s ON s.id=r.execution_session_id "
                 "WHERE w.status='active' AND s.status='active'"))
+            protected.update(row[0] for row in tx.execute(
+                "SELECT DISTINCT v.content_hash FROM knowledge_versions v JOIN knowledge_sources k ON k.id=v.source_id "
+                "JOIN scopes w ON w.id=k.workspace_id WHERE k.status<>'deleted' AND w.status<>'deleted'"))
             candidates = {row[0] for row in tx.execute("SELECT content_hash FROM content_cleanup")}
             candidates.update(path.stem for path in self.artifacts.root.glob("*.blob"))
             # tmp 尚未有内容 hash，使用托管 basename 作为清理键；不记录用户路径或异常正文。
@@ -417,4 +448,5 @@ class ScopeLifecycle:
                 tx.execute("UPDATE cleanup_state SET wal_pending=1 WHERE singleton=1")
             pending = tx.execute("SELECT count(*) FROM content_cleanup").fetchone()[0]
             pending += tx.execute("SELECT wal_pending FROM cleanup_state WHERE singleton=1").fetchone()[0]
+            pending += tx.execute("SELECT count(*) FROM knowledge_cleanup").fetchone()[0]
         return CleanupSummary(deleted_blobs=deleted, pending_count=pending)

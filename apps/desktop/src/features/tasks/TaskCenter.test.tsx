@@ -7,7 +7,7 @@ import TaskCenter from './TaskCenter';
 
 afterEach(() => vi.restoreAllMocks());
 it('按目标、交付摘要和任务类别显示记录，负责人和会话随原条目', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   const root = { id: secondId, run_id: id, version: 1, binding, kind: 'agent' as const, parent_task_id: null, origin_task_id: null,
     executor_id: 'builtin.agent', state: 'running' as const, created_seq: 1, deadline_at: null, result_version: null, reason: null };
   const item = { run, root, pending_count: 0, delivery_state: null, origin_task_id: null };
@@ -30,7 +30,7 @@ it('按目标、交付摘要和任务类别显示记录，负责人和会话随�
   expect(open.mock.calls).toEqual([[id]]);
 });
 it('真实聚合项、项目/状态/类型过滤和有界分页；过滤改变不复用cursor', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   const root = { id: secondId, run_id: id, version: 1, binding, kind: 'agent' as const, parent_task_id: null, origin_task_id: null,
     executor_id: 'builtin.agent', state: 'running' as const, created_seq: 1, deadline_at: null, result_version: null, reason: null };
   const query = vi.spyOn(client, 'globalTasks').mockResolvedValue({ ...page([{ run, root, pending_count: 2, delivery_state: null, origin_task_id: null }]), next_cursor: 'page-two' });

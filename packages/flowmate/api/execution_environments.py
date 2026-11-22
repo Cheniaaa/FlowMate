@@ -16,7 +16,7 @@ from flowmate.processes.contracts import (
 
 
 def router(runtime):
-    route = APIRouter(prefix="/v3/settings/execution-environments")
+    route = APIRouter(prefix="/v4/settings/execution-environments")
 
     @route.get("", response_model=Page[ExecutionEnvironmentView])
     async def listing(response: Response, limit: int = 100, cursor: str | None = None):

@@ -182,6 +182,7 @@ class MemoryMaintenance:
         with self.store.transaction(write=False) as tx:
             previous = tx.previous_command(meta.command_id)
             if previous is None:
+                self.boundary(source_boundary.run_id, tx=tx)
                 setting = self.memory.get_policy(scope, tx=tx)
                 model = tx.get_profile("model", setting.model_profile_id) if setting.model_profile_id else None
                 connection = tx.get_connection(model.connection_id) if model else None
@@ -205,6 +206,7 @@ class MemoryMaintenance:
                 if previous["request_hash"] != fingerprint:
                     raise DomainError("command_conflict", "同一整理命令不能改变来源或授权")
                 return TaskHandle.model_validate_json(previous["response"])
+            self.boundary(source_boundary.run_id, tx=tx)
             self.memory._scope(tx, scope)
             setting = self.memory.get_policy(scope, tx=tx)
             if expected_binding is not None:

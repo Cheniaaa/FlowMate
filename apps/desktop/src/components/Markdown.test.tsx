@@ -2,11 +2,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { invoke } from '@tauri-apps/api/core';
 import Markdown, { artifactDocument } from './Markdown';
+import { id } from '../test/fixtures';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.clearAllMocks(); });
 
 describe('受控 Markdown', () => {
+  it('引用以Evidence身份使用可靠文件摘要，未知编号与代码不被猜测成引用', () => {
+    const open = vi.fn();
+    render(<Markdown citations={[{ marker: 1, evidence_id: id }]} onOpenEvidence={open}
+      evidenceLabels={new Map([[id, { name: '项目说明.md', start_line: 18, end_line: 20, historical: true }]])}>
+      {'核验[1]。未知[2]，代码 `[1]`，链接[1](https://example.invalid)。'}
+    </Markdown>);
+    const citation = screen.getByRole('button', { name: '查看引用 1 · 项目说明.md · 18–20 行 · 历史原文' });
+    expect(citation.textContent).toBe('项目说明.md · 18–20 行 · 历史原文');
+    fireEvent.click(citation);
+    expect(open).toHaveBeenCalledExactlyOnceWith(id);
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    expect(screen.getByText('[1]', { selector: 'code' })).toBeTruthy();
+  });
   it('从所选代码块复制原行和缩进，多个代码块各自对应自己的内容', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');

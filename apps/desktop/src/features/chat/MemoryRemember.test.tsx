@@ -22,7 +22,7 @@ it.each([
   const receipt: ModelMessage = { ...origin, id: secondId, role: 'tool', parts: [{
     kind: 'tool_result', origin_message_id: id, call_id: 'c1', error, result,
   }] };
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   render(<MessageList client={client} store={createRuntimeStore(client)} messages={[origin, receipt]} assistantName="助理" />);
   expect(screen.getByRole('status').textContent).toBe(feedback);
   expect(screen.queryByRole('button', { name: '撤销' })).toBeNull();
@@ -50,11 +50,11 @@ it('核对真实保存回执并按显示的修订撤销', async () => {
     kind: 'tool_result', origin_message_id: id, call_id: 'c1', error: null,
     result: { outcome: 'staged', id: record.id, revision: record.revision },
   }] };
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   render(<MessageList client={client} store={createRuntimeStore(client)} messages={[origin, receipt]} assistantName="助理" />);
   await screen.findByText('已纠正记忆');
   await userEvent.click(screen.getByRole('button', { name: '撤销' }));
   await screen.findByText('已撤销记忆变更');
-  expect(writes).toMatchObject([{ path: `/v3/memory/records/${record.id}/decisions?receipt_message_id=${secondId}`,
+  expect(writes).toMatchObject([{ path: `/v4/memory/records/${record.id}/decisions?receipt_message_id=${secondId}`,
     body: { meta: { expected_version: 2 }, data: { action: 'undo', scope: record.scope } } }]);
 });

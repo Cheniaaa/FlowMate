@@ -108,7 +108,7 @@ describe('McpPanel', () => {
     await detail.findByRole('checkbox', { name: '允许工具 echo' });
     fireEvent.click(detail.getByRole('button', { name: '保存允许的工具' }));
     await detail.findByText('当前固定选择：echo');
-    expect(writes.map(item => item.path)).toEqual([`/v3/capabilities/mcp/${otherId}/discover`, `/v3/capabilities/mcp/${otherId}/tools`]);
+    expect(writes.map(item => item.path)).toEqual([`/v4/capabilities/mcp/${otherId}/discover`, `/v4/capabilities/mcp/${otherId}/tools`]);
     expect(writes[1].body.data).toMatchObject({ scope: mcpConfig.scope, selected_names: ['echo'] });
   });
 

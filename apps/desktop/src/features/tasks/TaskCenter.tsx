@@ -9,7 +9,7 @@ import { NativeSelect, NativeSelectOption } from '../../components/ui/native-sel
 import './task-presentation.css';
 
 const states: RunSnapshot['state'][] = ['queued', 'running', 'waiting_user', 'waiting_approval', 'waiting_children', 'interrupted', 'blocked_incompatible', 'completed', 'failed', 'cancelled'];
-export const runKinds = { user: '本次对话', managed: '独立后台', follow_up: '后续运行', maintenance: '记忆整理' };
+export const runKinds = { user: '本次对话', managed: '独立后台', follow_up: '后续运行', maintenance: '记忆整理', knowledge: '资料处理' };
 const stateLabels: Partial<Record<RunSnapshot['state'], string>> = {
   queued: '排队中', running: '运行中', waiting_user: '等待回答', waiting_approval: '待审批', waiting_children: '等待子任务',
   interrupted: '已中断', blocked_incompatible: '版本不兼容', completed: '已完成', failed: '失败', cancelled: '已取消',
@@ -93,15 +93,16 @@ export default function TaskCenter({ client, workspaceId, workspaces, sessionNam
     {streamStatus === 'reconnecting' && <p role="status">事件流重连中；可刷新任务列表。</p>}
     {page?.items.length === 0 && <p className="empty-state">此范围没有任务。</p>}
     <div className="task-center-list">{page?.items.map(item => {
-      const owner = item.root.binding.config.agent_profile.display_name;
+      const config = item.root.binding.config;
+      const owner = config.kind === 'agent' ? config.agent_profile.display_name : undefined;
       const target = item.source_valid !== false
         && (item.task_title || item.task_goal?.trim() || item.root.binding.agent_work?.goal.trim() || item.run.output?.summary.trim());
       const sessionName = item.session_title ?? (item.run.interaction_session_id && sessionNames?.[item.run.interaction_session_id]);
       const workspace = workspaces.find(project => project.id === item.run.workspace_id);
       return <article key={item.run.id} className="task-center-row">
-      <div><div className="task-step-heading"><h3 title={target && item.task_goal || undefined}>{target || `${runKinds[item.run.kind]} · ${owner}`}</h3><Status state={item.root.state} /></div>
+      <div><div className="task-step-heading"><h3 title={target && item.task_goal || undefined}>{target || (owner ? `${runKinds[item.run.kind]} · ${owner}` : runKinds[item.run.kind])}</h3><Status state={item.root.state} /></div>
         <div className="task-center-meta">
-          {target && <span className="muted">负责人 {owner}</span>}
+          {target && <span className="muted">{owner ? `负责人 ${owner}` : runKinds[item.run.kind]}</span>}
           {(workspace || sessionName) && <span className="muted">{[workspace?.name, sessionName].filter(Boolean).join(' / ')}</span>}
           {item.pending_count > 0 && <span>待处理 {item.pending_count}</span>}
           {item.delivery_state && <span>投递 {deliveryLabels[item.delivery_state]}</span>}

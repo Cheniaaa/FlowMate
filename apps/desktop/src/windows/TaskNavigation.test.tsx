@@ -26,7 +26,7 @@ it.each(['task', 'managed-run', 'tasks', 'assistants', 'existing'] as const)('�
     state: 'completed', created_seq: 1, deadline_at: null, result_version: 1, reason: null };
   const urls: string[] = [];
   vi.stubGlobal('fetch', async (url: string) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', ''); urls.push(path + parsed.search);
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', ''); urls.push(path + parsed.search);
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return Response.json(page([]));
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     const values: Record<string, unknown> = {
@@ -43,7 +43,7 @@ it.each(['task', 'managed-run', 'tasks', 'assistants', 'existing'] as const)('�
     if (!(path in values)) throw new Error(`未定义HTTP ${path}`);
     return Response.json(values[path]);
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   const user = userEvent.setup(); render(<WorkbenchWindow client={client} />);
   await screen.findByRole('heading', { name: session.title });
   const input = screen.getByLabelText('消息'); await user.type(input, '主窗原草稿');

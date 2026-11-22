@@ -9,7 +9,7 @@ import { Conversation } from './Conversation';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 });
 const otherResource: ResourceRef = { ...resource, id: '00000000-0000-4000-8000-000000000012', label: '另一共享资料.md' };
 const sharedGrant: DataUseGrant = { ...grant, resource_ids: [resource.id, otherResource.id], purposes: ['read', 'model_send'] };
 const workspace = { id, version: 1, name: '资料工作区', directory_resource_id: null };
@@ -25,7 +25,7 @@ function server(initial: WorkspaceSnapshot, selection = [resource, otherResource
   const covered = new Set(coveredSessions);
   vi.mocked(invoke).mockImplementation(async name => name === 'select_resources' ? { resources: selection } : undefined);
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', '');
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', '');
     requests.push(parsed);
     if (path.endsWith('/resource-coverage')) {
       const allowed = covered.has(path.split('/')[2]);

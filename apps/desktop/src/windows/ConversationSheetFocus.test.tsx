@@ -24,7 +24,7 @@ function boundary(override: (path: string) => unknown = () => undefined) {
   let request: WorkbenchRequest | null = null;
   vi.mocked(listen).mockImplementation(async (name, callback) => { callbacks.set(name, callback); return () => {}; });
   vi.mocked(invoke).mockImplementation(async (name, args) => {
-    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 3 };
+    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 4 };
     if (name === 'show_workbench') { request = { target: (args as { target: WorkbenchRequest['target'] }).target, from_quick: true }; return; }
     if (name === 'take_workbench_navigation') { const next = request; request = null; return next; }
     if (name === 'window_settings') return { quick_pinned: false, ball_enabled: false, shortcut: null, shortcut_error: null };
@@ -32,7 +32,7 @@ function boundary(override: (path: string) => unknown = () => undefined) {
     return null;
   });
   vi.stubGlobal('fetch', async (input: string) => {
-    const path = new URL(input).pathname.replace('/v3', '');
+    const path = new URL(input).pathname.replace('/v4', '');
     const value = await override(path);
     if (value !== undefined) return Response.json(value);
     if (path.endsWith('/events')) return new Response(new ReadableStream());
@@ -66,7 +66,7 @@ it.each(['关闭', 'Escape'])('快捷窗展开用户 Run 后主窗%s任务 Sheet
   const input = await within(main.container).findByLabelText('消息');
   await user.type(input, '主窗保留的草稿');
   // 两个窗口组件只共享 HTTP/Tauri 边界。移除快捷窗的 DOM，模拟来源不在主窗 document。
-  const quick = render(<QuickAssistant client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 3 })} />);
+  const quick = render(<QuickAssistant client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 4 })} />);
   await within(quick.container).findByRole('heading', { name: session.title });
   await within(quick.container).findByText('跨窗回焦的合成答复');
   await user.click(within(quick.container).getByRole('button', { name: '展开工作台' }));

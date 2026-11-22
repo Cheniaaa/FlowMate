@@ -130,6 +130,12 @@ def _dependencies(tx, ctx, dependencies, *, artifact_id=None):
     for item in values:
         if item.scope_id not in {ctx.workspace_id, ctx.session_id,ctx.interaction_session_id}:
             memory_scope = tx.execute("SELECT kind FROM scopes WHERE id=?", (item.scope_id,)).fetchone()
+            if memory_scope is not None and memory_scope[0] == "knowledge":
+                source = tx.execute("SELECT workspace_id FROM knowledge_sources WHERE id=?", (item.scope_id,)).fetchone()
+                if source["workspace_id"] != ctx.workspace_id:
+                    raise DomainError("scope_mismatch", "知识来源不属于当前项目")
+                result[item.scope_id] = item
+                continue
             if memory_scope is not None and memory_scope[0] == "mcp":
                 if tx.execute("SELECT 1 FROM activities WHERE id=? "
                         "AND json_extract(document,'$.mcp_source') IS NOT NULL", (item.scope_id,)).fetchone():
@@ -431,25 +437,38 @@ class PolicyService:
         check_scopes(tx, [ScopeDependency(scope_id=record.id, epoch=record.version)])
         return record
 
-    def grant(self, command: GrantCommand, meta: CommandMeta) -> DataUseGrant:
+    def grant(self, command: GrantCommand, meta: CommandMeta, *, tx=None) -> DataUseGrant:
+        """tx由接纳/设置命令提供时，命令身份由外层事务登记。"""
         command = GrantCommand.model_validate(command.model_dump())
-        if sum(bool(value) for value in (command.resource_ids, command.memory_scopes, command.mcp_versions, command.mcp_queries)) != 1:
-            raise DomainError("invalid_grant", "授权须选择文件、记忆或 MCP 来源之一")
+        if sum(bool(value) for value in (command.resource_ids, command.memory_scopes, command.mcp_versions,
+                command.mcp_queries, command.knowledge_source_ids, command.knowledge_scopes)) != 1:
+            raise DomainError("invalid_grant", "授权须选择单一来源范围")
         if command.memory_scopes and (command.memory_scopes != [command.scope]
                 or command.scope.kind == "session" or len(command.purposes) != 1
-                or command.purposes[0] not in {"model_send", "tool_send", "local_process_send"}):
+                or command.purposes[0] not in {"model_send", "embedding_send", "tool_send", "local_process_send"}):
             raise DomainError("invalid_grant", "记忆授权须绑定单一长期范围及明确发送用途")
+        if (command.knowledge_source_ids or command.knowledge_scopes) and (
+                command.scope.kind != "workspace"
+                or command.knowledge_scopes and command.knowledge_scopes != [command.scope]):
+            raise DomainError("invalid_grant", "项目知识授权须绑定当前项目")
         if command.resource_ids and command.scope.kind == "user_global":
             raise DomainError("invalid_scope", "文件资料不能使用个人记忆范围")
         command = command.model_copy(update={"resource_ids": sorted(set(command.resource_ids)),
+                                             "knowledge_source_ids": sorted(set(command.knowledge_source_ids)),
                                              "purposes": sorted(set(command.purposes))})
-        if "model_send" in command.purposes:
+        if {"model_send", "embedding_send"}.intersection(command.purposes):
             _endpoint(command.destination)
 
         def apply(tx):
             if meta.expected_version is not None:
                 raise DomainError("version_conflict", "新授权不接受已有版本")
             _scope(tx, command.scope)
+            for source_id in command.knowledge_source_ids:
+                source = tx.execute("SELECT workspace_id FROM knowledge_sources WHERE id=?", (source_id,)).fetchone()
+                if source is None or source["workspace_id"] != command.scope.workspace_id:
+                    raise DomainError("scope_mismatch", "知识来源不属于所选项目")
+                scope = tx.execute("SELECT epoch FROM scopes WHERE id=?", (source_id,)).fetchone()
+                check_scopes(tx, [ScopeDependency(scope_id=source_id, epoch=scope["epoch"])])
             if command.mcp_queries:
                 from flowmate.integrations.permissions import check_query_binding
                 if (len(command.mcp_queries) != 1 or command.purposes != ["model_send"]
@@ -487,6 +506,8 @@ class PolicyService:
                           causation_id=meta.command_id)
             return saved
 
+        if tx is not None:
+            return apply(tx)
         return _command(self.store, "grant.create", command.model_dump(mode="json"), meta,
                         DataUseGrant, apply)
 
@@ -526,7 +547,8 @@ class PolicyService:
                 covered.add(parent_id)
                 parent_id = _document(tx, "resources", ResourceRecord, parent_id).parent_resource_id
         for grant in grants:
-            if grant.memory_scopes or grant.mcp_versions or grant.mcp_queries:
+            if (grant.memory_scopes or grant.mcp_versions or grant.mcp_queries
+                    or grant.knowledge_source_ids or grant.knowledge_scopes):
                 continue
             if not covered.intersection(grant.resource_ids):
                 candidates = {}
@@ -573,6 +595,11 @@ class PolicyService:
         # 记忆沿真实记录与修订核对固定范围，绝不伪装成文件 resource_id。
         for dependency in dependencies:
             row = tx.execute("SELECT kind,workspace_id FROM scopes WHERE id=?", (dependency.scope_id,)).fetchone()
+            if row is not None and row["kind"] == "knowledge":
+                if row["workspace_id"] != ctx.workspace_id or any(
+                        dependency.scope_id not in chosen.knowledge_source_ids for chosen in selections):
+                    raise DomainError("outside_run_scope", "知识来源不在Run与Task的固定交集范围")
+                continue
             if row is None or row["kind"] != "memory":
                 continue
             scope = ScopeRef(kind="workspace", workspace_id=row["workspace_id"]) if row["workspace_id"] else ScopeRef(kind="user_global")
@@ -653,9 +680,9 @@ class PolicyService:
 
     def check_tx(self, tx: UnitOfWork, ctx: ExecutionContext, dependencies: list[ScopeDependency],
                  purpose: Purpose, destination: str | None = None, *, artifact_id=None) -> PolicyDecision:
-        if purpose not in {"read", "model_send", "export", "tool_send", "local_process_send"}:
+        if purpose not in {"read", "model_send", "embedding_send", "export", "tool_send", "local_process_send"}:
             raise DomainError("invalid_purpose", "不支持的资料用途")
-        if purpose == "model_send":
+        if purpose in {"model_send", "embedding_send"}:
             _endpoint(destination)
         if artifact_id is not None and purpose != "read":
             raise DomainError("invalid_purpose", "产物输入关系只用于读取所选产物")
@@ -766,6 +793,7 @@ class PolicyService:
                     grant_dependencies.append(grant)
         all_dependencies = {item.scope_id: item for item in checked}
         missing_memories = self._check_memory(tx, ctx, run, task, checked, purpose, destination, all_dependencies)
+        missing_knowledge = self._check_knowledge(tx, ctx, checked, purpose, destination, all_dependencies)
         missing_remote = []
         remote_dependencies = [item for item in checked if tx.execute(
             "SELECT 1 FROM scopes WHERE id=? AND kind='mcp'", (item.scope_id,)).fetchone()]
@@ -851,7 +879,7 @@ class PolicyService:
             covering = next((grant for grant in remote_grants() if grant.mcp_versions.get(server_id) == revision
                 and (grant.scope.kind == "user_global" or _compatible(grant.scope, ctx.workspace_id, ctx.interaction_session_id))
                 and purpose in grant.purposes
-                and (purpose not in {"model_send", "tool_send", "local_process_send"}
+                and (purpose not in {"model_send", "embedding_send", "tool_send", "local_process_send"}
                     or grant.destination == destination)), None)
             if covering is None:
                 missing_remote.append(item.scope_id)
@@ -879,13 +907,14 @@ class PolicyService:
             include_source(resource)
         # 已绑定来源的 read grant 仅是 provenance 围栏；孤立 grant 则展开来源再检查用途。
         for grant in grant_dependencies:
-            if grant.memory_scopes or grant.mcp_versions or grant.mcp_queries:
+            if (grant.memory_scopes or grant.mcp_versions or grant.mcp_queries
+                    or grant.knowledge_source_ids or grant.knowledge_scopes):
                 continue
             if not any(set(grant.resource_ids).intersection(lineage) for lineage in lineages.values()):
                 for id in self.resource_closure(tx,[ScopeDependency(scope_id=grant.id,epoch=grant.epoch)],
                         source_run_id=ctx.run_id,source_task_id=ctx.task_id):
                     include_source(self.resource(ctx, id, tx=tx))
-        missing = [*missing_memories, *missing_remote]
+        missing = [*missing_memories, *missing_remote, *missing_knowledge]
         missing_resources, grants = self._cover_resources(tx, ctx.workspace_id, ctx.interaction_session_id,
             lineages, purpose, destination)
         if run.attached_file_ids is not None:
@@ -929,7 +958,7 @@ class PolicyService:
                 "AND EXISTS (SELECT 1 FROM json_each(g.document,'$.purposes') WHERE value=?) "
                 "AND (?=0 OR json_extract(g.document,'$.destination') IS ?) ORDER BY g.id",
                 (workspace_id, session_id, json.dumps(list(resource_ids)), purpose,
-                 purpose in {"model_send", "tool_send", "local_process_send"}, destination)):
+                  purpose in {"model_send", "embedding_send", "tool_send", "local_process_send"}, destination)):
             grant_id = row["id"]
             if grant_id not in candidates:
                 candidates[grant_id] = DataUseGrant.model_validate_json(row["document"])
@@ -949,6 +978,43 @@ class PolicyService:
             else:
                 dependencies.append(ScopeDependency(scope_id=covering.id, epoch=covering.epoch))
         return missing, dependencies
+
+    @staticmethod
+    def knowledge_grant(tx, workspace_id, source_id, purpose, destination=None):
+        for row in tx.execute("SELECT g.document FROM grants g JOIN scopes s ON s.id=g.id "
+                "WHERE g.workspace_id=? AND g.session_id IS NULL AND g.status='active' "
+                "AND s.status='active' AND s.epoch=json_extract(g.document,'$.epoch') ORDER BY g.id",
+                (workspace_id,)):
+            grant = DataUseGrant.model_validate_json(row[0])
+            covers = source_id in grant.knowledge_source_ids or any(
+                scope.workspace_id == workspace_id for scope in grant.knowledge_scopes)
+            if (covers and purpose in grant.purposes
+                    and (purpose == "read" or grant.destination == destination)):
+                return grant
+        return None
+
+    @staticmethod
+    def authorized_knowledge_sources(tx, workspace_id):
+        return [row["id"] for row in tx.execute(
+            "SELECT k.id FROM knowledge_sources k JOIN scopes s ON s.id=k.id "
+            "WHERE k.workspace_id=? AND s.status='active' AND k.status IN ('pending','active','failed') "
+            "ORDER BY k.id", (workspace_id,))
+            if PolicyService.knowledge_grant(tx, workspace_id, row["id"], "read") is not None]
+
+    def _check_knowledge(self, tx, ctx, dependencies, purpose, destination, all_dependencies):
+        missing = []
+        for item in dependencies:
+            row = tx.execute("SELECT workspace_id FROM knowledge_sources WHERE id=?", (item.scope_id,)).fetchone()
+            if row is None:
+                continue
+            if row["workspace_id"] != ctx.workspace_id:
+                raise DomainError("scope_mismatch", "知识来源不属于当前项目")
+            grant = self.knowledge_grant(tx, ctx.workspace_id, item.scope_id, purpose, destination)
+            if grant is None:
+                missing.append(item.scope_id)
+            else:
+                all_dependencies[grant.id] = ScopeDependency(scope_id=grant.id, epoch=grant.epoch)
+        return missing
 
     @staticmethod
     def same_model_recipient(first, second):
@@ -1124,7 +1190,7 @@ class PolicyService:
             check_scopes(tx, record.dependencies)
             # 保留原来源的撤权/排除/用途检查；来源会话 epoch 是删除围栏，不扩大文件授权。
             source_dependencies = [item for item in record.dependencies if tx.execute(
-                "SELECT 1 FROM scopes WHERE id=? AND kind IN ('resource','grant','memory','mcp')",
+                "SELECT 1 FROM scopes WHERE id=? AND kind IN ('resource','grant','memory','mcp','knowledge')",
                 (item.scope_id,)).fetchone()]
             if source_dependencies:
                 source_decision = self._check_sources_tx(tx, ctx, source_dependencies, purpose, destination)

@@ -8,7 +8,7 @@ import { skillView } from '../../test/skill-fixtures';
 import ResourcePanel from '../chat/ResourcePanel';
 
 afterEach(() => vi.unstubAllGlobals());
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 function setup({ loseFirst = false, stale = false, paginated = false, afterWrite }: {
   loseFirst?: boolean; stale?: boolean; paginated?: boolean; afterWrite?: () => Promise<void>;
 } = {}) {

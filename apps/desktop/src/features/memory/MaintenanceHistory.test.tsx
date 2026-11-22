@@ -16,12 +16,12 @@ it('候选关联仅取records/{id}/maintenance，分页后用真实TaskHandle打
     if (!available) return Response.json(page([]));
     return Response.json(parsed.searchParams.has('cursor') ? page([maintenanceNotice]) : { ...page([]), next_cursor: 'record-tail' });
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 }), user = userEvent.setup();
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 }), user = userEvent.setup();
   const view = render(<MaintenanceHistory client={client} scope={memory.scope} recordId={memory.id} revision="0" onOpenTask={open} />);
   await user.click(await screen.findByRole('button', { name: '更多整理记录' }));
   await user.click(await screen.findByRole('button', { name: '查看此候选的维护任务' }));
   expect(open).toHaveBeenCalledWith(maintenanceTask);
-  expect(queries.every(query => query.pathname === `/v3/memory/records/${memory.id}/maintenance`)).toBe(true);
+  expect(queries.every(query => query.pathname === `/v4/memory/records/${memory.id}/maintenance`)).toBe(true);
   expect(queries[1].searchParams.get('cursor')).toBe('record-tail');
   available = false;
   view.rerender(<MaintenanceHistory client={client} scope={memory.scope} recordId={memory.id} revision="1" onOpenTask={open} />);

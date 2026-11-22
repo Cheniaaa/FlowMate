@@ -21,7 +21,7 @@ it('启动默认项目来自 navigation 身份，不把工作区首页第一项�
     if (path.endsWith('/snapshot')) { const workspace = path.includes(secondId) ? daily : other; return Response.json({ workspace, sessions: page([{ id: workspace.id, version: 1, workspace_id: workspace.id, title: workspace.id === secondId ? '默认会话' : '其它会话', agent_profile_id: id, kind: 'interaction', archived: false }]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id }); }
     return Response.json(page([]));
   });
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   await screen.findByRole('heading', { name: '默认会话' });
   expect(screen.getByRole('button', { name: daily.name }).getAttribute('aria-current')).toBe('true');
 });
@@ -37,7 +37,7 @@ it('真实重投命令及delivery.changed后导航待办自动4→3，不手刷�
   let stream!: ReadableStreamDefaultController<Uint8Array>;
   const writes: string[] = [];
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return Response.json(page([]));
     if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }));
     if (init.method === 'POST' && path === `/results/${entry.id}/retry`) {
@@ -60,7 +60,7 @@ it('真实重投命令及delivery.changed后导航待办自动4→3，不手刷�
     return Response.json(values[path]);
   });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   await screen.findByRole('heading', { name: session.title });
   await screen.findByRole('button', { name: /待办 4/ });
   const input = screen.getByLabelText('消息');

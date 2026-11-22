@@ -29,7 +29,7 @@ function reportResult(delivery: SessionInboxEntry, artifacts: ArtifactRef[]) {
 }
 
 it('重开合并回告后仅按所选结果补读文件名，通用 Markdown 单独编号', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   const meeting = { ...entry, task_name: '会议记录整理', viewed_at: '2026-11-19T03:10:00Z' };
   const other = { ...meeting, id: secondId, task_name: '图书馆资料核对', result: { ...meeting.result, task_id: id } };
   vi.spyOn(client, 'sessionResults').mockResolvedValue(page([meeting, other]));
@@ -52,7 +52,7 @@ it('重开合并回告后仅按所选结果补读文件名，通用 Markdown 单
 });
 
 it('切换到同名文件的另一条交付后，迟到的活动不能覆盖所选预览', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   const meeting = { ...entry, task_name: '会议记录整理', viewed_at: '2026-11-19T03:10:00Z' };
   const other = { ...meeting, id: secondId, task_name: '图书馆资料核对', result: { ...meeting.result, task_id: id } };
   const otherFile = { ...genericArtifact, task_id: id, activity_id: id };
@@ -81,7 +81,7 @@ it.each([
   [new ApiError(409, 'scope_revoked', '内部路径'), '产物名称不可用'],
   [new Error('内部路径'), '产物名称读取失败'],
 ])('活动读取失败时保留已授权结果和文件入口，并显示 %s 对应的状态', async (failure, hint) => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   const meeting = { ...entry, viewed_at: '2026-11-19T03:10:00Z' };
   vi.spyOn(client, 'sessionResults').mockResolvedValue(page([meeting]));
   vi.spyOn(client, 'taskResult').mockResolvedValue(reportResult(meeting, [reportArtifact]));
@@ -97,7 +97,7 @@ it.each([
 });
 
 it('同名交付可区分，重开已读项只读取其固定任务，其他投递仍未读', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   const unread = { ...entry, task_name: '核对周报' };
   const read = { ...entry, id: secondId, source_event_id: '9007199254740994', task_name: '核对周报',
     result: { ...entry.result, task_id: id }, viewed_at: '2026-11-19T03:10:00Z' };
@@ -124,7 +124,7 @@ it('同名交付可区分，重开已读项只读取其固定任务，其他投�
 });
 
 it('查看不冒充消费，来源失效立即清正文；重投只在failed且有效时开放', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   vi.spyOn(client, 'sessionResults').mockResolvedValue(page([entry]));
   vi.spyOn(client, 'taskResult').mockResolvedValue({ handle: entry.result, result_version: 1, state: 'completed',
     result: { summary: '有效交付正文' }, artifacts: [], dependencies: [], error: null });
@@ -142,7 +142,7 @@ it('查看不冒充消费，来源失效立即清正文；重投只在failed且�
 });
 
 it.each(['session', 'run', 'client'] as const)('%s身份切换在layout提交前隐藏旧预览，旧正文迟到不能写入新身份', async change => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   const other = new RuntimeClient({ ...client.connection, token: 'other' });
   const reads: ((result: Awaited<ReturnType<RuntimeClient['taskResult']>>) => void)[] = [];
   for (const runtime of [client, other]) {
@@ -176,7 +176,7 @@ it.each(['session', 'run', 'client'] as const)('%s身份切换在layout提交前
 });
 
 it('来源重连水位变化即使共享游标未变也隔离迟到正文，不自动重试查看；用户可重新明确查看', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   vi.spyOn(client, 'sessionResults').mockResolvedValue(page([entry]));
   let reply!: (result: Awaited<ReturnType<RuntimeClient['taskResult']>>) => void;
   const body = { handle: entry.result, result_version: 1, state: 'completed' as const, result: { summary: '旧来源迟到正文' }, artifacts: [], dependencies: [], error: null };
@@ -198,7 +198,7 @@ it('来源重连水位变化即使共享游标未变也隔离迟到正文，不�
 });
 
 it('来源失效或会话归档/正在steer时不能选择总结引用；不通过view命令启动总结', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   vi.spyOn(client, 'sessionResults').mockResolvedValue(page([entry]));
   const store = createRuntimeStore(client), summarize = vi.fn(), command = vi.fn();
   const props = { client, store, sessionId: id, onCommand: command, onOpen: vi.fn(), onSummarize: summarize };
@@ -214,7 +214,7 @@ it('来源失效或会话归档/正在steer时不能选择总结引用；不通�
 });
 
 it('键盘查看等待时保留可聚焦按钮，拦截同一提交内重复激活并保持其他操作禁用', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   vi.spyOn(client, 'sessionResults').mockResolvedValue(page([{ ...entry, delivery_state: 'failed' }]));
   let reply!: (result: Awaited<ReturnType<RuntimeClient['taskResult']>>) => void;
   const query = vi.spyOn(client, 'taskResult').mockImplementation(() => new Promise(resolve => { reply = resolve; }));
@@ -243,7 +243,7 @@ it('键盘查看等待时保留可聚焦按钮，拦截同一提交内重复激�
 });
 
 it.each(['success', 'error', 'revoked'] as const)('查看期间移至定位按钮后，%s不抢焦点且不泄漏撤权正文', async outcome => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   vi.spyOn(client, 'sessionResults').mockResolvedValue(page([entry]));
   let reply!: (result: Awaited<ReturnType<RuntimeClient['taskResult']>>) => void, reject!: (error: Error) => void;
   vi.spyOn(client, 'taskResult').mockImplementation(() => new Promise((resolve, fail) => { reply = resolve; reject = fail; }));
@@ -268,7 +268,7 @@ it.each(['success', 'error', 'revoked'] as const)('查看期间移至定位按�
 });
 
 it('未确认查看命令保持可聚焦但不能再次激活', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   vi.spyOn(client, 'sessionResults').mockResolvedValue(page([entry]));
   const store = createRuntimeStore(client), command = vi.fn(), user = userEvent.setup();
   const pending = [{ commandId: secondId, type: 'viewResult' as const, targetId: id, status: 'unconfirmed' as const, sync: 'pending' as const, busy: false, error: '' }];

@@ -220,7 +220,13 @@ class Session(Contract):
     version: Version = 1
     workspace_id: Id
     title: Name
-    agent_profile_id: Id
+    agent_profile_id: Id | None
     kind: Literal["interaction", "execution"] = "interaction"
     archived: bool = False
     automatic_title: Literal["pending"] | Version | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def interaction_requires_agent(self):
+        if self.kind == "interaction" and self.agent_profile_id is None:
+            raise ValueError("交互会话须绑定真实助理")
+        return self

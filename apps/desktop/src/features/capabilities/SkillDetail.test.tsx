@@ -8,7 +8,7 @@ import { skillHash, skillScope, skillView, skillReceipt } from '../../test/skill
 import SkillDetail from './SkillDetail';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 
 it('保存取消不写；确认旧hash后固定版本/target_ref，以真实saved回执显示实际文件名', async () => {
   const writes: any[] = [];
@@ -55,7 +55,7 @@ it.each(['original', 'needs_restore', 'conflict'] as const)('重开真实%s保�
   if (state === 'needs_restore') {
     await user.click(screen.getByRole('button', { name: '恢复原文件' }));
     await waitFor(() => expect(writes).toHaveLength(1));
-    expect(writes[0]).toEqual({ path: `/v3/capabilities/skill-exports/${id}/restore`, body: { scope: skillScope } });
+    expect(writes[0]).toEqual({ path: `/v4/capabilities/skill-exports/${id}/restore`, body: { scope: skillScope } });
     await screen.findByText('原文件完整，未确认保存新版本');
   } else expect(screen.queryByRole('button', { name: '恢复原文件' })).toBeNull();
 });
@@ -88,7 +88,7 @@ it.each(['rejected', 'lost'] as const)('%s保存结果区别明确失败与未�
   } else {
     await user.click(screen.getByRole('button', { name: '查询保存结果' }));
     await screen.findByText('已保存：实际保存.zip');
-    expect(reads).toEqual([`/v3/capabilities/skill-exports/${commandId}`]);
+    expect(reads).toEqual([`/v4/capabilities/skill-exports/${commandId}`]);
   }
 });
 

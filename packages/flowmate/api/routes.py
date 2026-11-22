@@ -63,7 +63,7 @@ def body(model):
 
 
 def router(runtime):
-    route = APIRouter(prefix="/v3")
+    route = APIRouter(prefix="/v4")
 
     def run_response(run):
         with runtime.store.transaction(write=False) as tx:

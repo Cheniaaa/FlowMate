@@ -43,6 +43,7 @@ from flowmate.contracts.settings import (
 )
 from flowmate.contracts.workspaces import WorkspaceDirectoryResult as WorkspaceDirectoryResult
 from flowmate.integrations.configuration_contracts import McpNotice
+from flowmate.knowledge.contracts import KnowledgeNotice
 from flowmate.memory.contracts import MemoryChange
 from flowmate.memory.maintenance_contracts import MemoryMaintenanceNotice
 from flowmate.policy.contracts import (
@@ -84,9 +85,9 @@ class CommandStatus(Contract):
 
 
 class Health(Contract):
-    api_version: Literal[3] = 3
+    api_version: Literal[4] = 4
     runtime_version: str
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
 
 
 class ErrorBody(Contract):
@@ -348,7 +349,12 @@ class TitlePolicyEvent(EventBase):
     payload: TitlePolicy
 
 
-PublicEvent = Annotated[WorkspaceEvent | SessionEvent | AgentEvent | ModelProfileEvent | ModelConnectionEvent | ExecutionEvent | PolicyEvent | LifecycleEvent | DeliveryEvent | AdmissionEvent | MemoryEvent | MemoryMaintenanceEvent | SkillEvent | EnvironmentEvent | McpEvent | TitlePolicyEvent,
+class KnowledgeEvent(EventBase):
+    kind: Literal["knowledge.changed"]
+    payload: KnowledgeNotice
+
+
+PublicEvent = Annotated[WorkspaceEvent | SessionEvent | AgentEvent | ModelProfileEvent | ModelConnectionEvent | ExecutionEvent | PolicyEvent | LifecycleEvent | DeliveryEvent | AdmissionEvent | MemoryEvent | MemoryMaintenanceEvent | SkillEvent | EnvironmentEvent | McpEvent | TitlePolicyEvent | KnowledgeEvent,
                         Field(discriminator="kind")]
 
 
@@ -424,9 +430,10 @@ class ContextFile(Contract):
 
 class ContextActivity(Contract):
     id: Id
-    kind: Literal["model", "inspect", "read"]
+    kind: Literal["model", "embedding", "inspect", "read"]
     state: Literal["prepared", "dispatched", "succeeded", "failed", "uncertain"]
     model: str | None = None
+    embedding_kind: Literal["query", "document"] | None = Field(default=None, exclude_if=lambda value: value is None)
     compaction: bool = False
     input_tokens: Count | None = None
     output_tokens: Count | None = None
@@ -448,6 +455,7 @@ class ContextRound(Contract):
 
 
 class SessionContextUsage(Contract):
+    # 生成请求及缓存分母不包含向量；calculated_units为本会话全部已计算费用。
     requests: Count = 0
     input_tokens: Count = 0
     output_tokens: Count = 0
@@ -460,7 +468,21 @@ class SessionContextUsage(Contract):
     calculated_units: Units = 0
     unknown_cost_requests: Count = 0
     pending_cost_requests: Count = 0
+    embedding_requests: Count = 0
+    embedding_input_tokens: Count = 0
+    embedding_input_reported_requests: Count = 0
+    embedding_calculated_units: Units = 0
+    embedding_unknown_cost_requests: Count = 0
+    embedding_pending_cost_requests: Count = 0
     units_per_currency: Units
+
+
+class ContextKnowledge(Contract):
+    evidence_id: Id
+    name: str
+    start_line: Version
+    end_line: Version
+    historical: bool = False
 
 
 class SessionContext(Contract):
@@ -471,6 +493,8 @@ class SessionContext(Contract):
     latest_request: ContextActivity | None
     activities: Page[ContextActivity]
     units_per_currency: Units
+    knowledge: list[ContextKnowledge] = Field(default_factory=list)
+    hidden_knowledge_count: Count = 0
 
 
 class RunFeedback(Contract):

@@ -16,6 +16,8 @@ export const modelFailures: Readonly<Record<string, string>> = {
 export default function RunFeedbackNotice({ run, feedback, onOpenConnection }: {
   run: RunSnapshot; feedback?: RunFeedback; onOpenConnection?: (id: string) => void;
 }) {
+  const config = run.config;
+  if (config.kind !== 'agent') return null;
   const current = feedback && feedback.version >= run.version ? feedback : undefined;
   const receipt = current?.model_activity;
   const error = receipt?.error ?? current?.reason ?? run.reason;
@@ -24,6 +26,6 @@ export default function RunFeedbackNotice({ run, feedback, onOpenConnection }: {
     : error && Object.hasOwn(modelFailures, error) && modelFailures[error];
   if (!description) return null;
   return <section className="task-feedback" aria-label="连接处理"><p>{description}</p>
-    {onOpenConnection && <Button type="button" size="sm" onClick={() => onOpenConnection(current?.connection_id ?? run.config.model_profile.connection_id)}>检查连接</Button>}
+    {onOpenConnection && <Button type="button" size="sm" onClick={() => onOpenConnection(current?.connection_id ?? config.model_profile.connection_id)}>检查连接</Button>}
   </section>;
 }

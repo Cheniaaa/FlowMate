@@ -32,7 +32,7 @@ it.each(['direct-global', 'direct-project', 'global-main', 'global-quick', 'proj
   const workspace = { id, version: 1, name: '原项目', directory_resource_id: null };
   const session = { id, workspace_id: id, version: 1, title: '原会话', agent_profile_id: id, kind: 'interaction', archived: false };
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', ''); paths.push(path);
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', ''); paths.push(path);
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path === '/capabilities/mcp') {
       queries.push(parsed);
@@ -58,7 +58,7 @@ it.each(['direct-global', 'direct-project', 'global-main', 'global-quick', 'proj
     if (!(path in values)) throw new Error('缺少合成查询夹具');
     return Response.json(values[path]);
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:19013', token: 'synthetic', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:19013', token: 'synthetic', protocol_version: 4 });
   const main = render(<WorkbenchWindow client={client} />), quick = render(<QuickAssistant client={client} />);
   const mainUi = within(main.container), quickUi = within(quick.container);
   await mainUi.findByRole('heading', { name: '原会话' });

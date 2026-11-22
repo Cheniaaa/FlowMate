@@ -9,7 +9,7 @@ import { memory } from '../../test/memory-fixtures';
 import MemoryPage from './MemoryPage';
 
 afterEach(() => vi.unstubAllGlobals());
-const runtime = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const runtime = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 function server(lostResponses = 0) {
   let current = structuredClone(memory), valid = true, paginated = false, listError = false;
   let loseBeforeSave = false;
@@ -238,7 +238,7 @@ it('列表/依据沿真实来源读取，accept/revise/delete分别绑定所显�
   expect(await screen.findByText('用户在普通对话中留下的原始依据。')).toBeTruthy();
   expect(screen.getByText('消息第 1 段')).toBeTruthy();
   expect(screen.queryByText('/parts/0/text')).toBeNull();
-  expect(api.reads.find(url => url.pathname === `/v3/memory/records/${memory.id}/evidence/0/excerpt`)?.searchParams.get('expected_revision')).toBe('3');
+  expect(api.reads.find(url => url.pathname === `/v4/memory/records/${memory.id}/evidence/0/excerpt`)?.searchParams.get('expected_revision')).toBe('3');
   await user.click(screen.getByRole('button', { name: '记住' }));
   await within(screen.getByRole('region', { name: '记忆审阅' })).findByText('已记住');
   expect(api.writes[0].body).toMatchObject({ meta: { expected_version: 3 }, data: { action: 'accept', scope: memory.scope } });

@@ -13,6 +13,8 @@ import type {
   ResourceCoverageRequest,
   VisionContinueCommand,
   SaveTitlePolicyCommand,
+  KnowledgeImportCommand, KnowledgeCancelCommand, KnowledgeSourceActionCommand,
+  SaveEmbeddingProfileCommand, SetProjectKnowledgeCommand,
 } from '../generated/contracts';
 import { laterCursor, readSse } from './events';
 import { validate, type RootName } from './validation';
@@ -57,7 +59,7 @@ export class RuntimeClient {
 
   static async connect() {
     const connection = await invoke<RuntimeConnection>('runtime_connection');
-    if (connection.protocol_version !== 3) throw new Error('Runtime 协议版本不兼容');
+    if (connection.protocol_version !== 4) throw new Error('Runtime 协议版本不兼容');
     return new RuntimeClient(connection);
   }
 
@@ -71,7 +73,7 @@ export class RuntimeClient {
     headers.set('Authorization', `Bearer ${this.connection.token}`);
     let response: Response, body: unknown;
     try {
-      response = await fetch(this.connection.base_url + '/v3' + path, { ...init, headers });
+      response = await fetch(this.connection.base_url + '/v4' + path, { ...init, headers });
       body = await response.json();
     } catch (error) {
       // 仅请求/响应读取的网络失败可重连；契约和消费者错误不进入此边界。
@@ -186,6 +188,9 @@ export class RuntimeClient {
   run(run_id: string, signal?: AbortSignal) { return this.request(`/runs/${pathId(run_id)}`, 'RunDetail', { signal }); }
   exportRecovery(run_id: string) { return this.request(`/runs/${pathId(run_id)}/export-recovery`, 'PublicationList'); }
   commandStatus(session_id: string, command_id: string) { return this.request(`/sessions/${pathId(session_id)}/commands/${pathId(command_id)}`, 'CommandStatus'); }
+  workspaceCommandStatus(id: string, commandId: string) {
+    return this.request(`/workspaces/${pathId(id)}/commands/${pathId(commandId)}`, 'CommandStatus', { cache: 'no-store' });
+  }
   tasks(run_id: string, page?: PageQuery) { return this.page(`/runs/${pathId(run_id)}/tasks`, 'TaskPage', page); }
   memberLanes(run_id: string) { return this.request(`/runs/${pathId(run_id)}/member-lanes`, 'MemberLaneList'); }
   runQuestions(run_id: string, page?: PageQuery) { return this.page(`/runs/${pathId(run_id)}/questions`, 'QuestionPage', page); }
@@ -204,11 +209,39 @@ export class RuntimeClient {
     return this.request(`/artifacts/${pathId(artifact_id)}/content?offset=${offset}${view === 'structured' ? '&view=structured' : ''}`, 'TextSlice');
   }
   async artifactImage(artifact_id: string, signal?: AbortSignal) {
-    const response = await fetch(`${this.connection.base_url}/v3/artifacts/${pathId(artifact_id)}/image`, {
+    const response = await fetch(`${this.connection.base_url}/v4/artifacts/${pathId(artifact_id)}/image`, {
       headers: { Authorization: `Bearer ${this.connection.token}` }, signal,
     });
     if (!response.ok) return this.responseError(response.status, await response.json());
     return response.blob();
+  }
+  knowledgeSources(id: string, page?: PageQuery) { return this.page(`/workspaces/${pathId(id)}/knowledge/sources`, 'KnowledgeSourcePage', page); }
+  knowledgeJobs(id: string, page?: PageQuery) { return this.page(`/workspaces/${pathId(id)}/knowledge/jobs`, 'KnowledgeJobPage', page); }
+  knowledgeJob(id: string) { return this.request(`/knowledge/jobs/${pathId(id)}`, 'KnowledgeJob', { cache: 'no-store' }); }
+  importKnowledge(id: string, command: KnowledgeImportCommand) {
+    return this.command(`/workspaces/${pathId(id)}/knowledge/imports`, 'KnowledgeImportCommand', 'KnowledgeImportReceipt', command);
+  }
+  cancelKnowledgeJob(id: string, command: KnowledgeCancelCommand) {
+    return this.command(`/knowledge/jobs/${pathId(id)}/cancel`, 'KnowledgeCancelCommand', 'KnowledgeJob', command);
+  }
+  actOnKnowledgeSource(id: string, command: KnowledgeSourceActionCommand) {
+    return this.command(`/knowledge/sources/${pathId(id)}/actions`, 'KnowledgeSourceActionCommand', 'KnowledgeSource', command);
+  }
+  knowledgeEvidence(id: string, evidenceId: string, parameters: { offset?: number; limit?: number } = {}) {
+    return this.request(query(`/workspaces/${pathId(id)}/knowledge/evidence/${pathId(evidenceId)}`, parameters),
+      'EvidencePage', { cache: 'no-store' });
+  }
+  knowledgeSettings(id: string) { return this.request(`/workspaces/${pathId(id)}/knowledge/settings`, 'KnowledgeSettings'); }
+  embeddingProfiles(page?: PageQuery) { return this.page('/knowledge/embedding-profiles', 'EmbeddingProfilePage', page); }
+  embeddingProfile(id: string, revision: number) {
+    return this.request(query(`/knowledge/embedding-profiles/${pathId(id)}`, { revision } as PageQuery),
+      'EmbeddingProfileView', { cache: 'no-store' });
+  }
+  saveEmbeddingProfile(id: string, command: SaveEmbeddingProfileCommand) {
+    return this.command(`/knowledge/embedding-profiles/${pathId(id)}`, 'SaveEmbeddingProfileCommand', 'EmbeddingProfile', command, 'PUT');
+  }
+  setProjectKnowledge(id: string, command: SetProjectKnowledgeCommand) {
+    return this.command(`/workspaces/${pathId(id)}/knowledge/settings`, 'SetProjectKnowledgeCommand', 'KnowledgeSettings', command, 'PUT');
   }
   memoryRecords(parameters: MemoryQuery & { profile_rules?: boolean; project_defaults?: boolean }) {
     return this.request(query('/memory/records', parameters), 'MemoryRecordPage', { cache: 'no-store' });
@@ -281,7 +314,7 @@ export class RuntimeClient {
         try {
           let response: Response;
           try {
-            response = await fetch(`${this.connection.base_url}/v3/workspaces/${pathId(workspace_id)}/events?after=${cursor}`, {
+            response = await fetch(`${this.connection.base_url}/v4/workspaces/${pathId(workspace_id)}/events?after=${cursor}`, {
               headers: { Authorization: `Bearer ${this.connection.token}`, Accept: 'text/event-stream' }, signal,
             });
           } catch (error) {

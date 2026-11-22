@@ -39,7 +39,7 @@ function boundary(withMemory = false, crossProject: false | 'project' | 'persona
   let readsPending: Promise<void> | undefined;
   const session = { id, workspace_id: id, version: 1, title: '原会话', agent_profile_id: id, kind: 'interaction', archived: false };
   vi.stubGlobal('fetch', async (url: string) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', ''); paths.push(path);
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', ''); paths.push(path);
     if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(controller) {
       streams.set(path, [...streams.get(path) ?? [], controller]);
     } }));
@@ -80,7 +80,7 @@ function boundary(withMemory = false, crossProject: false | 'project' | 'persona
     return Response.json(values[path]);
   });
   return {
-    client: new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 }), paths,
+    client: new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 }), paths,
     holdReads() {
       let resume!: () => void;
       readsPending = new Promise<void>(resolve => { resume = resolve; });

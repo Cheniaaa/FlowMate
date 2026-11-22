@@ -17,7 +17,7 @@ it('按项目和脚本类型发现环境，保留自动运行及重新检测入�
     });
     return Response.json({ items: [], next_cursor: null, watermark: '0' });
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   render(<SkillExecution client={client} version={skillView.version} scope={skillScope} onChanged={() => {}} />);
   await screen.findByText(/需要 Python、Node.js 解释器/);
   const discovery = urls.find(url => url.pathname.endsWith('/discover'))!;

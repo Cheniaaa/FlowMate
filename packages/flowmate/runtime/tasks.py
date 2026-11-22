@@ -349,6 +349,12 @@ class TaskService:
         for id in sources.resource_ids:
             self.policy.check_run_sources(tx, ctx, [ScopeDependency(scope_id=id, epoch=1)])
         parent_sources = origin.binding.sources
+        knowledge = sources.knowledge_source_ids or parent_sources.knowledge_source_ids
+        if not set(knowledge) <= set(parent_sources.knowledge_source_ids).intersection(run.sources.knowledge_source_ids):
+            raise DomainError("outside_run_scope", "成员知识来源超出父任务范围")
+        sources = sources.model_copy(update={"knowledge_source_ids": sorted(set(knowledge)
+            - set(sources.excluded_source_ids) - set(parent_sources.excluded_source_ids)
+            - set(run.sources.excluded_source_ids))})
         if (any(scope not in parent_sources.memory_scopes or scope not in run.sources.memory_scopes
                 for scope in sources.memory_scopes)
                 or any(parent_sources.skill_versions.get(id) != version

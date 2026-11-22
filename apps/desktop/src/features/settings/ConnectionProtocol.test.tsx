@@ -6,7 +6,7 @@ import { connection, model, modelDiscovery, modelResolution, page } from '../../
 import ConnectionSettings from './ConnectionSettings';
 
 afterEach(() => vi.unstubAllGlobals());
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 
 it.each([
   ['openai_compatible', 'OpenAI Chat Completions'],

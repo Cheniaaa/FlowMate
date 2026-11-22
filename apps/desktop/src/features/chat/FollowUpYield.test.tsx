@@ -10,7 +10,7 @@ import { Conversation } from './Conversation';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); localStorage.clear(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 const session = { id, version: 1, workspace_id: id, title: '总结中的会话', agent_profile_id: id, kind: 'interaction', archived: false };
 const other = { ...session, id: secondId, title: '另一个会话' };
 function server(initial: RunSnapshot | null = { ...run, kind: 'follow_up', version: 5 }, messages: ModelMessage[] = []) {
@@ -23,7 +23,7 @@ function server(initial: RunSnapshot | null = { ...run, kind: 'follow_up', versi
   const workspace = { id, version: 1, name: '项目', directory_resource_id: null };
   vi.mocked(invoke).mockResolvedValue({ resources: [resource] });
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', ''), method = init.method ?? 'GET';
+    const path = new URL(url).pathname.replace('/v4', ''), method = init.method ?? 'GET';
     const body = init.body ? JSON.parse(String(init.body)) : null;
     if (path.endsWith('/resource-coverage')) {
       coverageChecks.push({ path, method, body });
@@ -271,11 +271,11 @@ it.each([
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
     if (path.endsWith('/results')) return Response.json(page([{ ...resultEntry, source_valid: valid }]));
-    if (path === `/v3/results/${resultEntry.id}/view`) {
+    if (path === `/v4/results/${resultEntry.id}/view`) {
       detailRequests.push('view');
       return Response.json({ ...resultEntry, viewed_at: '2026-11-18T12:00:00Z' });
     }
-    if (path === `/v3/tasks/${resultEntry.result.task_id}/result`) {
+    if (path === `/v4/tasks/${resultEntry.result.task_id}/result`) {
       detailRequests.push('result');
       return Response.json({ ...context, result: { status: 'completed', summary: '授权查询后的交付详情', structured_result: {},
         unresolved: [], artifact_ids: [], evidence_refs: [], verification: [], handled_failures: [] } });

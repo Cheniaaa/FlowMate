@@ -266,6 +266,17 @@ async fn select_resources<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, ap
     native_resources::select(&window, channel, scope, kind).await
 }
 #[tauri::command]
+async fn expand_knowledge_directory<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>,
+    directory_id: String, cursor: Option<String>, limit: u32) -> Result<native_resources::KnowledgeDirectoryPage, String> {
+    checked_window(&window, &["main", "quick"])?;
+    let channel = {
+        let host = app.try_state::<Mutex<RuntimeHost>>().ok_or("host_unavailable")?;
+        let host = host.lock().map_err(|_| "host_unavailable")?;
+        host.channel()
+    };
+    native_resources::expand_knowledge_directory(&channel, directory_id, cursor, limit).await
+}
+#[tauri::command]
 async fn choose_export_target<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, app: tauri::AppHandle<R>, scope: native_resources::Scope, binary: bool) -> Result<native_resources::Selection, String> {
     checked_window(&window, &["main", "quick"])?;
     scope.validate()?;
@@ -364,13 +375,13 @@ fn main() {
         .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .manage(Arc::new(native_resources::WorkspaceDirectories::default()))
         .invoke_handler(tauri::generate_handler![runtime_connection, stop_runtime, open_settings, take_settings_navigation, return_to_quick, save_credential,
-            clear_credential, credential_status, select_resources, choose_export_target, select_skill_package, choose_skill_export_target, open_external,
+            clear_credential, credential_status, select_resources, expand_knowledge_directory, choose_export_target, select_skill_package, choose_skill_export_target, open_external,
             window_settings, set_quick_pinned, set_shortcut, set_ball_enabled, toggle_quick, show_workbench,
             take_workbench_navigation, set_quick_form_active, pending_counts, start_ball_drag,
             select_workspace_directory, discard_workspace_directory_selection,
             create_workspace_from_directory, retry_workspace_from_directory, check_workspace_directory_command])
         .setup(|app| {
-            let directory = app.path().app_data_dir()?.join("data-v3");
+            let directory = app.path().app_data_dir()?.join("data-v4");
             let host = if cfg!(debug_assertions) {
                 let python = std::env::var_os("FLOWMATE_DEV_PYTHON").ok_or("development_python_required")?;
                 let root = std::env::var_os("FLOWMATE_DEV_ROOT").ok_or("development_root_required")?;
@@ -488,7 +499,7 @@ mod tests {
             .manage(Mutex::new(windows::Windows::load(&std::env::temp_dir().join("opencode").join(format!("flowmate-ipc-{}", uuid::Uuid::new_v4()))).unwrap()))
             .manage(notifications)
             .invoke_handler(tauri::generate_handler![runtime_connection, stop_runtime, open_settings, take_settings_navigation, return_to_quick, save_credential,
-                clear_credential, credential_status, select_resources, choose_export_target, select_skill_package, choose_skill_export_target, open_external,
+                clear_credential, credential_status, select_resources, expand_knowledge_directory, choose_export_target, select_skill_package, choose_skill_export_target, open_external,
                 window_settings, set_quick_pinned, set_shortcut, set_ball_enabled, toggle_quick, show_workbench,
                 take_workbench_navigation, set_quick_form_active, pending_counts, start_ball_drag,
                 select_workspace_directory, discard_workspace_directory_selection,
@@ -801,6 +812,82 @@ mod tests {
     }
 
     #[test]
+    fn knowledge_directory_ipc_accepts_camel_case_with_existing_resource_window_permissions() {
+        let (app, _) = ipc_app();
+        for label in ["main", "quick", "settings", "ball", "preview"] {
+            let candidate = window(&app, label);
+            let error = ipc(&candidate, "expand_knowledge_directory", serde_json::json!({
+                "directoryId":"00000000-0000-4000-8000-000000000002", "cursor":null, "limit":200,
+            })).unwrap_err();
+            if ["main", "quick"].contains(&label) {
+                assert_eq!(error, "host_unavailable", "{label}");
+            } else {
+                assert!(error.as_str().unwrap().contains("not allowed"), "{label}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn knowledge_directory_ipc_pages_real_python_resources_without_paths_or_truncation() {
+        use std::{io::{Read, Write}, net::TcpStream, path::Path};
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).unwrap();
+        let directory = std::env::temp_dir().join("opencode").join(format!("flowmate-knowledge-directory-{}", uuid::Uuid::new_v4()));
+        let selected = directory.join("本次 目录");
+        std::fs::create_dir_all(selected.join("nested")).unwrap();
+        std::fs::write(selected.join("a.md"), "# 本页").unwrap();
+        std::fs::write(selected.join("b.txt"), "下一页").unwrap();
+        std::fs::write(selected.join("ignored.json"), "{}").unwrap();
+        std::fs::write(selected.join("nested/hidden.md"), "# 不递归").unwrap();
+        let runtime = runtime_host::DevelopmentRuntime::new(root.join(".venv/Scripts/python.exe"), root.to_owned()).unwrap();
+        let data = directory.join("data-v4");
+        let host = runtime_host::tests::start_isolated_development(&data, &runtime, cfg!(dev)).unwrap();
+        let address = host.connection.base_url.strip_prefix("http://").unwrap();
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        write!(stream, "GET /v4/workspaces HTTP/1.1\r\nHost: {address}\r\nOrigin: {}\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            local_origin(), host.connection.token).unwrap();
+        let mut response = String::new(); stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let workspaces: serde_json::Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let scope = serde_json::json!({"kind":"workspace","workspace_id":workspaces["items"][0]["id"],"session_id":null});
+        let registered = tauri::async_runtime::block_on(host.channel().request("resource.register",
+            serde_json::json!({"scope":scope,"kind":"directory","paths":[selected]}), Duration::from_secs(5))).unwrap();
+        let directory_ref = &registered["resources"][0];
+        assert_eq!(directory_ref["kind"], "directory");
+        let directory_id = directory_ref["id"].as_str().unwrap().to_owned();
+        let (app, _) = ipc_app(); app.manage(Mutex::new(host));
+        let main = window(&app, "main");
+        let first = ipc(&main, "expand_knowledge_directory", serde_json::json!({
+            "directoryId":directory_id,"cursor":null,"limit":1,
+        })).unwrap();
+        assert_eq!(first["resources"].as_array().unwrap().len(), 1);
+        assert_eq!(first["resources"][0]["label"], "a.md");
+        let cursor = first["next_cursor"].as_str().expect("还有后续资料时必须保留游标");
+        let second = ipc(&main, "expand_knowledge_directory", serde_json::json!({
+            "directoryId":directory_id,"cursor":cursor,"limit":200,
+        })).unwrap();
+        assert_eq!(second["resources"].as_array().unwrap().len(), 1);
+        assert_eq!(second["resources"][0]["label"], "b.txt");
+        assert_eq!(second["next_cursor"], serde_json::Value::Null);
+        for resource in [&first["resources"][0], &second["resources"][0]] {
+            assert!(uuid::Uuid::parse_str(resource["id"].as_str().unwrap()).is_ok());
+            assert_eq!(resource["scope"], scope);
+            assert_eq!(resource["kind"], "file");
+            assert_eq!(resource["version"], 1);
+            assert!(resource.get("canonical_path").is_none());
+            assert!(resource.get("paths").is_none());
+        }
+        assert_eq!(ipc(&main, "expand_knowledge_directory", serde_json::json!({
+            "directoryId":directory_id,"cursor":null,"limit":201,
+        })).unwrap_err(), "native_selection_limit");
+        app.state::<Mutex<RuntimeHost>>().lock().unwrap().stop();
+        let log = std::fs::read_to_string(data.join("desktop-host.jsonl")).unwrap();
+        assert!(log.contains("\"graceful\":true"));
+        drop(main); drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn workspace_directory_commands_are_main_only_and_reach_the_owned_host() {
         let (app, _) = ipc_app();
         for label in ["main", "quick", "settings", "ball", "preview"] {
@@ -929,6 +1016,30 @@ mod tests {
         assert_eq!(ipc(&ball, "show_workbench", serde_json::json!({"target":{"kind":"task","task_id":"00000000-0000-4000-8000-000000000001"}})).unwrap_err(), "forbidden_navigation");
         let quick = window(&app, "quick");
         assert_eq!(ipc(&quick, "show_workbench", serde_json::json!({"target":{"kind":"run","run_id":"not an id or message body"}})).unwrap_err(), "invalid_navigation_id");
+    }
+
+    #[test]
+    fn t7_knowledge_ipc_navigation_retains_only_ids_and_returns_to_existing_quick() {
+        let (app, _) = ipc_app();
+        let main = window(&app, "main"); let quick = window(&app, "quick"); let ball = window(&app, "ball");
+        let workspace = "00000000-0000-4000-8000-000000000001";
+        let reference = "00000000-0000-4000-8000-000000000002";
+        for target in [
+            serde_json::json!({"kind":"knowledge","workspace_id":workspace,"source_id":reference}),
+            serde_json::json!({"kind":"evidence","workspace_id":workspace,"evidence_id":reference}),
+        ] {
+            ipc(&quick, "show_workbench", serde_json::json!({"target":target})).unwrap();
+            assert_eq!(ipc(&main, "take_workbench_navigation", serde_json::json!({})).unwrap(),
+                serde_json::json!({"target":target,"from_quick":true}));
+            assert_eq!(ipc(&main, "take_workbench_navigation", serde_json::json!({})).unwrap(), serde_json::Value::Null);
+            assert_eq!(ipc(&ball, "show_workbench", serde_json::json!({"target":target})).unwrap_err(), "forbidden_navigation");
+        }
+        ipc(&quick, "set_quick_form_active", serde_json::json!({"active":true})).unwrap();
+        quick.hide().unwrap();
+        ipc(&main, "return_to_quick", serde_json::json!({})).unwrap();
+        assert!(quick.is_visible().unwrap());
+        assert!(!app.state::<Mutex<windows::Windows>>().lock().unwrap().hide_on_blur());
+        assert_eq!(app.webview_windows().len(), 3);
     }
 
     #[test]

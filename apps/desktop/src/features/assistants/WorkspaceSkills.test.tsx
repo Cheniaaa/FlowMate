@@ -44,7 +44,7 @@ function setup({ existing = [otherId], delayedPage }: { existing?: string[]; del
     }
     throw new Error(url.pathname);
   });
-  return { writes, reads, client: new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 }) };
+  return { writes, reads, client: new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 }) };
 }
 
 it('普通页面明确选项目后提供个人/项目能力，保存新成员保留ID上界、不写版本', async () => {

@@ -16,6 +16,7 @@ from flowmate.contracts.settings import (
     Workspace,
 )
 from flowmate.integrations.configuration_contracts import McpNotice
+from flowmate.knowledge.contracts import KnowledgeNotice
 from flowmate.memory.contracts import MemoryChange
 from flowmate.memory.maintenance_contracts import MemoryMaintenanceNotice
 from flowmate.policy.contracts import LifecycleChange, PolicyChange
@@ -46,8 +47,9 @@ class NewEvent(Contract):
         "skill.changed",
         "environment.changed",
         "mcp.changed", "naming.policy_saved", "naming.task_changed",
+        "knowledge.changed",
     ]
-    payload: Workspace | Session | AgentSaved | ModelProfile | ModelConnection | RuntimeChange | PolicyChange | LifecycleChange | MemoryChange | MemoryMaintenanceNotice | SkillNotice | EnvironmentChanged | McpNotice | TitlePolicy
+    payload: Workspace | Session | AgentSaved | ModelProfile | ModelConnection | RuntimeChange | PolicyChange | LifecycleChange | MemoryChange | MemoryMaintenanceNotice | SkillNotice | EnvironmentChanged | McpNotice | TitlePolicy | KnowledgeNotice
     event_version: Literal[1] = 1
     workspace_id: Id | None = None
     session_id: Id | None = None
@@ -67,6 +69,7 @@ class NewEvent(Contract):
             "environment.changed": EnvironmentChanged,
             "mcp.changed": McpNotice,
             "naming.policy_saved": TitlePolicy,
+            "knowledge.changed": KnowledgeNotice,
         }.get(self.kind, SkillNotice if self.kind == "skill.changed" else
               MemoryMaintenanceNotice if self.kind == "memory.maintenance_changed" else
               MemoryChange if self.kind.startswith("memory.") else
@@ -82,6 +85,8 @@ class NewEvent(Contract):
             self.workspace_id != self.payload.workspace_id or self.session_id != self.payload.id
         ):
             raise ValueError("会话事件归属不匹配")
+        if isinstance(self.payload, KnowledgeNotice) and self.workspace_id != self.payload.workspace_id:
+            raise ValueError("知识通知归属不匹配")
         return self
 
 

@@ -10,7 +10,7 @@ import { forgetSkillExport, rememberSkillExport } from './deferred-skill-exports
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 const receipt = { ...skillReceipt, state: 'needs_restore', target_matches: 'missing',
   backup_path: 'C:\\Synthetic\\.owned.backup', backup_matches: true, stage_matches: true,
   cleanup_pending: true, disposition: 'pending' };
@@ -108,12 +108,12 @@ it('即使原Skill已删除，能力库保存记录仍可显式恢复/完成清�
   await screen.findByText('原文件完整，未确认保存新版本');
   await user.click(screen.getByRole('button', { name: '完成处置并清理所属临时文件' }));
   await screen.findByText('已恢复原文件并完成处置');
-  expect(writes).toEqual([`/v3/capabilities/skill-exports/${id}/restore`, `/v3/capabilities/skill-exports/${id}/finalize`]);
+  expect(writes).toEqual([`/v4/capabilities/skill-exports/${id}/restore`, `/v4/capabilities/skill-exports/${id}/finalize`]);
 });
 
 it('读取不到回执后以原命令重试，只生成一笔业务操作并显示原目标', async () => {
   const target = '2026.11-原名.zip';
-  const pathBase = '/v3/capabilities/skill-exports';
+  const pathBase = '/v4/capabilities/skill-exports';
   const writes: string[] = [], reads: string[] = [];
   const completed = new Set<string>();
   vi.mocked(invoke).mockResolvedValue({ resources: [{
@@ -225,7 +225,7 @@ it('放弃恢复要求显式确认，回执处置后不再提供恢复或清理'
   expect(within(record).getByText('已放弃自动恢复')).toBeTruthy();
   expect(within(record).queryByRole('button')).toBeNull();
   expect(within(record).queryByText(/重试|重新核对/)).toBeNull();
-  expect(writes).toEqual([`/v3/capabilities/skill-exports/${id}/release`]);
+  expect(writes).toEqual([`/v4/capabilities/skill-exports/${id}/release`]);
 });
 
 it('跨窗失效重查期间保留正在操作的恢复入口', async () => {
@@ -294,7 +294,7 @@ it('恢复页同步同范围窗口的暂缓与确认，保留其余原命令供�
     const second = screen.getByRole('article', { name: '另一份.zip' });
     await user.click(within(second).getByRole('button', { name: '重试保存' }));
     await screen.findByText('已保存：另一份.zip');
-    expect(commands).toEqual([{ path: `/v3/capabilities/skill-exports/${id}` }, { path: '/v3/capabilities/skill-exports', body: another }]);
+    expect(commands).toEqual([{ path: `/v4/capabilities/skill-exports/${id}` }, { path: '/v4/capabilities/skill-exports', body: another }]);
     expect(localStorage.getItem(Object.keys(localStorage).find(key => key.endsWith(secondId)) ?? '')).toBeNull();
     act(() => {
       rememberSkillExport(id, { label: '切回读回.zip', command: {

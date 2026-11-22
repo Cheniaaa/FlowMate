@@ -42,7 +42,7 @@ it.each([false, true])('只在工具行打开回执，答复后只显示正式�
       total_tokens: 0, reserved_tokens: 0 }, watermark: '3' };
   const text = '2026-11-21\n\n- 第一项\n\n```python\nprint("report")\n```';
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path.endsWith('/export-recovery')) return Response.json([]);
     if (path.endsWith('/content')) return Response.json({ text, start: 0, end: text.length, total_chars: text.length, source_version: receipt.content_hash });
@@ -56,7 +56,7 @@ it.each([false, true])('只在工具行打开回执，答复后只显示正式�
     return Response.json(values[path] ?? {});
   });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 })} />);
   const deliveryLabel = cold ? '交付文件 1' : 'report.txt';
   const delivery = await screen.findByRole('button', { name: deliveryLabel });
   expect(within(screen.getByLabelText('本轮产物')).getAllByRole('button')).toEqual([delivery]);
@@ -83,7 +83,7 @@ it('冷重开后，两个交付轮次均可打开同一个跨轮发布的文件'
   const body = '跨轮文件原文\n\n第二段';
   const fetches: string[] = [];
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     fetches.push(path);
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path.endsWith('/export-recovery')) return Response.json([]);
@@ -107,7 +107,7 @@ it('冷重开后，两个交付轮次均可打开同一个跨轮发布的文件'
     return Response.json(routes[path] ?? {});
   });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 })} />);
   await screen.findByText('第二份正式答复');
   const tails = screen.getAllByLabelText('本轮产物');
   expect(tails).toHaveLength(2);
@@ -137,7 +137,7 @@ it('审批卡的连续点击只发送一次真实HTTP决定，响应前两种操
     call_id: 'call', tool_name: 'artifacts.export', tool_version: '1', args_hash: 'abc', target: secondId, parameters: { target_ref: secondId },
     export_preview: { target_path: 'C:\\Synthetic\\report.md', target_exists: false, artifact_id: id, artifact_version: 1 },
     dependencies: [], expires_at: '2026-11-07T13:00:00Z', status: 'pending' };
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 });
   const bodies: unknown[] = [];
   let resolve!: (response: Response) => void;
   const response = new Promise<Response>(done => { resolve = done; });
@@ -167,7 +167,7 @@ it('没有活跃Run时仍可从持久历史定位完成任务，并显示实际j
     joins: page([{ id: '00000000-0000-4000-8000-000000000099', run_id: id, root_task_id: task.id, child_task_id: childId, child_result_version: 1, event_id: event.event_id }]),
     budget: { id: run.budget_id, run_id: id, version: 1, limits, spent_units: '0', reserved_units: '0', model_requests: 1, task_count: 2, steps: 3, total_tokens: 0, reserved_tokens: 0 }, watermark: event.event_id };
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return Response.json(page([]));
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([agent]), '/models': page([model]), '/model-connections': page([connection]),
@@ -176,7 +176,7 @@ it('没有活跃Run时仍可从持久历史定位完成任务，并显示实际j
     return new Response(JSON.stringify(values[path]));
   });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 })} />);
   await user.click(taskDetailsEntry());
   await user.click(await screen.findByRole('button', { name: /本次对话.*已完成/ }));
   const node = await screen.findByRole('button', { name: /任务.*工具任务/ });
@@ -217,7 +217,7 @@ it('更多审批补齐首页之外的Run和Session，能定位到真实审批', 
     approvals: page([approval]), waits: page([]), consumptions: page([]), joins: page([]),
     budget: { id: run.budget_id, run_id: secondId, version: 1, limits, spent_units: '0', reserved_units: '0', model_requests: 0, task_count: 1, steps: 1, total_tokens: 0, reserved_tokens: 0 }, watermark: event.event_id };
   vi.stubGlobal('fetch', async (url: string) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', '');
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([agent]), '/models': page([model]), '/model-connections': page([connection]),
       [`/workspaces/${id}/snapshot`]: { workspace, sessions: page([session]), active_runs: page([]), pending_questions: page([]),
@@ -228,7 +228,7 @@ it('更多审批补齐首页之外的Run和Session，能定位到真实审批', 
     return new Response(JSON.stringify(values[path]));
   });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 })} />);
   await user.click(await screen.findByRole('button', { name: '更多审批' }));
   await user.click(screen.getByRole('button', { name: /待办/ }));
   const navigate = await screen.findByRole('button', { name: /审批/ });
@@ -248,7 +248,7 @@ it('Trace补页返回时已切换Run，不把旧事件并入新运行', async ()
   let finish!: (response: Response) => void;
   const delayed = new Promise<Response>(resolve => { finish = resolve; });
   vi.stubGlobal('fetch', async (url: string) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', '');
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path === `/runs/${id}/trace` && parsed.search) return delayed;
     const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([agent]), '/models': page([model]), '/model-connections': page([connection]),
@@ -258,7 +258,7 @@ it('Trace补页返回时已切换Run，不把旧事件并入新运行', async ()
     return new Response(JSON.stringify(values[path]));
   });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 })} />);
   await user.click(taskDetailsEntry());
   await user.click(await screen.findByRole('button', { name: /第一项历史/ }));
   await user.click(screen.getByRole('button', { name: '查看 Trace' }));
@@ -285,7 +285,7 @@ it.each(['history', 'trace'])('%s keyset 续页在无关写入后保留已加载
   let changed = false;
   const cursors: (string | null)[] = [];
   vi.stubGlobal('fetch', async (url: string) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', '');
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path === target) {
       const cursor = parsed.searchParams.get('cursor'); cursors.push(cursor);
@@ -302,7 +302,7 @@ it.each(['history', 'trace'])('%s keyset 续页在无关写入后保留已加载
     return new Response(JSON.stringify(values[path]));
   });
   const user = userEvent.setup();
-  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 })} />);
+  render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 })} />);
   await screen.findByRole('heading', { name: session.title });
   if (kind === 'trace') { await user.click(taskDetailsEntry()); await user.click(screen.getByRole('button', { name: '查看 Trace' })); }
   const button = await screen.findByRole('button', { name: kind === 'trace' ? '加载更多事件' : '更多历史' });

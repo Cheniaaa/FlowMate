@@ -9,7 +9,7 @@ import ArtifactPanel from './ArtifactPanel';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 4 });
 const artifact: ArtifactRef = { id, version: 1, media_type: 'text/markdown', content_hash: 'sha256:source', task_id: secondId, activity_id: id, dependencies: [] };
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 const slice = (text: string): TextSlice => ({ text, start: 0, end: text.length, total_chars: text.length, source_version: artifact.content_hash });
@@ -37,7 +37,7 @@ describe('产物预览', () => {
     const user = userEvent.setup();
     render(<ArtifactPanel artifact={artifact} client={client} onSelectSource={selectSource} />);
     await waitFor(() => expect(preview().srcdoc).toContain('报告'));
-    expect(requests).toEqual([{ url: `http://127.0.0.1:54321/v3/artifacts/${id}/content?offset=0`, authorization: 'Bearer public-token' }]);
+    expect(requests).toEqual([{ url: `http://127.0.0.1:54321/v4/artifacts/${id}/content?offset=0`, authorization: 'Bearer public-token' }]);
     expect(preview().getAttribute('sandbox')).toBe('');
     expect(preview().hasAttribute('allow')).toBe(false);
     const document = new DOMParser().parseFromString(preview().srcdoc, 'text/html');

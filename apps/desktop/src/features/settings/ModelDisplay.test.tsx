@@ -6,7 +6,7 @@ import { connection, model, modelDiscovery, modelResolution, page } from '../../
 import ModelSettings from './ModelSettings';
 
 afterEach(() => vi.unstubAllGlobals());
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 
 it('真实解析中的未知容量与本地预算分开显示，运行阻塞与价格原因提供可操作说明', async () => {
   vi.stubGlobal('fetch', async (url: string) => Response.json(url.endsWith('/discover') ? modelDiscovery

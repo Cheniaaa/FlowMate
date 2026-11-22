@@ -11,7 +11,7 @@ it.each(['view', 'command-status'])('%s 通用响应验证拒绝混入执行 env
     env: { PRIVATE: 'must-not-be-accepted' },
   };
   vi.stubGlobal('fetch', async () => Response.json(kind === 'view' ? value : { status: 'confirmed', result: value }));
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:8999', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:8999', token: 'test', protocol_version: 4 });
   const pending = kind === 'view' ? client.executionEnvironment(value.id) : client.executionEnvironmentCommandStatus(value.id);
   await expect(pending).rejects.toThrow('Runtime 契约校验失败');
 });

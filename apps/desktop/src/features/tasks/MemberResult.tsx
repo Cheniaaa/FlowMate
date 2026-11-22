@@ -8,7 +8,10 @@ import AgentResultView from './AgentResultView';
 import ArtifactPanel from '../artifacts/ArtifactPanel';
 import { describeArtifacts } from '../artifacts/artifact-presentation';
 
-export default function MemberResult({ client, lane, onExport, exportBlocked }: { client: RuntimeClient; lane: MemberLane; onExport?: (artifact: ArtifactRef) => Promise<void>; exportBlocked?: boolean }) {
+export default function MemberResult({ client, lane, onExport, exportBlocked, onOpenEvidence }: {
+  client: RuntimeClient; lane: MemberLane; onExport?: (artifact: ArtifactRef) => Promise<void>; exportBlocked?: boolean;
+  onOpenEvidence?: (id: string) => void;
+}) {
   const [result, setResult] = useState<AgentResult>(), [error, setError] = useState('');
   const [artifacts, setArtifacts] = useState<ArtifactRef[]>([]), [artifactId, setArtifactId] = useState('');
   useEffect(() => {
@@ -27,7 +30,7 @@ export default function MemberResult({ client, lane, onExport, exportBlocked }: 
   }, [client, lane.task.id, lane.task.run_id, lane.task.result_version]);
   const files = describeArtifacts(artifacts, lane.activities);
   const selected = files.find(({ artifact }) => artifact.id === artifactId);
-  return <section aria-label="成员结果预览">{error && <p role="alert">{error}</p>}{result ? <AgentResultView result={result} /> : !error && <p>正在读取已提交成员交付…</p>}
+  return <section aria-label="成员结果预览">{error && <p role="alert">{error}</p>}{result ? <AgentResultView result={result} onOpenEvidence={onOpenEvidence} /> : !error && <p>正在读取已提交成员交付…</p>}
     {files.map(({ artifact, label }) => <Button type="button" size="sm" variant={artifact.id === artifactId ? 'secondary' : 'ghost'}
       className="whitespace-normal text-left" key={artifact.id} aria-pressed={artifact.id === artifactId} onClick={() => setArtifactId(artifact.id)}>{label}</Button>)}
     {selected && <ArtifactPanel client={client} artifact={selected.artifact} label={selected.label} onExport={onExport} exportBlocked={exportBlocked} />}

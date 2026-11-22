@@ -24,14 +24,14 @@ function boundary() {
   let request: WorkbenchRequest | null = null;
   vi.mocked(listen).mockImplementation(async (name, callback) => { callbacks.set(name, callback); return () => {}; });
   vi.mocked(invoke).mockImplementation(async (name, args) => {
-    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 3 };
+    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 4 };
     if (name === 'show_workbench') { request = { target: (args as { target: WorkbenchRequest['target'] }).target, from_quick: true }; return; }
     if (name === 'take_workbench_navigation') { const next = request; request = null; return next; }
     if (name === 'window_settings') return { quick_pinned: false, ball_enabled: false, shortcut: null, shortcut_error: null };
     return null;
   });
   vi.stubGlobal('fetch', async (input: string) => {
-    const path = new URL(input).pathname.replace('/v3', '');
+    const path = new URL(input).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path.endsWith('/commands') || path.endsWith('/follow-ups') || path.endsWith('/run-feedback') || path.endsWith('/results')) return Response.json(page([]));
     const values: Record<string, unknown> = {
@@ -62,7 +62,7 @@ it('quick 展开 managed Run 后显式返回本对话任务入口且保留主窗
   const native = boundary(), user = userEvent.setup(), main = render(<App />);
   const input = await within(main.container).findByLabelText('消息');
   await user.type(input, '主窗管理前的草稿');
-  const quick = render(<QuickAssistant client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 3 })} />);
+  const quick = render(<QuickAssistant client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'synthetic', protocol_version: 4 })} />);
   await within(quick.container).findByRole('button', { name: '查看后台任务' });
   await user.click(within(quick.container).getByRole('button', { name: '展开工作台' }));
   quick.unmount();

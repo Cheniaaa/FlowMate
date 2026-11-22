@@ -52,15 +52,85 @@ CREATE TABLE workspace_identity (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE
 );
+CREATE TABLE knowledge_sources (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    revision INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    file_identity TEXT NOT NULL,
+    document TEXT NOT NULL
+);
+CREATE INDEX knowledge_sources_workspace ON knowledge_sources(workspace_id, id);
+CREATE TABLE knowledge_versions (
+    source_id TEXT NOT NULL REFERENCES knowledge_sources(id),
+    version INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    document TEXT NOT NULL,
+    PRIMARY KEY(source_id, version)
+);
+CREATE INDEX knowledge_versions_content ON knowledge_versions(content_hash);
+CREATE TABLE knowledge_jobs (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    source_id TEXT REFERENCES knowledge_sources(id),
+    status TEXT NOT NULL,
+    document TEXT NOT NULL
+);
+CREATE INDEX knowledge_jobs_queue ON knowledge_jobs(workspace_id, status);
+CREATE TABLE knowledge_settings (
+    workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id),
+    document TEXT NOT NULL
+);
+CREATE TABLE embedding_profiles (
+    id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    document TEXT NOT NULL,
+    resolved TEXT NOT NULL,
+    PRIMARY KEY(id, revision)
+);
+CREATE TABLE knowledge_searches (
+    id TEXT PRIMARY KEY,
+    root_run_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    message_id TEXT,
+    call_id TEXT NOT NULL,
+    document TEXT NOT NULL,
+    result TEXT
+);
+CREATE UNIQUE INDEX knowledge_search_call ON knowledge_searches(task_id,coalesce(message_id,''),call_id);
+CREATE INDEX knowledge_search_root ON knowledge_searches(root_run_id);
+CREATE TABLE knowledge_evidence (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    source_id TEXT NOT NULL REFERENCES knowledge_sources(id),
+    source_version INTEGER NOT NULL,
+    activity_id TEXT NOT NULL,
+    document TEXT NOT NULL
+);
+CREATE INDEX knowledge_evidence_source ON knowledge_evidence(source_id,source_version);
+-- 项目删除后仍需清理派生文件；无工作区FK，只保存无正文的身份和重试事实。
+CREATE TABLE knowledge_cleanup (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    source_id TEXT,
+    generation TEXT,
+    revision INTEGER NOT NULL CHECK (revision>0),
+    last_error TEXT,
+    CHECK (source_id IS NULL OR generation IS NULL)
+);
+CREATE INDEX knowledge_cleanup_workspace ON knowledge_cleanup(workspace_id);
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,
     version INTEGER NOT NULL CHECK (version > 0),
     workspace_id TEXT NOT NULL REFERENCES workspaces(id),
     title TEXT NOT NULL,
-    agent_profile_id TEXT NOT NULL REFERENCES agent_profiles(id),
+    agent_profile_id TEXT REFERENCES agent_profiles(id),
     kind TEXT NOT NULL CHECK (kind IN ('interaction','execution')),
     archived INTEGER NOT NULL CHECK (archived IN (0,1)),
-    document TEXT NOT NULL
+    document TEXT NOT NULL,
+    CHECK (kind <> 'interaction' OR agent_profile_id IS NOT NULL)
 );
 CREATE INDEX sessions_workspace ON sessions(workspace_id, id);
 CREATE TABLE events (
@@ -86,7 +156,7 @@ CREATE TABLE scopes (
     id TEXT PRIMARY KEY,
     epoch INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'active',
-    kind TEXT NOT NULL CHECK (kind IN ('user_global','workspace','session','resource','grant','memory','skill','mcp')),
+    kind TEXT NOT NULL CHECK (kind IN ('user_global','workspace','session','resource','grant','memory','skill','mcp','knowledge')),
     workspace_id TEXT,
     session_id TEXT
 );
@@ -102,7 +172,7 @@ CREATE TABLE runs (
     root_task_id TEXT NOT NULL REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
     budget_id TEXT NOT NULL REFERENCES budgets(id) DEFERRABLE INITIALLY DEFERRED,
     budget_group_id TEXT NOT NULL REFERENCES budget_groups(id) DEFERRABLE INITIALLY DEFERRED,
-    kind TEXT NOT NULL CHECK (kind IN ('user','managed','follow_up','maintenance')),
+    kind TEXT NOT NULL CHECK (kind IN ('user','managed','follow_up','maintenance','knowledge')),
     state TEXT NOT NULL,
     document TEXT NOT NULL
 );

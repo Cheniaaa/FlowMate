@@ -8,7 +8,7 @@ import { skillCandidate, skillHash, skillScope, skillView } from '../../test/ski
 import CapabilityLibrary from './CapabilityLibrary';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 
 it('长名单只显示名称和状态，搜索后原包描述及编辑正文来自选中项', async () => {
   const items = Array.from({ length: 27 }, (_, index) => ({ ...skillView,
@@ -45,7 +45,7 @@ it('长名单只显示名称和状态，搜索后原包描述及编辑正文来�
   expect(detail.getByText('该包用于第 27 项审核')).toBeTruthy();
   await userEvent.click(detail.getByRole('button', { name: '编辑新版本' }));
   expect(await screen.findByLabelText('SKILL.md 原文件')).toHaveProperty('value', '固定说明 review-27');
-  expect(paths).toContain(`/v3/capabilities/skills/${selected.skill_id}`);
+  expect(paths).toContain(`/v4/capabilities/skills/${selected.skill_id}`);
 });
 
 it.each(['2026.11-preview+local', undefined])('打开脚本包详情时显示发布版和许可对应的解释器（%s）', async release => {
@@ -91,7 +91,7 @@ it('真实DTO默认显示Skills；创建先预览候选，再按明确hash发布
   const writes: { path: string; body: any }[] = [];
   let published = false;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (init.method === 'POST') {
       const body = JSON.parse(String(init.body)); writes.push({ path, body });
       if (path.endsWith('skill-candidates')) return Response.json(skillCandidate);
@@ -147,7 +147,7 @@ it('导入取消不发API；真实原生选择只提交selection ID并等待显�
 it('启停使用binding CAS；用户编辑候选保留base hash和管理revision', async () => {
   const writes: any[] = [];
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (init.method) {
       const body = JSON.parse(String(init.body)); writes.push({ path, body });
       if (path.endsWith('skill-bindings')) return Response.json({ ...body.data, revision: 2 });

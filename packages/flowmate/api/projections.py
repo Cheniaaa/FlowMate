@@ -14,6 +14,7 @@ from flowmate.api.contracts import (
     PublicLifecycleChange,
     PublicPolicyChange,
 )
+from flowmate.api.summaries import EMBEDDING_OPERATIONS, project_budget
 from flowmate.contracts.base import DomainError
 from flowmate.contracts.execution import (
     JoinFact,
@@ -289,13 +290,16 @@ def public_event(event, execution_session_id, *, tx=None):
             # 补读时的授权可能晚于消息发布位置。游标仍使用原 event_id。
             message_watermark = watermark(tx)
         chat_model_use = None
-        if tx is not None and event.kind == "activity.dispatched" and payload.activities[0].intent.kind == "model":
+        if (tx is not None and event.kind == "activity.dispatched"
+                and payload.activities[0].intent.kind == "model"
+                and payload.activities[0].intent.operation not in EMBEDDING_OPERATIONS):
             from flowmate.api.queries import chat_model_use_at
 
             chat_model_use = chat_model_use_at(tx, event.event_id)
         payload = PublicChange(runs=run_views(tx, payload.runs),
             tasks=[task_view(tx, event.workspace_id, task) for task in payload.tasks],
-            activities=[activity_view(activity, tx=tx) for activity in payload.activities], budgets=payload.budgets,
+            activities=[activity_view(activity, tx=tx) for activity in payload.activities],
+            budgets=[project_budget(tx, budget) for budget in payload.budgets],
             messages=messages, message_watermark=message_watermark,
             artifacts=payload.artifacts, questions=payload.questions, waits=payload.waits,
             consumptions=payload.consumptions,

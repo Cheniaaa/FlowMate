@@ -126,6 +126,8 @@ class Scheduler:
         self._wake = asyncio.Event()
         self._pump_task = None
         self._maintenance_task = None
+        self._knowledge_cleanup_tasks = {}
+        self._knowledge_cleanup_initial = True
         self._failure = None
         self._running = {}
         self._unsubscribe = None
@@ -141,6 +143,7 @@ class Scheduler:
         self.waits = None
         self.followups = None
         self.maintenance = None
+        self.knowledge = None
         self.compaction = None
         self.naming_model = None
 
@@ -173,6 +176,9 @@ class Scheduler:
     def configure_maintenance(self, maintenance):
         self.maintenance = maintenance
 
+    def configure_knowledge(self, ingestion):
+        self.knowledge = ingestion
+
     def configure_tools(self, policy, artifacts):
         if self._pump_task is not None or self.policy is not None:
             raise DomainError("runtime_configuration_frozen", "工具服务须在调度启动前装配一次")
@@ -201,6 +207,7 @@ class Scheduler:
                         confirmed=True, actual_units=0, result=result.model_dump(mode="json")), reason="runtime_restart")
         loop = asyncio.get_running_loop()
         self._failure = loop.create_future()
+        self._knowledge_cleanup_initial = True
         self._slots = {"step": asyncio.Semaphore(self.limits.model_concurrency),
                         "model": asyncio.Semaphore(self.limits.model_concurrency),
                         "tool": asyncio.Semaphore(self.limits.file_concurrency)}
@@ -233,6 +240,11 @@ class Scheduler:
             self._maintenance_task.cancel()
             await asyncio.gather(self._maintenance_task, return_exceptions=True)
             self._maintenance_task = None
+        cleanup = list(self._knowledge_cleanup_tasks.values())
+        for task in cleanup:
+            task.cancel()
+        await asyncio.gather(*cleanup, return_exceptions=True)
+        self._knowledge_cleanup_tasks.clear()
         handles = list(self._running.values())
         for task, cancel, _ in handles:
             cancel.set()
@@ -243,6 +255,10 @@ class Scheduler:
         self._pump_task = None
         if not self._failure.done():
             recover(self.store)
+
+    async def _collect_knowledge(self, workspace_id, *, retry_failed):
+        async with self._slots["tool"]:
+            await self.knowledge.lifecycle.collect(workspace_id=workspace_id, retry_failed=retry_failed)
 
     async def _pump(self):
         from flowmate.runtime.naming import OPERATION
@@ -260,6 +276,18 @@ class Scheduler:
                 self.delivery.deliver_pending()
             if self.followups is not None:
                 self.followups.activate_ready()
+            if self.knowledge is not None:
+                self.knowledge.activate_ready()
+                self._knowledge_cleanup_tasks = {id: task for id, task in self._knowledge_cleanup_tasks.items()
+                    if not task.done()}
+                retry_failed = self._knowledge_cleanup_initial
+                for id in self.knowledge.lifecycle.pending_workspaces(retry_failed=retry_failed):
+                    if id not in self._knowledge_cleanup_tasks:
+                        task = asyncio.create_task(self._collect_knowledge(id, retry_failed=retry_failed))
+                        self._knowledge_cleanup_tasks[id] = task
+                        task.add_done_callback(self._observe_failure)
+                        task.add_done_callback(lambda _: self._wake.set())
+                self._knowledge_cleanup_initial = False
             if self.maintenance is not None and (
                     self._maintenance_task is None or self._maintenance_task.done()):
                 # 凭据读取可等待宿主；仅保留一个准备任务，不阻塞前台步骤和运行期限处理。
@@ -290,7 +318,7 @@ class Scheduler:
                         continue
                 key = item.activity_id or item.task_id
                 if key not in self._running:
-                    slot = "step"
+                    slot = "tool" if item.operation == "step" and row[1] == "knowledge" else "step"
                     if item.operation != "step":
                         intent = ActivitySnapshot.model_validate_json(row[2]).intent
                         slot = intent.kind
@@ -388,7 +416,8 @@ class Scheduler:
             if self.is_deleted(item.run_id):
                 return
             if item.operation == "step":
-                async with self._slots["step"]:
+                slot = "tool" if self._read(RunSnapshot, item.run_id).kind == "knowledge" else "step"
+                async with self._slots[slot]:
                     with self.store.transaction(write=False) as tx:
                         task = load(tx, TaskSnapshot, item.task_id)
                         run = load(tx, RunSnapshot, item.run_id)
@@ -504,7 +533,8 @@ class Scheduler:
         activity = ActivitySnapshot(id=identifier(), task_id=task.id, run_id=run.id,
                                     attempt_id=identifier(), intent=intent)
         checkpoint = load(tx, Checkpoint, task.id)
-        if intent.kind == "model" and checkpoint.context_manifest:
+        if (intent.kind == "model" and intent.operation not in {"embedding.query", "embedding.document"}
+                and checkpoint.context_manifest):
             checkpoint = checkpoint.model_copy(update={"context_manifest": {
                 **checkpoint.context_manifest, "activity_id": activity.id}})
         checkpoint = bump(checkpoint,
@@ -827,9 +857,9 @@ class Scheduler:
             return
         subtree = ("WITH RECURSIVE tree(id) AS (VALUES(?) UNION ALL "
                    "SELECT t.id FROM tasks t JOIN tree p ON t.parent_task_id=p.id) ")
-        from flowmate.runtime.recovery import MCP_QUERY_HANDLED
+        from flowmate.runtime.recovery import QUERY_RESULT_RELEASED
         if tx.execute(subtree + "SELECT 1 FROM activities a WHERE a.task_id IN (SELECT id FROM tree) "
-                      f"AND (a.state='dispatched' OR (a.state='uncertain' AND ({MCP_QUERY_HANDLED}) IS NOT TRUE) "
+                      f"AND (a.state='dispatched' OR (a.state='uncertain' AND ({QUERY_RESULT_RELEASED}) IS NOT TRUE) "
                       "OR (a.state='prepared' AND EXISTS "
                       "(SELECT 1 FROM outbox o WHERE o.activity_id=a.id AND o.state='pending')))",
                       (root.id,)).fetchone():
@@ -917,7 +947,8 @@ class Scheduler:
                     return task
             run_expired = self.clock() >= run.deadline_at
             expired = run_expired or (task.deadline_at is not None and self.clock() >= task.deadline_at)
-            protocol = task.binding.config.model_profile.protocol if activity.intent.kind == "model" else None
+            protocol = (task.binding.config.model_profile.protocol if activity.intent.kind == "model"
+                and activity.intent.operation not in {"embedding.query", "embedding.document"} else None)
             merged = _merge_receipt(activity, receipt, model_protocol=protocol)
             dependencies = [*activity.intent.dependencies, *receipt.source_dependencies]
             lease_current = (run.execution_session_id != run.interaction_session_id
@@ -938,8 +969,27 @@ class Scheduler:
                         dependencies = [item.model_copy(update={"epoch": current.version})
                             if item.scope_id == current.id else item for item in dependencies]
             # 补账/围栏后的结果只更新确定事实，不再执行内容提议。
-            publish = lease_current and reason is None and not expired and activity.receipt is None and merged.confirmed and can_publish(
+            retired_document = (run.kind == "knowledge" and activity.intent.origin == "runtime"
+                and activity.intent.operation == "embedding.document"
+                and activity.intent.arguments.get("source_retired") is True)
+            retired_checkpoint = None
+            if retired_document and merged.confirmed and lease_current and reason is None and not expired:
+                from flowmate.knowledge.ingestion import KnowledgeImportState
+
+                checkpoint = load(tx, Checkpoint, task.id)
+                state = KnowledgeImportState.model_validate_json(json.dumps(checkpoint.context_manifest["knowledge_import"]))
+                if (activity.id in checkpoint.pending_activity_ids
+                        and can_publish(tx, run, task, state.destination_dependencies)):
+                    retired_checkpoint = checkpoint
+            publish = not retired_document and not activity.embedding_query_abandoned and lease_current and reason is None and not expired and activity.receipt is None and merged.confirmed and can_publish(
                 tx, run, task, dependencies)
+            abandon_query = (not merged.confirmed and not activity.embedding_query_abandoned
+                and activity.intent.kind == "model" and activity.intent.origin == "runtime"
+                and activity.intent.operation == "embedding.query"
+                and lease_current and reason is None and not expired and can_publish(tx, run, task, dependencies))
+            failed_document = (not merged.confirmed and run.kind == "knowledge"
+                and activity.intent.origin == "runtime" and activity.intent.operation == "embedding.document"
+                and run.state not in TERMINAL)
             normalized = merged if publish or activity.content_committed else merged.model_copy(
                 update={"result": None, "error": merged.error})
             digest = _result_digest(receipt) if receipt.confirmed else activity.result_digest
@@ -952,12 +1002,23 @@ class Scheduler:
                 state=("failed" if merged.error else "succeeded") if merged.confirmed else "uncertain",
                 reserved_units=0 if merged.actual_units is not None else activity.reserved_units,
                 reserved_tokens=0 if known_tokens(merged) is not None else activity.reserved_tokens,
-                content_committed=activity.content_committed or publish)
+                content_committed=activity.content_committed or publish,
+                embedding_query_abandoned=activity.embedding_query_abandoned or abandon_query)
             items = [item.model_copy(update={"state": "done"}) for item in pending_outbox(tx, task.id,
                       operation="activity") if item.activity_id == activity.id]
             change = RuntimeChange(activities=[updated], outbox=items)
             decision = None
-            if publish:
+            if abandon_query:
+                checkpoint = load(tx, Checkpoint, task.id)
+                change = change.model_copy(update={"checkpoints": [bump(checkpoint,
+                    pending_activity_ids=[id for id in checkpoint.pending_activity_ids if id != activity.id])]})
+                decision = StepDecision(kind="continue")
+            elif retired_checkpoint is not None:
+                # 来源已从检查点剔除；只释放原批次等待，不消费向量或执行旧提议。
+                change = change.model_copy(update={"checkpoints": [bump(retired_checkpoint,
+                    pending_activity_ids=[id for id in retired_checkpoint.pending_activity_ids if id != activity.id])]})
+                decision = StepDecision(kind="continue")
+            elif publish:
                 checkpoint = load(tx, Checkpoint, task.id)
                 proposal = propose(checkpoint) if propose else ReceiptCommit(checkpoint=checkpoint)
                 if proposal.checkpoint.task_id != task.id:
@@ -1043,7 +1104,7 @@ class Scheduler:
                         and decision.kind == "complete"
                         and not commit_title(tx, run, activity.intent.arguments, decision.output.summary)):
                     decision = StepDecision(kind="fail", reason="title_authorization_changed")
-            elif activity.intent.operation != OPERATION and lease_current and not run.yield_requested and (not merged.confirmed or (activity.receipt is None and not expired
+            elif not failed_document and not activity.embedding_query_abandoned and activity.intent.operation != OPERATION and lease_current and not run.yield_requested and (not merged.confirmed or (activity.receipt is None and not expired
                                           and run.state in {"queued", "running"}
                                            and task.state in {"queued", "running"})) and (
                                                run.state not in TERMINAL and task.state not in TERMINAL):
@@ -1056,6 +1117,9 @@ class Scheduler:
                     "tasks": [bump(task, state="interrupted", reason=reason)],
                 })
             emit(tx, run, task.id, "activity.received", change)
+            if failed_document:
+                stop_run(tx, load(tx, RunSnapshot, run.id), "failed", "knowledge_document_unknown")
+                return load(tx, TaskSnapshot, task.id)
             if activity.intent.operation == OPERATION and not merged.confirmed and run.state not in TERMINAL:
                 stop_run(tx, run, "failed", "uncertain_activity")
                 return load(tx, TaskSnapshot, task.id)

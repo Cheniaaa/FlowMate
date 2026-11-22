@@ -67,16 +67,18 @@ it('普通页面真实保存项目成员、跨项目保留ID，Run和委派固�
   expect(reads.filter(url => new URL(url).pathname.includes(`/skills/${b.skill_id}`))).toEqual([]);
 
   const pins = { [a.skill_id]: a.content_hash, [personal.skill_id]: personal.content_hash };
-  const start = (sessionId: string, skillVersions: Record<string, string>) => {
+  const start = async (sessionId: string, skillVersions: Record<string, string>) => {
     const command: StartRunCommand = { meta: commandMeta(), data: { agent_profile_id: fixture.primary_id,
       model_profile_id: fixture.model_id, text: 'I4 本地固定版本验收', sources: { skill_versions: skillVersions } } };
-    return client.startRun(sessionId, command);
+    const run = await client.startRun(sessionId, command);
+    if (run.config.kind !== 'agent') throw new Error('成员验收需要生成配置');
+    return { ...run, config: run.config };
   };
   const root = await start(fixture.session_a, { ...pins, [unselected.skill_id]: unselected.content_hash });
   expect(root.sources.skill_versions[a.skill_id]).toBe(a.content_hash);
   expect(root.config.members[member.id].skill_versions).toEqual(pins);
   async function submit(taskId: string, versions: Record<string, string>, allowedTools: string[] = []) {
-    const response = await fetch(`${fixture.connection.base_url}/v3/tasks/${taskId}/submit`, {
+    const response = await fetch(`${fixture.connection.base_url}/v4/tasks/${taskId}/submit`, {
       method: 'POST', headers: { Authorization: `Bearer ${fixture.connection.token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ meta: commandMeta(), data: { work: { kind: 'agent', profile_id: member.id,
         goal: '本地成员接纳', input_refs: [], output_schema: { type: 'object', properties: { answer: { type: 'string' } },

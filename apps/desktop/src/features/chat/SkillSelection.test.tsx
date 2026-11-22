@@ -35,7 +35,7 @@ function server(active = false, scripted = false, alternative = false) {
   ] } };
   let finish: ((response: Response) => void) | undefined;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path === '/capabilities/skills/resolve') return new Promise<Response>(resolve => { finish = resolve; });
     if (init.method === 'PUT') {
       const body = JSON.parse(String(init.body)); writes.push({ path, body });
@@ -82,7 +82,7 @@ function server(active = false, scripted = false, alternative = false) {
     versions: { [secondId]: hash }, dependencies: [], entries: [{ skill_id: secondId, content_hash: hash, name: 'release-note', description: '整理真实发布说明' }],
   }))); } };
 }
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 
 it('能力库异步选择固定打开时会话；切换后只更新原key且名称/版本可移除', { timeout: 15_000 }, async () => {
   const api = server(), drafts = createDraftStore(), user = userEvent.setup();

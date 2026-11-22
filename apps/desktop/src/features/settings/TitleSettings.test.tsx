@@ -5,7 +5,7 @@ import { RuntimeClient } from '../../api/client';
 import { connection, id, model, page, secondId } from '../../test/fixtures';
 import TitleSettings from './TitleSettings';
 
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 afterEach(() => vi.unstubAllGlobals());
 
 it('按项目显示默认本地规则，确认模型目的地和预算后才保存授权', async () => {
@@ -19,9 +19,9 @@ it('按项目显示默认本地规则，确认模型目的地和预算后才保�
       writes.push({ path, body });
       return Response.json({ workspace_id: secondId, version: 1, binding: body.data.binding });
     }
-    if (path === '/v3/workspaces') return Response.json(page(projects));
-    if (path === '/v3/models') return Response.json(page([model]));
-    if (path === '/v3/model-connections') return Response.json(page([connection]));
+    if (path === '/v4/workspaces') return Response.json(page(projects));
+    if (path === '/v4/models') return Response.json(page([model]));
+    if (path === '/v4/model-connections') return Response.json(page([connection]));
     if (path.endsWith('/title-policy')) return Response.json({ workspace_id: path.split('/')[3], version: null, binding: null });
     throw new Error(`未定义查询 ${path}`);
   });
@@ -34,7 +34,7 @@ it('按项目显示默认本地规则，确认模型目的地和预算后才保�
   expect(writes).toEqual([]);
   await user.click(screen.getByRole('button', { name: '授权并保存' }));
   await screen.findByText('标题设置已保存');
-  expect(writes).toEqual([{ path: `/v3/workspaces/${secondId}/title-policy`,
+  expect(writes).toEqual([{ path: `/v4/workspaces/${secondId}/title-policy`,
     body: { meta: { command_id: expect.any(String), expected_version: null }, data: { binding: {
       model_profile_id: model.id, model_version: model.version, connection_version: connection.version,
       endpoint: connection.endpoint, max_requests: 10, max_tokens: 4000, max_cost_units: null,

@@ -16,7 +16,7 @@ Object.defineProperties(HTMLDialogElement.prototype, {
   close: { configurable: true, value(this: HTMLDialogElement) { this.open = false; } },
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); localStorage.clear(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 });
 const session = { id, version: 1, workspace_id: id, title: '会话 A', agent_profile_id: id, kind: 'interaction', archived: false };
 const otherSession = { ...session, id: secondId, title: '会话 B' };
 const draftScope = { kind: 'workspace' as const, workspace_id: id, session_id: null };
@@ -44,7 +44,7 @@ function server(active: 'agent' | 'tool' | 'follow_up' | null = null, questions 
   const workspace = { id, version: 1, name: '项目 A', directory_resource_id: null };
   vi.mocked(invoke).mockImplementation(async name => name === 'select_resources' ? { resources: [resource] } : undefined);
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', ''), method = init.method ?? 'GET';
+    const path = new URL(url).pathname.replace('/v4', ''), method = init.method ?? 'GET';
     const body = init.body ? JSON.parse(init.body as string) : null;
     if (path.endsWith('/resource-coverage')) return json({ allowed: true, destination: connection.endpoint, missing_read: [], missing_model_send: [] });
     requests.push({ path, method, body });
@@ -97,10 +97,10 @@ it('切换同名模型连接后只发送新模型支持的强度，队列保留�
   const other = { ...primary, id, connection_id: relay.id, capabilities: { ...model.capabilities, reasoning_efforts: ['low'] } };
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
-    if (path === '/v3/models') return json(page([primary, other]));
-    if (path === '/v3/model-connections') return json(page([connection, relay]));
-    if (path === `/v3/models/${model.id}/resolved`) return json({ ...modelResolution, ...primary });
-    if (path === `/v3/models/${id}/resolved`) return json({ ...modelResolution, ...other, endpoint: relay.endpoint });
+    if (path === '/v4/models') return json(page([primary, other]));
+    if (path === '/v4/model-connections') return json(page([connection, relay]));
+    if (path === `/v4/models/${model.id}/resolved`) return json({ ...modelResolution, ...primary });
+    if (path === `/v4/models/${id}/resolved`) return json({ ...modelResolution, ...other, endpoint: relay.endpoint });
     return previous(url, init);
   });
   const user = userEvent.setup();
@@ -130,7 +130,7 @@ it('已存在会话恢复最近一轮人工发送的模型，自动总结不覆�
   const earlierRun = { ...run, state: 'completed' };
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const parsed = new URL(url);
-    if (init.method !== 'POST' && parsed.pathname === `/v3/sessions/${id}/runs`) {
+    if (init.method !== 'POST' && parsed.pathname === `/v4/sessions/${id}/runs`) {
       return json({ ...page([earlierRun, followUpRun]), last_model_use: modelUse('9007199254740992', id, humanRun.config.model_profile.id) });
     }
     return previous(url, init);
@@ -142,7 +142,7 @@ it('已存在会话恢复最近一轮人工发送的模型，自动总结不覆�
   const requests: Array<{ data: { model_profile_id: string } }> = [];
   const read = globalThis.fetch;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    if (init.method === 'POST' && new URL(url).pathname === `/v3/sessions/${id}/runs`) {
+    if (init.method === 'POST' && new URL(url).pathname === `/v4/sessions/${id}/runs`) {
       requests.push(JSON.parse(String(init.body)));
     }
     return read(url, init);
@@ -172,7 +172,7 @@ it.each(['accepted', 'project-grant-already-covers', 'send-rejected', 'create-re
     return { resources: cancelPicker ? [] : [draftFile] };
   });
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path === '/capabilities/skills') return json(page([draftSkill]));
     if (path === '/capabilities/skill-exports') return json([]);
     if (path.endsWith('/file')) return json({ skill_id: secondId, content_hash: skillHash, path: 'SKILL.md',
@@ -334,7 +334,7 @@ it.each(['text', 'recipient', 'replacement', 'adopt-pin', 'adopt-pin-changed'] a
   vi.mocked(invoke).mockImplementation(async name => name === 'select_resources'
     ? { resources: picked ? [replacement] : [] } : undefined);
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (adoptPin && path === `/sessions/${id}/messages`) return json(page([{
       id, run_id: run.id, role: 'user', origin: 'conversation', event_id: '1', event_index: 0, activity_id: null,
       private_ref: null, source_dependencies: [], parts: [{ kind: 'text', text: '原文件目标' }],
@@ -439,13 +439,13 @@ it('已接纳的续读发现原文件已变，输入框就近提供选择新版�
   const sent: any[] = [];
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
-    if (path === `/v3/sessions/${id}/messages`) return json(page(messages));
-    if (path === `/v3/sessions/${id}/runs`) {
+    if (path === `/v4/sessions/${id}/messages`) return json(page(messages));
+    if (path === `/v4/sessions/${id}/runs`) {
       if (init.method !== 'POST') return json(page([{ ...run, state: 'completed' }]));
       sent.push(JSON.parse(String(init.body)));
       return json({ ...run, id: secondId, state: 'completed' });
     }
-    if (path === `/v3/runs/${secondId}`) {
+    if (path === `/v4/runs/${secondId}`) {
       return json({ ...await (await previous(url.replace(secondId, id), init)).json(), run: { ...run, id: secondId, state: 'completed' } });
     }
     if (path.endsWith('/run-feedback')) return json(page([]));
@@ -471,8 +471,8 @@ it('当前连接被移除后保留同名模型原选择和输入，阻止直接�
   let removed = false;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
-    if (path === '/v3/models') return json(page([model, sameNameModel]));
-    if (path === '/v3/model-connections') return json(page(removed ? [otherConnection] : [connection, otherConnection]));
+    if (path === '/v4/models') return json(page([model, sameNameModel]));
+    if (path === '/v4/model-connections') return json(page(removed ? [otherConnection] : [connection, otherConnection]));
     return previous(url, init);
   });
   const user = userEvent.setup();
@@ -500,9 +500,9 @@ it('连接被重新配置后重试待确认的原命令时，仍发送原连接�
   let reconfigured = false;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
-    if (path === '/v3/model-connections') return json(page([reconfigured ? changedConnection : connection]));
+    if (path === '/v4/model-connections') return json(page([reconfigured ? changedConnection : connection]));
     if (path.includes('/commands/')) return json({ status: 'not_found', result: null });
-    if (init.method === 'POST' && path === `/v3/sessions/${id}/runs`) {
+    if (init.method === 'POST' && path === `/v4/sessions/${id}/runs`) {
       bodies.push(JSON.parse(String(init.body)));
       if (bodies.length === 1) throw new TypeError('synthetic transport error before dispatch');
       return Response.json({ error: { code: 'version_conflict', safe_message: '模型连接已改变', retryable: false, related_ids: [] } }, { status: 409 });
@@ -536,8 +536,8 @@ it.each([null, model.id])('快捷小窗的新会话使用固定模型或主窗�
   let quick = false;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
-    if (quick && path === '/v3/profiles') return json(page([{ ...agent, default_model_profile_id: pinned }]));
-    if (quick && path === `/v3/workspaces/${id}/snapshot`) {
+    if (quick && path === '/v4/profiles') return json(page([{ ...agent, default_model_profile_id: pinned }]));
+    if (quick && path === `/v4/workspaces/${id}/snapshot`) {
       return json({ ...await (await previous(url, init)).json(), sessions: page([otherSession]),
         recent_model_uses: lastDispatched ? [lastDispatched] : [] });
     }
@@ -564,7 +564,7 @@ it.each([null, model.id])('快捷小窗的新会话使用固定模型或主窗�
   await expectComposerModel(user, pinned ?? id);
   fireEvent.change(screen.getByLabelText('消息'), { target: { value: '窗口冷开后的消息' } });
   await user.click(screen.getByRole('button', { name: '发送' }));
-  await waitFor(() => expect(started[1]).toEqual({ path: `/v3/sessions/${secondId}/runs`, modelId: pinned ?? id }));
+  await waitFor(() => expect(started[1]).toEqual({ path: `/v4/sessions/${secondId}/runs`, modelId: pinned ?? id }));
 });
 
 it('返回项目恢复本窗未建会话草稿，显式选择另一窗创建的会话后才离开草稿', async () => {
@@ -575,15 +575,15 @@ it('返回项目恢复本窗未建会话草稿，显式选择另一窗创建的�
   let createdElsewhere = false;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
-    if (path === '/v3/profiles/default') return json({ ...agent, default_model_profile_id: model.id });
-    if (path === '/v3/workspaces') return json(page([workspaceA, workspaceB]));
-    if (path === '/v3/navigation') return json({
+    if (path === '/v4/profiles/default') return json({ ...agent, default_model_profile_id: model.id });
+    if (path === '/v4/workspaces') return json(page([workspaceA, workspaceB]));
+    if (path === '/v4/navigation') return json({
       default_workspace_id: id, workspaces: page([
         { workspace: workspaceA, sessions: page(createdElsewhere ? [session] : []), pending_count: 0 },
         { workspace: workspaceB, sessions: page([]), pending_count: 0 },
       ]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id,
     });
-    if (path === `/v3/workspaces/${id}/snapshot` || path === `/v3/workspaces/${secondId}/snapshot`) {
+    if (path === `/v4/workspaces/${id}/snapshot` || path === `/v4/workspaces/${secondId}/snapshot`) {
       const value = await (await previous(url.replace(`/workspaces/${secondId}/snapshot`, `/workspaces/${id}/snapshot`), init)).json();
       return json({ ...value, workspace: path.includes(secondId) ? workspaceB : workspaceA,
         sessions: page(path.includes(secondId) || !createdElsewhere ? [] : [session]) });
@@ -614,13 +614,13 @@ it('主窗发送更新项目偏好时，快捷窗正在写的草稿保留原接�
   let quick = false;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
-    if (quick && path === '/v3/profiles') return json(page([agent]));
-    if (quick && path === `/v3/workspaces/${id}/snapshot`) {
+    if (quick && path === '/v4/profiles') return json(page([agent]));
+    if (quick && path === `/v4/workspaces/${id}/snapshot`) {
       return json({ ...await (await previous(url, init)).json(), sessions: page([otherSession]),
         recent_model_uses: lastDispatched ? [lastDispatched] : [] });
     }
     if (path.endsWith('/events')) return new Response(new ReadableStream({ start(controller) { streams.push(controller); } }));
-    if (init.method === 'POST' && path === `/v3/sessions/${id}/runs`) {
+    if (init.method === 'POST' && path === `/v4/sessions/${id}/runs`) {
       lastDispatched = modelUse((BigInt(event.event_id) + 1n).toString(), id, JSON.parse(String(init.body)).data.model_profile_id);
       return json({ ...run, state: 'completed' });
     }
@@ -669,9 +669,9 @@ it('两窗按持久人工运行顺序更新最近使用，迟到的旧运行回�
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
     if (path.endsWith('/events')) return new Response(new ReadableStream({ start(controller) { streams.push(controller); } }));
-    if (init.method === 'POST' && path === `/v3/sessions/${id}/runs`) { sentEarlier = true; return earlierResponse; }
-    if (init.method === 'POST' && path === `/v3/sessions/${secondId}/runs`) return json(laterRun);
-    if (path === `/v3/runs/${secondId}`) return json({ ...await (await previous(url.replace(secondId, id), init)).json(), run: laterRun });
+    if (init.method === 'POST' && path === `/v4/sessions/${id}/runs`) { sentEarlier = true; return earlierResponse; }
+    if (init.method === 'POST' && path === `/v4/sessions/${secondId}/runs`) return json(laterRun);
+    if (path === `/v4/runs/${secondId}`) return json({ ...await (await previous(url.replace(secondId, id), init)).json(), run: laterRun });
     return previous(url, init);
   });
   const main = render(<Conversation client={client} />);
@@ -741,7 +741,7 @@ it.each([false, true])('断线期间保留草稿，重连恢复 Runtime 派发�
       const snapshot = await (await previous(url, init)).json();
       return json({ ...snapshot, watermark: position, recent_model_uses: [dispatched] });
     }
-    if (refresh && init.method !== 'POST' && parsed.pathname === `/v3/sessions/${id}/runs`) {
+    if (refresh && init.method !== 'POST' && parsed.pathname === `/v4/sessions/${id}/runs`) {
       return json({ ...page([]), last_model_use: dispatched });
     }
     return previous(url, init);
@@ -816,11 +816,11 @@ it('跨项目返回恢复草稿 ID；附件尚未同步齐不能把已加载子�
   const other = { id: secondId, version: 1, name: '项目 B', directory_resource_id: null };
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
-    if (path === '/v3/workspaces') return json(page([{ id, version: 1, name: '项目 A', directory_resource_id: null }, other]));
-    if (path === '/v3/navigation') return json({ default_workspace_id: id, workspaces: page([{ workspace: { id, version: 1, name: '项目 A', directory_resource_id: null }, sessions: page([session]), pending_count: 0 }, { workspace: other, sessions: page([{ ...otherSession, workspace_id: secondId }]), pending_count: 0 }]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id });
-    if (path === `/v3/workspaces/${secondId}/snapshot`) return json({ workspace: other, sessions: page([{ ...otherSession, workspace_id: secondId }]),
+    if (path === '/v4/workspaces') return json(page([{ id, version: 1, name: '项目 A', directory_resource_id: null }, other]));
+    if (path === '/v4/navigation') return json({ default_workspace_id: id, workspaces: page([{ workspace: { id, version: 1, name: '项目 A', directory_resource_id: null }, sessions: page([session]), pending_count: 0 }, { workspace: other, sessions: page([{ ...otherSession, workspace_id: secondId }]), pending_count: 0 }]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id });
+    if (path === `/v4/workspaces/${secondId}/snapshot`) return json({ workspace: other, sessions: page([{ ...otherSession, workspace_id: secondId }]),
       active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id });
-    if (path === `/v3/workspaces/${id}/snapshot`) {
+    if (path === `/v4/workspaces/${id}/snapshot`) {
       const value = await (await previous(url, init)).json();
       return json({ ...value, sessions: page([session]), resources: { ...page([resource]), next_cursor: 'remaining-resources' } });
     }
@@ -845,7 +845,7 @@ it('跨项目返回恢复草稿 ID；附件尚未同步齐不能把已加载子�
 it('POST 成功 GET 失败显示已提交详情同步中，显式重试只 GET，不再次创建 Run', async () => {
   const requests = server(); const previous = globalThis.fetch; let fail = true;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    if (new URL(url).pathname === `/v3/runs/${id}` && fail) throw new TypeError('offline');
+    if (new URL(url).pathname === `/v4/runs/${id}` && fail) throw new TypeError('offline');
     return previous(url, init);
   });
   const user = userEvent.setup(); render(<Conversation client={client} />);
@@ -888,7 +888,7 @@ it.each(['late', 'grant-check', 'run-check', 'run-retry'] as const)(
     let savedRunCommand: any;
     const created = { ...run, state: 'completed' as const };
     vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-      const path = new URL(url).pathname.replace('/v3', '');
+      const path = new URL(url).pathname.replace('/v4', '');
       if (path.endsWith('/resource-coverage')) {
         coverageSessions.push(path);
         expect(JSON.parse(String(init.body))).toEqual({ resource_ids: [resource.id], model_profile_id: model.id });
@@ -1014,9 +1014,9 @@ it('导出用途授权待确认时切换会话，后续冻结导出仍归属原�
     }
     if (path.includes('/commands/')) { checks.push(path); return json({ status: 'not_found', result: null }); }
     if (path.endsWith('/grants')) return json(page([]));
-    if (path === `/v3/tasks/${task.id}`) return json(task);
+    if (path === `/v4/tasks/${task.id}`) return json(task);
     if (path.endsWith(`/sessions/${id}/runs`)) return json(page([completed]));
-    if (path === `/v3/runs/${id}`) {
+    if (path === `/v4/runs/${id}`) {
       const detail = await (await previous(url, init)).json();
       return json({ ...detail, run: completed, artifacts: page([artifact]) });
     }
@@ -1035,9 +1035,9 @@ it('导出用途授权待确认时切换会话，后续冻结导出仍归属原�
   await user.click(screen.getByRole('button', { name: '使用原命令重试' }));
   await waitFor(() => expect(commands).toHaveLength(3));
   expect(commands[1]).toEqual(commands[0]);
-  expect(commands[2].path).toBe(`/v3/artifacts/${artifact.id}/export`);
+  expect(commands[2].path).toBe(`/v4/artifacts/${artifact.id}/export`);
   await user.click(screen.getByRole('button', { name: '核对提交状态' }));
-  expect(checks[0]).toContain(`/v3/sessions/${id}/commands/`);
+  expect(checks[0]).toContain(`/v4/sessions/${id}/commands/`);
 });
 
 it('两个窗口各自保留草稿，不逐字同步，也不写 localStorage', async () => {
@@ -1102,9 +1102,9 @@ it('managed不成为当前推进者；后台问答不切会话/模型/来源/草
 it('全局待办定位RunDetail首页外Question，仍使用原Question版本，不错答当前目标', async () => {
   const requests = server('agent'), previous = globalThis.fetch;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    if (new URL(url).pathname === '/v3/inbox') return json(page([{ id: question.id, kind: 'question', workspace_id: id, session_id: id, run_id: id, question: { ...question, version: 5 } }]));
-    if (new URL(url).pathname === `/v3/runs/${id}/questions`) return json(page([{ ...question, version: 6, status: 'answered', answer_message_id: id }]));
-    if (new URL(url).pathname === `/v3/runs/${id}`) {
+    if (new URL(url).pathname === '/v4/inbox') return json(page([{ id: question.id, kind: 'question', workspace_id: id, session_id: id, run_id: id, question: { ...question, version: 5 } }]));
+    if (new URL(url).pathname === `/v4/runs/${id}/questions`) return json(page([{ ...question, version: 6, status: 'answered', answer_message_id: id }]));
+    if (new URL(url).pathname === `/v4/runs/${id}`) {
       const detail = await (await previous(url, init)).json();
       return json({ ...detail, questions: { ...page([]), next_cursor: 'question-tail' } });
     }

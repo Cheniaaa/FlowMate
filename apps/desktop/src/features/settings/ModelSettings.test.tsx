@@ -10,7 +10,7 @@ import Settings from './Settings';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 4 });
 
 it('同名型号可按实际型号选择，续页和保存冲突保留原模型草稿', async () => {
   const first: ModelProfile = { ...model, display_name: '同名模型', model_id: 'Team/Custom-Model',

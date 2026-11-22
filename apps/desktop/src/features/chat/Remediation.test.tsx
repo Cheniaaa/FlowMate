@@ -18,7 +18,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'synthetic', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'synthetic', protocol_version: 4 });
 const workspace = { id, version: 1, name: '原聊天项目', directory_resource_id: null };
 const session = { id, version: 1, title: '原聊天会话', workspace_id: id, agent_profile_id: id, kind: 'interaction' as const, archived: false };
 const snapshot = { workspace, sessions: page([session]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id };

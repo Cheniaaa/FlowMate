@@ -9,11 +9,12 @@ from flowmate.contracts.base import Contract, DomainError, Id, Version
 from flowmate.contracts.settings import Endpoint, ModelProtocol
 
 Method = Literal["credential.resolve", "private.protect", "private.unprotect", "resource.register", "skills.register",
-                 "workspace.create_from_directory", "workspace.directory_command_status", "shutdown"]
+                 "workspace.create_from_directory", "workspace.directory_command_status",
+                 "knowledge.expand_directory", "shutdown"]
 
 
 class HostRequest(Contract):
-    protocol_version: Literal[3] = 3
+    protocol_version: Literal[4] = 4
     request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     # 本地DTO的初值由串行writer覆盖；wire解码仍要求显式正整数。
     stream_seq: int = Field(default=1, ge=1, le=2**64 - 1)
@@ -27,7 +28,7 @@ class HostError(Contract):
 
 
 class HostReply(Contract):
-    protocol_version: Literal[3] = 3
+    protocol_version: Literal[4] = 4
     request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     kind: Literal["reply"] = "reply"
     method: Method
@@ -44,7 +45,7 @@ class HostReply(Contract):
 
 
 class HostEvent(Contract):
-    protocol_version: Literal[3] = 3
+    protocol_version: Literal[4] = 4
     request_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     stream_seq: int = Field(default=1, ge=1, le=2**64 - 1)
     kind: Literal["event"] = "event"
@@ -133,7 +134,7 @@ def decode_frame(data, max_bytes):
             raise ValueError("machine frame requires a single complete line")
         value = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object,
                            parse_constant=_invalid_constant)
-        if not isinstance(value, dict) or value.get("protocol_version") != 3:
+        if not isinstance(value, dict) or value.get("protocol_version") != 4:
             raise ValueError("invalid frame envelope")
         if type(value["protocol_version"]) is not int:
             raise ValueError("invalid protocol version type")

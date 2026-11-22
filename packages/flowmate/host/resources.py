@@ -7,10 +7,14 @@ from typing import Literal
 from pydantic import Field, ValidationError
 
 from flowmate.contracts.base import CommandMeta, Contract, DomainError, Id, Name
+from flowmate.contracts.execution import ScopeDependency
 from flowmate.contracts.scopes import ScopeRef
 from flowmate.contracts.workspaces import WorkspaceDirectoryResult
-from flowmate.policy.contracts import ExportTargetInfo, NativeSelection
+from flowmate.policy.contracts import ExportTargetInfo, NativeSelection, ResourceRecord
+from flowmate.policy.service import _scope
+from flowmate.runtime.transitions import check_scopes
 from flowmate.settings import SettingsService
+from flowmate.tools.files import FileAnchor
 
 
 class _ResourceSelection(Contract):
@@ -27,6 +31,12 @@ class _DirectoryCreation(Contract):
 
 class _DirectoryCommand(Contract):
     command_id: Id
+
+
+class _KnowledgeDirectory(Contract):
+    directory_id: Id
+    cursor: str | None = None
+    limit: int = Field(default=100, ge=1)
 
 
 class HostResources:
@@ -72,6 +82,35 @@ class HostResources:
             except ValidationError:
                 raise DomainError("command_conflict", "命令不属于目录创建") from None
             return {"status": "confirmed", "result": result.model_dump(mode="json")}
+
+    async def expand_knowledge_directory(self, params):
+        try:
+            request = _KnowledgeDirectory.model_validate(params)
+        except ValidationError:
+            raise DomainError("native_selection_invalid", "目录资料清单请求无效") from None
+        if request.limit > self.config.max_selected_files:
+            raise DomainError("native_selection_limit", "目录资料清单超出单页上限")
+        with self.policy.store.transaction(write=False) as tx:
+            row = tx.execute("SELECT document FROM resources WHERE id=?", (request.directory_id,)).fetchone()
+            if row is None:
+                raise DomainError("not_found", "所选目录不存在")
+            directory = ResourceRecord.model_validate_json(row[0])
+            if directory.kind != "directory":
+                raise DomainError("native_selection_kind", "请先选择目录")
+            _scope(tx, directory.scope)
+            dependency = ScopeDependency(scope_id=directory.id, epoch=directory.version)
+            check_scopes(tx, [dependency])
+        page = await asyncio.to_thread(self.files.list_files,
+            FileAnchor(directory.canonical_path, directory.file_identity, "directory"),
+            cursor=request.cursor, limit=request.limit)
+        with self.policy.store.transaction() as tx:
+            _scope(tx, directory.scope)
+            check_scopes(tx, [dependency])
+            resources = [self.policy.register_selection_tx(tx, NativeSelection(scope=directory.scope,
+                kind="file", canonical_path=entry.anchor.canonical_path, file_identity=entry.anchor.identity))
+                for entry in page.items]
+        return {"resources": [resource.model_dump(mode="json") for resource in resources],
+            "next_cursor": page.next_cursor}
 
     async def register(self, params):
         try:

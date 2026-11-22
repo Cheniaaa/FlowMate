@@ -382,6 +382,15 @@ export function createRuntimeStore(client: RuntimeClient) {
             await Promise.all([...affected].filter((runId): runId is string => !!runId && (!!snapshot.runs[runId] || referenced.has(runId)))
               .map(runId => refreshRun(runId, signal)));
           }
+          if (event.kind === 'durable' && event.event.kind === 'accounting.settled' && event.event.run_id) {
+            // 退休回执只有 Run 身份；费用仍读权威详情，不依赖公开载荷携带预算。
+            const runId = event.event.run_id, run = snapshot.runs[runId], summary = snapshot.runSummaries[runId];
+            const workspaceId = run?.workspace_id ?? summary?.workspace_id;
+            const sessionId = run?.interaction_session_id ?? summary?.session_id;
+            if (workspaceId && !snapshot.deletedWorkspaces[workspaceId] && (!sessionId || !snapshot.deletedSessions[sessionId])) {
+              await refreshRun(runId, signal);
+            }
+          }
           if (!signal.aborted) await handlers.event(event);
         },
         connection: async state => {

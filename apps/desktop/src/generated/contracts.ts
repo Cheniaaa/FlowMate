@@ -302,6 +302,9 @@ export type AgentProfilePage = AgentProfilePageSchema.AgentProfilePage;
 
 export namespace AgentResultSchema {
   export type ArtifactIds = string[];
+  export type EvidenceId = string;
+  export type Marker = number;
+  export type Citations = CitationRef[];
   export type EvidenceRefs = string[];
   export type Reason = string;
   export type ResultVersion = number;
@@ -318,6 +321,7 @@ export namespace AgentResultSchema {
 
   export interface AgentResult {
     artifact_ids: ArtifactIds;
+    citations?: Citations;
     evidence_refs: EvidenceRefs;
     handled_failures: HandledFailures;
     status: Status;
@@ -325,6 +329,10 @@ export namespace AgentResultSchema {
     summary: Summary;
     unresolved: Unresolved;
     verification: Verification;
+  }
+  export interface CitationRef {
+    evidence_id: EvidenceId;
+    marker: Marker;
   }
   export interface FailureDisposition {
     reason: Reason;
@@ -947,22 +955,24 @@ export namespace DataUseGrantSchema {
   export type Destination = string | null;
   export type Epoch = number;
   export type Id = string;
+  export type Kind = 'user_global' | 'workspace' | 'session';
+  export type SessionId = string | null;
+  export type WorkspaceId = string | null;
+  export type KnowledgeScopes = ScopeRef[];
+  export type KnowledgeSourceIds = string[];
   export type CatalogHash = string;
   export type ConfigRevision = number;
   export type Destination1 = string;
   export type OriginalName = string;
   export type ServerId = string;
   export type McpQueries = McpToolSnapshot[];
-  export type Kind = 'user_global' | 'workspace' | 'session';
-  export type SessionId = string | null;
-  export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
   /**
    * @minItems 1
    */
   export type Purposes = [
-    'read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send',
-    ...('read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send')[]
+    'read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send',
+    ...('read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send')[]
   ];
   export type ResourceIds = string[];
   export type Status = 'active' | 'revoked';
@@ -972,6 +982,8 @@ export namespace DataUseGrantSchema {
     destination: Destination;
     epoch: Epoch;
     id: Id;
+    knowledge_scopes?: KnowledgeScopes;
+    knowledge_source_ids?: KnowledgeSourceIds;
     mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes;
@@ -980,6 +992,11 @@ export namespace DataUseGrantSchema {
     scope: ScopeRef;
     status: Status;
     version: Version;
+  }
+  export interface ScopeRef {
+    kind: Kind;
+    session_id: SessionId;
+    workspace_id: WorkspaceId;
   }
   export interface McpToolSnapshot {
     catalog_hash: CatalogHash;
@@ -994,11 +1011,6 @@ export namespace DataUseGrantSchema {
      * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
      */
     [k: string]: number;
-  }
-  export interface ScopeRef {
-    kind: Kind;
-    session_id: SessionId;
-    workspace_id: WorkspaceId;
   }
 
 }
@@ -1052,6 +1064,162 @@ export namespace DiscardSkillCandidateCommandSchema {
 }
 export type DiscardSkillCandidateCommand = DiscardSkillCandidateCommandSchema.DiscardSkillCandidateCommand;
 
+export namespace EmbeddingProfileSchema {
+  export type ConnectionId = string | null;
+  export type Dimensions = number;
+  export type DisplayName = string;
+  export type DocumentPrefix = string;
+  export type Id = string;
+  export type LocalResourceId = string | null;
+  export type ModelId = string;
+  export type ModelRevision = string | null;
+  export type Currency = 'USD';
+  export type InputPerMillion = string | null;
+  export type ModelId1 = string | null;
+  export type Multiplier = string | null;
+  export type ProviderId = string | null;
+  export type Provider = 'openai' | 'fastembed';
+  export type QueryPrefix = string;
+  export type RequestDimensions = boolean;
+  export type RequestTimeoutSeconds = number;
+  export type Revision = number;
+
+  export interface EmbeddingProfile {
+    connection_id: ConnectionId;
+    dimensions: Dimensions;
+    display_name: DisplayName;
+    document_prefix: DocumentPrefix;
+    id: Id;
+    local_resource_id: LocalResourceId;
+    model_id: ModelId;
+    model_revision: ModelRevision;
+    pricing: EmbeddingPricing;
+    provider: Provider;
+    query_prefix: QueryPrefix;
+    request_dimensions: RequestDimensions;
+    request_timeout_seconds: RequestTimeoutSeconds;
+    revision: Revision;
+  }
+  export interface EmbeddingPricing {
+    currency: Currency;
+    input_per_million: InputPerMillion;
+    model_id: ModelId1;
+    multiplier: Multiplier;
+    provider_id: ProviderId;
+  }
+
+}
+export type EmbeddingProfile = EmbeddingProfileSchema.EmbeddingProfile;
+
+export namespace EmbeddingProfilePageSchema {
+  export type ConnectionId = string | null;
+  export type Dimensions = number;
+  export type DisplayName = string;
+  export type DocumentPrefix = string;
+  export type Id = string;
+  export type LocalResourceId = string | null;
+  export type ModelId = string;
+  export type ModelRevision = string | null;
+  export type Currency = 'USD';
+  export type InputPerMillion = string | null;
+  export type ModelId1 = string | null;
+  export type Multiplier = string | null;
+  export type ProviderId = string | null;
+  export type Provider = 'openai' | 'fastembed';
+  export type QueryPrefix = string;
+  export type RequestDimensions = boolean;
+  export type RequestTimeoutSeconds = number;
+  export type Revision = number;
+  export type Items = EmbeddingProfile[];
+  export type NextCursor = string | null;
+  export type Watermark = string;
+
+  export interface EmbeddingProfilePage {
+    items: Items;
+    next_cursor: NextCursor;
+    watermark: Watermark;
+  }
+  export interface EmbeddingProfile {
+    connection_id: ConnectionId;
+    dimensions: Dimensions;
+    display_name: DisplayName;
+    document_prefix: DocumentPrefix;
+    id: Id;
+    local_resource_id: LocalResourceId;
+    model_id: ModelId;
+    model_revision: ModelRevision;
+    pricing: EmbeddingPricing;
+    provider: Provider;
+    query_prefix: QueryPrefix;
+    request_dimensions: RequestDimensions;
+    request_timeout_seconds: RequestTimeoutSeconds;
+    revision: Revision;
+  }
+  export interface EmbeddingPricing {
+    currency: Currency;
+    input_per_million: InputPerMillion;
+    model_id: ModelId1;
+    multiplier: Multiplier;
+    provider_id: ProviderId;
+  }
+
+}
+export type EmbeddingProfilePage = EmbeddingProfilePageSchema.EmbeddingProfilePage;
+
+export namespace EmbeddingProfileViewSchema {
+  export type Destination = string | null;
+  export type LocalRuntimeAvailable = boolean | null;
+  export type ConnectionId = string | null;
+  export type Dimensions = number;
+  export type DisplayName = string;
+  export type DocumentPrefix = string;
+  export type Id = string;
+  export type LocalResourceId = string | null;
+  export type ModelId = string;
+  export type ModelRevision = string | null;
+  export type Currency = 'USD';
+  export type InputPerMillion = string | null;
+  export type ModelId1 = string | null;
+  export type Multiplier = string | null;
+  export type ProviderId = string | null;
+  export type Provider = 'openai' | 'fastembed';
+  export type QueryPrefix = string;
+  export type RequestDimensions = boolean;
+  export type RequestTimeoutSeconds = number;
+  export type Revision = number;
+
+  export interface EmbeddingProfileView {
+    destination: Destination;
+    local_runtime_available: LocalRuntimeAvailable;
+    profile: EmbeddingProfile;
+  }
+  export interface EmbeddingProfile {
+    connection_id: ConnectionId;
+    dimensions: Dimensions;
+    display_name: DisplayName;
+    document_prefix: DocumentPrefix;
+    id: Id;
+    local_resource_id: LocalResourceId;
+    model_id: ModelId;
+    model_revision: ModelRevision;
+    pricing: EmbeddingPricing;
+    provider: Provider;
+    query_prefix: QueryPrefix;
+    request_dimensions: RequestDimensions;
+    request_timeout_seconds: RequestTimeoutSeconds;
+    revision: Revision;
+  }
+  export interface EmbeddingPricing {
+    currency: Currency;
+    input_per_million: InputPerMillion;
+    model_id: ModelId1;
+    multiplier: Multiplier;
+    provider_id: ProviderId;
+  }
+
+}
+export type EmbeddingProfileView = EmbeddingProfileViewSchema.EmbeddingProfileView;
+
 export namespace ErrorEnvelopeSchema {
   export type Code = string;
   export type RelatedIds = string[];
@@ -1070,6 +1238,115 @@ export namespace ErrorEnvelopeSchema {
 
 }
 export type ErrorEnvelope = ErrorEnvelopeSchema.ErrorEnvelope;
+
+export namespace EvidenceSchema {
+  export type ChunkId = string;
+  export type ChunkerVersion = string;
+  export type ContentHash = string;
+  export type Id = string;
+  export type Revision = number;
+  export type Excerpt = string;
+  export type Id1 = string;
+  export type IndexGeneration = string;
+  export type EndChar = number;
+  export type EndLine = number;
+  export type HeadingPath = string[];
+  export type StartChar = number;
+  export type StartLine = number;
+  export type Method = 'bm25' | 'dense' | 'hybrid' | 'read';
+  export type ParserVersion = string;
+  export type SourceId = string;
+  export type SourceVersion = number;
+
+  export interface Evidence {
+    chunk_id: ChunkId;
+    chunker_version: ChunkerVersion;
+    content_hash: ContentHash;
+    embedding_profile: EmbeddingProfileRef | null;
+    excerpt: Excerpt;
+    id: Id1;
+    index_generation: IndexGeneration;
+    locator: TextLocator;
+    method: Method;
+    parser_version: ParserVersion;
+    source_id: SourceId;
+    source_version: SourceVersion;
+  }
+  export interface EmbeddingProfileRef {
+    id: Id;
+    revision: Revision;
+  }
+  export interface TextLocator {
+    end_char: EndChar;
+    end_line: EndLine;
+    heading_path: HeadingPath;
+    start_char: StartChar;
+    start_line: StartLine;
+  }
+
+}
+export type Evidence = EvidenceSchema.Evidence;
+
+export namespace EvidencePageSchema {
+  export type CurrentVersion = number | null;
+  export type ChunkId = string;
+  export type ChunkerVersion = string;
+  export type ContentHash = string;
+  export type Id = string;
+  export type Revision = number;
+  export type Excerpt = string;
+  export type Id1 = string;
+  export type IndexGeneration = string;
+  export type EndChar = number;
+  export type EndLine = number;
+  export type HeadingPath = string[];
+  export type StartChar = number;
+  export type StartLine = number;
+  export type Method = 'bm25' | 'dense' | 'hybrid' | 'read';
+  export type ParserVersion = string;
+  export type SourceId = string;
+  export type SourceVersion = number;
+  export type NextOffset = number | null;
+  export type Offset = number;
+  export type Text = string;
+  export type TotalChars = number;
+
+  export interface EvidencePage {
+    current_version: CurrentVersion;
+    evidence: Evidence;
+    next_offset: NextOffset;
+    offset: Offset;
+    text: Text;
+    total_chars: TotalChars;
+  }
+  export interface Evidence {
+    chunk_id: ChunkId;
+    chunker_version: ChunkerVersion;
+    content_hash: ContentHash;
+    embedding_profile: EmbeddingProfileRef | null;
+    excerpt: Excerpt;
+    id: Id1;
+    index_generation: IndexGeneration;
+    locator: TextLocator;
+    method: Method;
+    parser_version: ParserVersion;
+    source_id: SourceId;
+    source_version: SourceVersion;
+  }
+  export interface EmbeddingProfileRef {
+    id: Id;
+    revision: Revision;
+  }
+  export interface TextLocator {
+    end_char: EndChar;
+    end_line: EndLine;
+    heading_path: HeadingPath;
+    start_char: StartChar;
+    start_line: StartLine;
+  }
+
+}
+export type EvidencePage = EvidencePageSchema.EvidencePage;
 
 export namespace ExecutionEnvironmentCommandStatusSchema {
   export type CheckedAt = string | null;
@@ -1304,22 +1581,24 @@ export namespace GrantPageSchema {
   export type Destination = string | null;
   export type Epoch = number;
   export type Id = string;
+  export type Kind = 'user_global' | 'workspace' | 'session';
+  export type SessionId = string | null;
+  export type WorkspaceId = string | null;
+  export type KnowledgeScopes = ScopeRef[];
+  export type KnowledgeSourceIds = string[];
   export type CatalogHash = string;
   export type ConfigRevision = number;
   export type Destination1 = string;
   export type OriginalName = string;
   export type ServerId = string;
   export type McpQueries = McpToolSnapshot[];
-  export type Kind = 'user_global' | 'workspace' | 'session';
-  export type SessionId = string | null;
-  export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
   /**
    * @minItems 1
    */
   export type Purposes = [
-    'read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send',
-    ...('read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send')[]
+    'read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send',
+    ...('read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send')[]
   ];
   export type ResourceIds = string[];
   export type Status = 'active' | 'revoked';
@@ -1337,6 +1616,8 @@ export namespace GrantPageSchema {
     destination: Destination;
     epoch: Epoch;
     id: Id;
+    knowledge_scopes?: KnowledgeScopes;
+    knowledge_source_ids?: KnowledgeSourceIds;
     mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes;
@@ -1345,6 +1626,11 @@ export namespace GrantPageSchema {
     scope: ScopeRef;
     status: Status;
     version: Version;
+  }
+  export interface ScopeRef {
+    kind: Kind;
+    session_id: SessionId;
+    workspace_id: WorkspaceId;
   }
   export interface McpToolSnapshot {
     catalog_hash: CatalogHash;
@@ -1360,33 +1646,30 @@ export namespace GrantPageSchema {
      */
     [k: string]: number;
   }
-  export interface ScopeRef {
-    kind: Kind;
-    session_id: SessionId;
-    workspace_id: WorkspaceId;
-  }
 
 }
 export type GrantPage = GrantPageSchema.GrantPage;
 
 export namespace GrantRequestSchema {
   export type Destination = string | null;
+  export type Kind = 'user_global' | 'workspace' | 'session';
+  export type SessionId = string | null;
+  export type WorkspaceId = string | null;
+  export type KnowledgeScopes = ScopeRef[];
+  export type KnowledgeSourceIds = string[];
   export type CatalogHash = string;
   export type ConfigRevision = number;
   export type Destination1 = string;
   export type OriginalName = string;
   export type ServerId = string;
   export type McpQueries = McpToolSnapshot[];
-  export type Kind = 'user_global' | 'workspace' | 'session';
-  export type SessionId = string | null;
-  export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
   /**
    * @minItems 1
    */
   export type Purposes = [
-    'read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send',
-    ...('read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send')[]
+    'read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send',
+    ...('read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send')[]
   ];
   export type ResourceIds = string[];
   export type CommandId = string;
@@ -1398,12 +1681,19 @@ export namespace GrantRequestSchema {
   }
   export interface GrantCommand {
     destination?: Destination;
+    knowledge_scopes?: KnowledgeScopes;
+    knowledge_source_ids?: KnowledgeSourceIds;
     mcp_queries?: McpQueries;
     mcp_versions?: McpVersions;
     memory_scopes?: MemoryScopes;
     purposes: Purposes;
     resource_ids?: ResourceIds;
     scope: ScopeRef;
+  }
+  export interface ScopeRef {
+    kind: Kind;
+    session_id?: SessionId;
+    workspace_id?: WorkspaceId;
   }
   export interface McpToolSnapshot {
     catalog_hash: CatalogHash;
@@ -1419,11 +1709,6 @@ export namespace GrantRequestSchema {
      */
     [k: string]: number;
   }
-  export interface ScopeRef {
-    kind: Kind;
-    session_id?: SessionId;
-    workspace_id?: WorkspaceId;
-  }
   export interface CommandMeta {
     command_id?: CommandId;
     expected_version?: ExpectedVersion;
@@ -1433,9 +1718,9 @@ export namespace GrantRequestSchema {
 export type GrantRequest = GrantRequestSchema.GrantRequest;
 
 export namespace HealthSchema {
-  export type ApiVersion = 3;
+  export type ApiVersion = 4;
   export type RuntimeVersion = string;
-  export type SchemaVersion = 3;
+  export type SchemaVersion = 4;
 
   export interface Health {
     api_version: ApiVersion;
@@ -1709,6 +1994,752 @@ export namespace JoinPageSchema {
 }
 export type JoinPage = JoinPageSchema.JoinPage;
 
+export namespace KnowledgeCancelCommandSchema {
+  export type CommandId = string;
+  export type ExpectedVersion = number | null;
+
+  export interface KnowledgeCancelCommand {
+    data: KnowledgeCancel;
+    meta: CommandMeta;
+  }
+  export interface KnowledgeCancel {}
+  export interface CommandMeta {
+    command_id?: CommandId;
+    expected_version?: ExpectedVersion;
+  }
+
+}
+export type KnowledgeCancelCommand = KnowledgeCancelCommandSchema.KnowledgeCancelCommand;
+
+export namespace KnowledgeImportCommandSchema {
+  export type DeadlineSeconds = number;
+  export type MaxCostUnits = string | null;
+  export type MaxDelegationDepth = number;
+  export type MaxModelRequests = number;
+  export type MaxParallelAgents = number;
+  export type MaxSteps = number;
+  export type MaxTasks = number;
+  export type MaxTotalTokens = number | null;
+  /**
+   * @maxItems 200
+   */
+  export type ResourceIds = string[];
+  export type SourceId = string | null;
+  export type CommandId = string;
+  export type ExpectedVersion = number | null;
+
+  export interface KnowledgeImportCommand {
+    data: KnowledgeImportRequest;
+    meta: CommandMeta;
+  }
+  export interface KnowledgeImportRequest {
+    limits?: RunLimits;
+    resource_ids?: ResourceIds;
+    source_id?: SourceId;
+  }
+  export interface RunLimits {
+    deadline_seconds?: DeadlineSeconds;
+    max_cost_units?: MaxCostUnits;
+    max_delegation_depth?: MaxDelegationDepth;
+    max_model_requests?: MaxModelRequests;
+    max_parallel_agents?: MaxParallelAgents;
+    max_steps?: MaxSteps;
+    max_tasks?: MaxTasks;
+    max_total_tokens?: MaxTotalTokens;
+  }
+  export interface CommandMeta {
+    command_id?: CommandId;
+    expected_version?: ExpectedVersion;
+  }
+
+}
+export type KnowledgeImportCommand = KnowledgeImportCommandSchema.KnowledgeImportCommand;
+
+export namespace KnowledgeImportReceiptSchema {
+  export type CommandId = string;
+  export type CommandId1 = string;
+  export type CreatedAt = string;
+  export type Id = string;
+  export type Kind = 'import' | 'rebuild';
+  export type DeadlineSeconds = number;
+  export type MaxCostUnits = string | null;
+  export type MaxDelegationDepth = number;
+  export type MaxModelRequests = number;
+  export type MaxParallelAgents = number;
+  export type MaxSteps = number;
+  export type MaxTasks = number;
+  export type MaxTotalTokens = number | null;
+  export type Reason = string | null;
+  export type Revision = number;
+  export type SourceId = string | null;
+  export type SourceVersion = number | null;
+  export type Status = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  export type TargetGeneration = string | null;
+  export type Id1 = string;
+  export type Revision1 = number;
+  export type Lifetime = 'run_bound' | 'managed';
+  export type RunId = string;
+  export type SubmittedState =
+    | 'queued'
+    | 'running'
+    | 'waiting_user'
+    | 'waiting_approval'
+    | 'waiting_children'
+    | 'interrupted'
+    | 'blocked_incompatible'
+    | 'completed'
+    | 'failed'
+    | 'cancelled';
+  export type TaskId = string;
+  export type WorkspaceId = string;
+  export type Jobs = KnowledgeJob[];
+  export type Reason1 = string;
+  export type ResourceId = string;
+  export type Rejected = RejectedKnowledgeFile[];
+
+  export interface KnowledgeImportReceipt {
+    command_id: CommandId;
+    jobs: Jobs;
+    rejected: Rejected;
+  }
+  export interface KnowledgeJob {
+    admission_generations: AdmissionGenerations;
+    command_id: CommandId1;
+    created_at: CreatedAt;
+    id: Id;
+    kind: Kind;
+    limits: RunLimits;
+    reason: Reason;
+    revision: Revision;
+    source_id: SourceId;
+    source_version: SourceVersion;
+    status: Status;
+    target_generation?: TargetGeneration;
+    target_profile?: EmbeddingProfileRef | null;
+    task: TaskHandle | null;
+    workspace_id: WorkspaceId;
+  }
+  export interface AdmissionGenerations {
+    /**
+     * This interface was referenced by `AdmissionGenerations`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface RunLimits {
+    deadline_seconds: DeadlineSeconds;
+    max_cost_units: MaxCostUnits;
+    max_delegation_depth: MaxDelegationDepth;
+    max_model_requests: MaxModelRequests;
+    max_parallel_agents: MaxParallelAgents;
+    max_steps: MaxSteps;
+    max_tasks: MaxTasks;
+    max_total_tokens: MaxTotalTokens;
+  }
+  export interface EmbeddingProfileRef {
+    id: Id1;
+    revision: Revision1;
+  }
+  export interface TaskHandle {
+    lifetime: Lifetime;
+    run_id: RunId;
+    submitted_state: SubmittedState;
+    task_id: TaskId;
+  }
+  export interface RejectedKnowledgeFile {
+    reason: Reason1;
+    resource_id: ResourceId;
+  }
+
+}
+export type KnowledgeImportReceipt = KnowledgeImportReceiptSchema.KnowledgeImportReceipt;
+
+export namespace KnowledgeJobSchema {
+  export type CommandId = string;
+  export type CreatedAt = string;
+  export type Id = string;
+  export type Kind = 'import' | 'rebuild';
+  export type DeadlineSeconds = number;
+  export type MaxCostUnits = string | null;
+  export type MaxDelegationDepth = number;
+  export type MaxModelRequests = number;
+  export type MaxParallelAgents = number;
+  export type MaxSteps = number;
+  export type MaxTasks = number;
+  export type MaxTotalTokens = number | null;
+  export type Reason = string | null;
+  export type Revision = number;
+  export type SourceId = string | null;
+  export type SourceVersion = number | null;
+  export type Status = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  export type TargetGeneration = string | null;
+  export type Id1 = string;
+  export type Revision1 = number;
+  export type Lifetime = 'run_bound' | 'managed';
+  export type RunId = string;
+  export type SubmittedState =
+    | 'queued'
+    | 'running'
+    | 'waiting_user'
+    | 'waiting_approval'
+    | 'waiting_children'
+    | 'interrupted'
+    | 'blocked_incompatible'
+    | 'completed'
+    | 'failed'
+    | 'cancelled';
+  export type TaskId = string;
+  export type WorkspaceId = string;
+
+  export interface KnowledgeJob {
+    admission_generations: AdmissionGenerations;
+    command_id: CommandId;
+    created_at: CreatedAt;
+    id: Id;
+    kind: Kind;
+    limits: RunLimits;
+    reason: Reason;
+    revision: Revision;
+    source_id: SourceId;
+    source_version: SourceVersion;
+    status: Status;
+    target_generation?: TargetGeneration;
+    target_profile?: EmbeddingProfileRef | null;
+    task: TaskHandle | null;
+    workspace_id: WorkspaceId;
+  }
+  export interface AdmissionGenerations {
+    /**
+     * This interface was referenced by `AdmissionGenerations`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface RunLimits {
+    deadline_seconds: DeadlineSeconds;
+    max_cost_units: MaxCostUnits;
+    max_delegation_depth: MaxDelegationDepth;
+    max_model_requests: MaxModelRequests;
+    max_parallel_agents: MaxParallelAgents;
+    max_steps: MaxSteps;
+    max_tasks: MaxTasks;
+    max_total_tokens: MaxTotalTokens;
+  }
+  export interface EmbeddingProfileRef {
+    id: Id1;
+    revision: Revision1;
+  }
+  export interface TaskHandle {
+    lifetime: Lifetime;
+    run_id: RunId;
+    submitted_state: SubmittedState;
+    task_id: TaskId;
+  }
+
+}
+export type KnowledgeJob = KnowledgeJobSchema.KnowledgeJob;
+
+export namespace KnowledgeJobPageSchema {
+  export type CommandId = string;
+  export type CreatedAt = string;
+  export type Id = string;
+  export type Kind = 'import' | 'rebuild';
+  export type DeadlineSeconds = number;
+  export type MaxCostUnits = string | null;
+  export type MaxDelegationDepth = number;
+  export type MaxModelRequests = number;
+  export type MaxParallelAgents = number;
+  export type MaxSteps = number;
+  export type MaxTasks = number;
+  export type MaxTotalTokens = number | null;
+  export type Reason = string | null;
+  export type Revision = number;
+  export type SourceId = string | null;
+  export type SourceVersion = number | null;
+  export type Status = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  export type TargetGeneration = string | null;
+  export type Id1 = string;
+  export type Revision1 = number;
+  export type Lifetime = 'run_bound' | 'managed';
+  export type RunId = string;
+  export type SubmittedState =
+    | 'queued'
+    | 'running'
+    | 'waiting_user'
+    | 'waiting_approval'
+    | 'waiting_children'
+    | 'interrupted'
+    | 'blocked_incompatible'
+    | 'completed'
+    | 'failed'
+    | 'cancelled';
+  export type TaskId = string;
+  export type WorkspaceId = string;
+  export type Items = KnowledgeJob[];
+  export type NextCursor = string | null;
+  export type Watermark = string;
+
+  export interface KnowledgeJobPage {
+    items: Items;
+    next_cursor: NextCursor;
+    watermark: Watermark;
+  }
+  export interface KnowledgeJob {
+    admission_generations: AdmissionGenerations;
+    command_id: CommandId;
+    created_at: CreatedAt;
+    id: Id;
+    kind: Kind;
+    limits: RunLimits;
+    reason: Reason;
+    revision: Revision;
+    source_id: SourceId;
+    source_version: SourceVersion;
+    status: Status;
+    target_generation?: TargetGeneration;
+    target_profile?: EmbeddingProfileRef | null;
+    task: TaskHandle | null;
+    workspace_id: WorkspaceId;
+  }
+  export interface AdmissionGenerations {
+    /**
+     * This interface was referenced by `AdmissionGenerations`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface RunLimits {
+    deadline_seconds: DeadlineSeconds;
+    max_cost_units: MaxCostUnits;
+    max_delegation_depth: MaxDelegationDepth;
+    max_model_requests: MaxModelRequests;
+    max_parallel_agents: MaxParallelAgents;
+    max_steps: MaxSteps;
+    max_tasks: MaxTasks;
+    max_total_tokens: MaxTotalTokens;
+  }
+  export interface EmbeddingProfileRef {
+    id: Id1;
+    revision: Revision1;
+  }
+  export interface TaskHandle {
+    lifetime: Lifetime;
+    run_id: RunId;
+    submitted_state: SubmittedState;
+    task_id: TaskId;
+  }
+
+}
+export type KnowledgeJobPage = KnowledgeJobPageSchema.KnowledgeJobPage;
+
+export namespace KnowledgeNoticeSchema {
+  export type SettingsRevision = number | null;
+  export type WorkspaceId = string | null;
+
+  export interface KnowledgeNotice {
+    job_revisions: JobRevisions;
+    profile_revisions: ProfileRevisions;
+    settings_revision: SettingsRevision;
+    source_revisions: SourceRevisions;
+    workspace_id: WorkspaceId;
+  }
+  export interface JobRevisions {
+    /**
+     * This interface was referenced by `JobRevisions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface ProfileRevisions {
+    /**
+     * This interface was referenced by `ProfileRevisions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface SourceRevisions {
+    /**
+     * This interface was referenced by `SourceRevisions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+
+}
+export type KnowledgeNotice = KnowledgeNoticeSchema.KnowledgeNotice;
+
+export namespace KnowledgeResultSchema {
+  export type Error = string | null;
+  export type ChunkId = string;
+  export type ChunkerVersion = string;
+  export type ContentHash = string;
+  export type Id = string;
+  export type Revision = number;
+  export type Excerpt = string;
+  export type Id1 = string;
+  export type IndexGeneration = string;
+  export type EndChar = number;
+  export type EndLine = number;
+  export type HeadingPath = string[];
+  export type StartChar = number;
+  export type StartLine = number;
+  export type Method = 'bm25' | 'dense' | 'hybrid' | 'read';
+  export type ParserVersion = string;
+  export type SourceId = string;
+  export type SourceVersion = number;
+  export type Evidence = Evidence1[];
+  export type Mode = 'bm25' | 'dense' | 'hybrid' | 'none';
+  export type Notices = string[];
+  export type ActiveVersion = number | null;
+  export type CleanupReason = ('index_cleanup_failed' | 'content_cleanup_failed' | 'storage_checkpoint_pending') | null;
+  export type CleanupStatus = 'none' | 'pending' | 'failed' | 'complete';
+  export type Id2 = string;
+  export type Label = string;
+  export type Revision1 = number;
+  export type Status = 'pending' | 'active' | 'failed' | 'removed' | 'revoked' | 'deleted';
+  export type WorkspaceId = string;
+  export type Sources = KnowledgeSource[];
+  export type Status1 = 'ok' | 'partial' | 'error';
+
+  export interface KnowledgeResult {
+    error: Error;
+    evidence: Evidence;
+    mode: Mode;
+    notices: Notices;
+    sources: Sources;
+    status: Status1;
+  }
+  export interface Evidence1 {
+    chunk_id: ChunkId;
+    chunker_version: ChunkerVersion;
+    content_hash: ContentHash;
+    embedding_profile: EmbeddingProfileRef | null;
+    excerpt: Excerpt;
+    id: Id1;
+    index_generation: IndexGeneration;
+    locator: TextLocator;
+    method: Method;
+    parser_version: ParserVersion;
+    source_id: SourceId;
+    source_version: SourceVersion;
+  }
+  export interface EmbeddingProfileRef {
+    id: Id;
+    revision: Revision;
+  }
+  export interface TextLocator {
+    end_char: EndChar;
+    end_line: EndLine;
+    heading_path: HeadingPath;
+    start_char: StartChar;
+    start_line: StartLine;
+  }
+  export interface KnowledgeSource {
+    active_version: ActiveVersion;
+    cleanup_reason: CleanupReason;
+    cleanup_status: CleanupStatus;
+    id: Id2;
+    label: Label;
+    revision: Revision1;
+    status: Status;
+    workspace_id: WorkspaceId;
+  }
+
+}
+export type KnowledgeResult = KnowledgeResultSchema.KnowledgeResult;
+
+export namespace KnowledgeSettingsSchema {
+  export type Id = string;
+  export type Revision = number;
+  export type IndexGeneration = string;
+  export type RebuildJobId = string | null;
+  export type Revision1 = number;
+  export type WorkspaceId = string;
+
+  export interface KnowledgeSettings {
+    active_profile: EmbeddingProfileRef | null;
+    desired_profile: EmbeddingProfileRef | null;
+    index_generation: IndexGeneration;
+    rebuild_job_id: RebuildJobId;
+    revision: Revision1;
+    workspace_id: WorkspaceId;
+  }
+  export interface EmbeddingProfileRef {
+    id: Id;
+    revision: Revision;
+  }
+
+}
+export type KnowledgeSettings = KnowledgeSettingsSchema.KnowledgeSettings;
+
+export namespace KnowledgeSourceSchema {
+  export type ActiveVersion = number | null;
+  export type CleanupReason = ('index_cleanup_failed' | 'content_cleanup_failed' | 'storage_checkpoint_pending') | null;
+  export type CleanupStatus = 'none' | 'pending' | 'failed' | 'complete';
+  export type Id = string;
+  export type Label = string;
+  export type Revision = number;
+  export type Status = 'pending' | 'active' | 'failed' | 'removed' | 'revoked' | 'deleted';
+  export type WorkspaceId = string;
+
+  export interface KnowledgeSource {
+    active_version: ActiveVersion;
+    cleanup_reason: CleanupReason;
+    cleanup_status: CleanupStatus;
+    id: Id;
+    label: Label;
+    revision: Revision;
+    status: Status;
+    workspace_id: WorkspaceId;
+  }
+
+}
+export type KnowledgeSource = KnowledgeSourceSchema.KnowledgeSource;
+
+export namespace KnowledgeSourceActionCommandSchema {
+  export type Action = 'remove' | 'revoke' | 'delete';
+  export type CommandId = string;
+  export type ExpectedVersion = number | null;
+
+  export interface KnowledgeSourceActionCommand {
+    data: KnowledgeSourceAction;
+    meta: CommandMeta;
+  }
+  export interface KnowledgeSourceAction {
+    action: Action;
+  }
+  export interface CommandMeta {
+    command_id?: CommandId;
+    expected_version?: ExpectedVersion;
+  }
+
+}
+export type KnowledgeSourceActionCommand = KnowledgeSourceActionCommandSchema.KnowledgeSourceActionCommand;
+
+export namespace KnowledgeSourcePageSchema {
+  export type ActiveVersion = number | null;
+  export type AddedAt = string | null;
+  export type CleanupReason = ('index_cleanup_failed' | 'content_cleanup_failed' | 'storage_checkpoint_pending') | null;
+  export type CleanupStatus = 'none' | 'pending' | 'failed' | 'complete';
+  export type Id = string;
+  export type Label = string;
+  export type CommandId = string;
+  export type CreatedAt = string;
+  export type Id1 = string;
+  export type Kind = 'import' | 'rebuild';
+  export type DeadlineSeconds = number;
+  export type MaxCostUnits = string | null;
+  export type MaxDelegationDepth = number;
+  export type MaxModelRequests = number;
+  export type MaxParallelAgents = number;
+  export type MaxSteps = number;
+  export type MaxTasks = number;
+  export type MaxTotalTokens = number | null;
+  export type Reason = string | null;
+  export type Revision = number;
+  export type SourceId = string | null;
+  export type SourceVersion = number | null;
+  export type Status = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  export type TargetGeneration = string | null;
+  export type Id2 = string;
+  export type Revision1 = number;
+  export type Lifetime = 'run_bound' | 'managed';
+  export type RunId = string;
+  export type SubmittedState =
+    | 'queued'
+    | 'running'
+    | 'waiting_user'
+    | 'waiting_approval'
+    | 'waiting_children'
+    | 'interrupted'
+    | 'blocked_incompatible'
+    | 'completed'
+    | 'failed'
+    | 'cancelled';
+  export type TaskId = string;
+  export type WorkspaceId = string;
+  export type OriginHint = string | null;
+  export type Revision2 = number;
+  export type Status1 = 'pending' | 'active' | 'failed' | 'removed' | 'revoked' | 'deleted';
+  export type WorkspaceId1 = string;
+  export type Items = KnowledgeSourceView[];
+  export type NextCursor = string | null;
+  export type Watermark = string;
+
+  export interface KnowledgeSourcePage {
+    items: Items;
+    next_cursor: NextCursor;
+    watermark: Watermark;
+  }
+  export interface KnowledgeSourceView {
+    active_version: ActiveVersion;
+    added_at: AddedAt;
+    cleanup_reason: CleanupReason;
+    cleanup_status: CleanupStatus;
+    id: Id;
+    label: Label;
+    latest_job: KnowledgeJob | null;
+    origin_hint: OriginHint;
+    revision: Revision2;
+    status: Status1;
+    workspace_id: WorkspaceId1;
+  }
+  export interface KnowledgeJob {
+    admission_generations: AdmissionGenerations;
+    command_id: CommandId;
+    created_at: CreatedAt;
+    id: Id1;
+    kind: Kind;
+    limits: RunLimits;
+    reason: Reason;
+    revision: Revision;
+    source_id: SourceId;
+    source_version: SourceVersion;
+    status: Status;
+    target_generation?: TargetGeneration;
+    target_profile?: EmbeddingProfileRef | null;
+    task: TaskHandle | null;
+    workspace_id: WorkspaceId;
+  }
+  export interface AdmissionGenerations {
+    /**
+     * This interface was referenced by `AdmissionGenerations`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface RunLimits {
+    deadline_seconds: DeadlineSeconds;
+    max_cost_units: MaxCostUnits;
+    max_delegation_depth: MaxDelegationDepth;
+    max_model_requests: MaxModelRequests;
+    max_parallel_agents: MaxParallelAgents;
+    max_steps: MaxSteps;
+    max_tasks: MaxTasks;
+    max_total_tokens: MaxTotalTokens;
+  }
+  export interface EmbeddingProfileRef {
+    id: Id2;
+    revision: Revision1;
+  }
+  export interface TaskHandle {
+    lifetime: Lifetime;
+    run_id: RunId;
+    submitted_state: SubmittedState;
+    task_id: TaskId;
+  }
+
+}
+export type KnowledgeSourcePage = KnowledgeSourcePageSchema.KnowledgeSourcePage;
+
+export namespace KnowledgeSourceViewSchema {
+  export type ActiveVersion = number | null;
+  export type AddedAt = string | null;
+  export type CleanupReason = ('index_cleanup_failed' | 'content_cleanup_failed' | 'storage_checkpoint_pending') | null;
+  export type CleanupStatus = 'none' | 'pending' | 'failed' | 'complete';
+  export type Id = string;
+  export type Label = string;
+  export type CommandId = string;
+  export type CreatedAt = string;
+  export type Id1 = string;
+  export type Kind = 'import' | 'rebuild';
+  export type DeadlineSeconds = number;
+  export type MaxCostUnits = string | null;
+  export type MaxDelegationDepth = number;
+  export type MaxModelRequests = number;
+  export type MaxParallelAgents = number;
+  export type MaxSteps = number;
+  export type MaxTasks = number;
+  export type MaxTotalTokens = number | null;
+  export type Reason = string | null;
+  export type Revision = number;
+  export type SourceId = string | null;
+  export type SourceVersion = number | null;
+  export type Status = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  export type TargetGeneration = string | null;
+  export type Id2 = string;
+  export type Revision1 = number;
+  export type Lifetime = 'run_bound' | 'managed';
+  export type RunId = string;
+  export type SubmittedState =
+    | 'queued'
+    | 'running'
+    | 'waiting_user'
+    | 'waiting_approval'
+    | 'waiting_children'
+    | 'interrupted'
+    | 'blocked_incompatible'
+    | 'completed'
+    | 'failed'
+    | 'cancelled';
+  export type TaskId = string;
+  export type WorkspaceId = string;
+  export type OriginHint = string | null;
+  export type Revision2 = number;
+  export type Status1 = 'pending' | 'active' | 'failed' | 'removed' | 'revoked' | 'deleted';
+  export type WorkspaceId1 = string;
+
+  export interface KnowledgeSourceView {
+    active_version: ActiveVersion;
+    added_at: AddedAt;
+    cleanup_reason: CleanupReason;
+    cleanup_status: CleanupStatus;
+    id: Id;
+    label: Label;
+    latest_job: KnowledgeJob | null;
+    origin_hint: OriginHint;
+    revision: Revision2;
+    status: Status1;
+    workspace_id: WorkspaceId1;
+  }
+  export interface KnowledgeJob {
+    admission_generations: AdmissionGenerations;
+    command_id: CommandId;
+    created_at: CreatedAt;
+    id: Id1;
+    kind: Kind;
+    limits: RunLimits;
+    reason: Reason;
+    revision: Revision;
+    source_id: SourceId;
+    source_version: SourceVersion;
+    status: Status;
+    target_generation?: TargetGeneration;
+    target_profile?: EmbeddingProfileRef | null;
+    task: TaskHandle | null;
+    workspace_id: WorkspaceId;
+  }
+  export interface AdmissionGenerations {
+    /**
+     * This interface was referenced by `AdmissionGenerations`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface RunLimits {
+    deadline_seconds: DeadlineSeconds;
+    max_cost_units: MaxCostUnits;
+    max_delegation_depth: MaxDelegationDepth;
+    max_model_requests: MaxModelRequests;
+    max_parallel_agents: MaxParallelAgents;
+    max_steps: MaxSteps;
+    max_tasks: MaxTasks;
+    max_total_tokens: MaxTotalTokens;
+  }
+  export interface EmbeddingProfileRef {
+    id: Id2;
+    revision: Revision1;
+  }
+  export interface TaskHandle {
+    lifetime: Lifetime;
+    run_id: RunId;
+    submitted_state: SubmittedState;
+    task_id: TaskId;
+  }
+
+}
+export type KnowledgeSourceView = KnowledgeSourceViewSchema.KnowledgeSourceView;
+
 export namespace McpConfiguredServerSchema {
   export type Args = string[];
   export type Command = string | null;
@@ -1949,6 +2980,8 @@ export namespace McpServerPageSchema {
   export type Destination = string | null;
   export type Epoch = number;
   export type Id1 = string;
+  export type KnowledgeScopes = ScopeRef[];
+  export type KnowledgeSourceIds = string[];
   export type CatalogHash = string;
   export type ConfigRevision1 = number;
   export type Destination1 = string;
@@ -1960,8 +2993,8 @@ export namespace McpServerPageSchema {
    * @minItems 1
    */
   export type Purposes = [
-    'read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send',
-    ...('read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send')[]
+    'read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send',
+    ...('read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send')[]
   ];
   export type ResourceIds = string[];
   export type Status = 'active' | 'revoked';
@@ -2033,6 +3066,8 @@ export namespace McpServerPageSchema {
     destination: Destination;
     epoch: Epoch;
     id: Id1;
+    knowledge_scopes?: KnowledgeScopes;
+    knowledge_source_ids?: KnowledgeSourceIds;
     mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes;
@@ -2100,6 +3135,8 @@ export namespace McpServerViewSchema {
   export type Destination = string | null;
   export type Epoch = number;
   export type Id1 = string;
+  export type KnowledgeScopes = ScopeRef[];
+  export type KnowledgeSourceIds = string[];
   export type CatalogHash = string;
   export type ConfigRevision1 = number;
   export type Destination1 = string;
@@ -2111,8 +3148,8 @@ export namespace McpServerViewSchema {
    * @minItems 1
    */
   export type Purposes = [
-    'read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send',
-    ...('read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send')[]
+    'read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send',
+    ...('read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send')[]
   ];
   export type ResourceIds = string[];
   export type Status = 'active' | 'revoked';
@@ -2176,6 +3213,8 @@ export namespace McpServerViewSchema {
     destination: Destination;
     epoch: Epoch;
     id: Id1;
+    knowledge_scopes?: KnowledgeScopes;
+    knowledge_source_ids?: KnowledgeSourceIds;
     mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes;
@@ -2318,6 +3357,7 @@ export namespace MemberLaneSchema {
   export type JsonValue = unknown;
   export type ProfileId = string;
   export type SuccessCriteria = string[];
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -2338,6 +3378,7 @@ export namespace MemberLaneSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind2 = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -2368,7 +3409,7 @@ export namespace MemberLaneSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind2 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind3 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source2 = string | null;
   export type VerifiedAt = string | null;
@@ -2391,6 +3432,7 @@ export namespace MemberLaneSchema {
   export type Version4 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind4 = 'deterministic';
   export type DelegationDepth = number;
   export type ExecutionSessionId = string;
   export type FileIdentity = string;
@@ -2399,7 +3441,8 @@ export namespace MemberLaneSchema {
   export type InputArtifacts = ArtifactRef[];
   export type InteractionSessionId = string | null;
   export type ExcludedSourceIds = string[];
-  export type Kind3 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind5 = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -2408,7 +3451,7 @@ export namespace MemberLaneSchema {
   export type DeadlineAt = string | null;
   export type ExecutorId = string;
   export type Id4 = string;
-  export type Kind4 = 'agent' | 'tool';
+  export type Kind6 = 'agent' | 'tool';
   export type OriginTaskId = string | null;
   export type ParentTaskId = string | null;
   export type Reason = string | null;
@@ -2515,7 +3558,7 @@ export namespace MemberLaneSchema {
     deadline_at: DeadlineAt;
     executor_id: ExecutorId;
     id: Id4;
-    kind: Kind4;
+    kind: Kind6;
     origin_task_id: OriginTaskId;
     parent_task_id: ParentTaskId;
     reason: Reason;
@@ -2527,7 +3570,7 @@ export namespace MemberLaneSchema {
   export interface TaskExecutionBinding {
     additional_result_inputs: AdditionalResultInputs;
     agent_work: AgentWork | null;
-    config: ConfigSnapshot;
+    config: Config;
     delegation_depth: DelegationDepth;
     execution_session_id: ExecutionSessionId;
     file_inputs: FileInputs;
@@ -2558,6 +3601,7 @@ export namespace MemberLaneSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind2;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -2669,7 +3713,7 @@ export namespace MemberLaneSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind2;
+    kind: Kind3;
     note: Note;
     source: Source2;
     verified_at: VerifiedAt;
@@ -2695,6 +3739,10 @@ export namespace MemberLaneSchema {
   export interface Tools2 {
     [k: string]: string;
   }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind4;
+  }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
   }
@@ -2711,13 +3759,14 @@ export namespace MemberLaneSchema {
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind3;
+    kind: Kind5;
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
@@ -2819,6 +3868,7 @@ export namespace MemberLaneListSchema {
   export type JsonValue = unknown;
   export type ProfileId = string;
   export type SuccessCriteria = string[];
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -2839,6 +3889,7 @@ export namespace MemberLaneListSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind2 = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -2869,7 +3920,7 @@ export namespace MemberLaneListSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind2 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind3 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source2 = string | null;
   export type VerifiedAt = string | null;
@@ -2892,6 +3943,7 @@ export namespace MemberLaneListSchema {
   export type Version4 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind4 = 'deterministic';
   export type DelegationDepth = number;
   export type ExecutionSessionId = string;
   export type FileIdentity = string;
@@ -2900,7 +3952,8 @@ export namespace MemberLaneListSchema {
   export type InputArtifacts = ArtifactRef[];
   export type InteractionSessionId = string | null;
   export type ExcludedSourceIds = string[];
-  export type Kind3 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind5 = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -2909,7 +3962,7 @@ export namespace MemberLaneListSchema {
   export type DeadlineAt = string | null;
   export type ExecutorId = string;
   export type Id4 = string;
-  export type Kind4 = 'agent' | 'tool';
+  export type Kind6 = 'agent' | 'tool';
   export type OriginTaskId = string | null;
   export type ParentTaskId = string | null;
   export type Reason = string | null;
@@ -3017,7 +4070,7 @@ export namespace MemberLaneListSchema {
     deadline_at: DeadlineAt;
     executor_id: ExecutorId;
     id: Id4;
-    kind: Kind4;
+    kind: Kind6;
     origin_task_id: OriginTaskId;
     parent_task_id: ParentTaskId;
     reason: Reason;
@@ -3029,7 +4082,7 @@ export namespace MemberLaneListSchema {
   export interface TaskExecutionBinding {
     additional_result_inputs: AdditionalResultInputs;
     agent_work: AgentWork | null;
-    config: ConfigSnapshot;
+    config: Config;
     delegation_depth: DelegationDepth;
     execution_session_id: ExecutionSessionId;
     file_inputs: FileInputs;
@@ -3060,6 +4113,7 @@ export namespace MemberLaneListSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind2;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -3171,7 +4225,7 @@ export namespace MemberLaneListSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind2;
+    kind: Kind3;
     note: Note;
     source: Source2;
     verified_at: VerifiedAt;
@@ -3197,6 +4251,10 @@ export namespace MemberLaneListSchema {
   export interface Tools2 {
     [k: string]: string;
   }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind4;
+  }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
   }
@@ -3213,13 +4271,14 @@ export namespace MemberLaneListSchema {
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind3;
+    kind: Kind5;
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
@@ -4326,7 +5385,7 @@ export type ModelResolution = ModelResolutionSchema.ModelResolution;
 export namespace NavigationViewSchema {
   export type DefaultWorkspaceId = string | null;
   export type PendingCount = number;
-  export type AgentProfileId = string;
+  export type AgentProfileId = string | null;
   export type Archived = boolean;
   export type AutomaticTitle = 'pending' | number | null;
   export type Id = string;
@@ -4461,6 +5520,7 @@ export namespace PendingUserCommandSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -4491,7 +5551,7 @@ export namespace PendingUserCommandSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind1 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source1 = string | null;
   export type VerifiedAt = string | null;
@@ -4564,7 +5624,8 @@ export namespace PendingUserCommandSchema {
   export type SessionId1 = string;
   export type SourceResult = string | null;
   export type ExcludedSourceIds = string[];
-  export type Kind1 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind2 = 'user_global' | 'workspace' | 'session';
   export type SessionId2 = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -4598,6 +5659,7 @@ export namespace PendingUserCommandSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -4721,7 +5783,7 @@ export namespace PendingUserCommandSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind;
+    kind: Kind1;
     note: Note;
     source: Source1;
     verified_at: VerifiedAt;
@@ -4825,13 +5887,14 @@ export namespace PendingUserCommandSchema {
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind1;
+    kind: Kind2;
     session_id: SessionId2;
     workspace_id: WorkspaceId;
   }
@@ -4885,6 +5948,7 @@ export namespace PendingUserCommandPageSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -4915,7 +5979,7 @@ export namespace PendingUserCommandPageSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind1 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source1 = string | null;
   export type VerifiedAt = string | null;
@@ -4988,7 +6052,8 @@ export namespace PendingUserCommandPageSchema {
   export type SessionId1 = string;
   export type SourceResult = string | null;
   export type ExcludedSourceIds = string[];
-  export type Kind1 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind2 = 'user_global' | 'workspace' | 'session';
   export type SessionId2 = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -5030,6 +6095,7 @@ export namespace PendingUserCommandPageSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -5153,7 +6219,7 @@ export namespace PendingUserCommandPageSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind;
+    kind: Kind1;
     note: Note;
     source: Source1;
     verified_at: VerifiedAt;
@@ -5257,13 +6323,14 @@ export namespace PendingUserCommandPageSchema {
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind1;
+    kind: Kind2;
     session_id: SessionId2;
     workspace_id: WorkspaceId;
   }
@@ -5327,7 +6394,8 @@ export namespace PublicEventSchema {
     | SkillEvent
     | EnvironmentEvent
     | McpEvent
-    | TitlePolicyEvent;
+    | TitlePolicyEvent
+    | KnowledgeEvent;
   export type ActivityId = string | null;
   export type CausationId = string | null;
   export type CreatedAt = string;
@@ -5350,7 +6418,7 @@ export namespace PublicEventSchema {
   export type EventId1 = string;
   export type EventVersion1 = 1;
   export type Kind1 = 'session.created' | 'session.updated';
-  export type AgentProfileId = string;
+  export type AgentProfileId = string | null;
   export type Archived = boolean;
   export type AutomaticTitle = 'pending' | number | null;
   export type Id1 = string;
@@ -5622,6 +6690,7 @@ export namespace PublicEventSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind12 = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency1 = 'USD';
@@ -5647,7 +6716,7 @@ export namespace PublicEventSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens1 = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind12 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind13 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source2 = string | null;
   export type VerifiedAt = string | null;
@@ -5702,7 +6771,8 @@ export namespace PublicEventSchema {
   export type SessionId7 = string;
   export type SourceResult1 = string | null;
   export type ExcludedSourceIds = string[];
-  export type Kind13 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind14 = 'user_global' | 'workspace' | 'session';
   export type SessionId8 = string | null;
   export type WorkspaceId6 = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -5726,14 +6796,19 @@ export namespace PublicEventSchema {
   export type AttachedFileIds = string[] | null;
   export type BudgetGroupId1 = string;
   export type BudgetId = string;
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
+  export type Kind15 = 'deterministic';
   export type DeadlineAt1 = string;
   export type ExecutionSessionId1 = string;
   export type FollowUpClosed = boolean;
   export type Id14 = string;
   export type InteractionSessionId = string | null;
-  export type Kind14 = 'user' | 'managed' | 'follow_up' | 'maintenance';
+  export type Kind16 = 'user' | 'managed' | 'follow_up' | 'maintenance' | 'knowledge';
   export type Output = AgentResult | RunOutput | null;
   export type ArtifactIds = string[];
+  export type EvidenceId = string;
+  export type Marker = number;
+  export type Citations = CitationRef[];
   export type EvidenceRefs = string[];
   export type Reason2 = string;
   export type ResultVersion2 = number;
@@ -5747,6 +6822,7 @@ export namespace PublicEventSchema {
   export type Unresolved = string[];
   export type Verification = string[];
   export type ArtifactIds1 = string[];
+  export type Citations1 = CitationRef[];
   export type HandledFailures1 = FailureDisposition[];
   export type Summary1 = string;
   /**
@@ -5775,9 +6851,10 @@ export namespace PublicEventSchema {
   export type AdditionalResultInputs = ResultInput[];
   export type Goal = string;
   export type InputRefs = string[];
-  export type Kind15 = 'agent';
+  export type Kind17 = 'agent';
   export type ProfileId = string;
   export type SuccessCriteria = string[];
+  export type Config1 = ConfigSnapshot | DeterministicConfigSnapshot;
   export type DelegationDepth = number;
   export type ExecutionSessionId2 = string;
   export type InputArtifacts = ArtifactRef[];
@@ -5786,7 +6863,7 @@ export namespace PublicEventSchema {
   export type DeadlineAt2 = string | null;
   export type ExecutorId = string;
   export type Id15 = string;
-  export type Kind16 = 'agent' | 'tool';
+  export type Kind18 = 'agent' | 'tool';
   export type OriginTaskId = string | null;
   export type ParentTaskId = string | null;
   export type Reason4 = string | null;
@@ -5825,7 +6902,7 @@ export namespace PublicEventSchema {
   export type CreatedAt6 = string;
   export type EventId9 = string;
   export type EventVersion6 = 1;
-  export type Kind17 =
+  export type Kind19 =
     | 'resource.registered'
     | 'resource.updated'
     | 'grant.created'
@@ -5855,21 +6932,23 @@ export namespace PublicEventSchema {
   export type Destination1 = string | null;
   export type Epoch1 = number;
   export type Id18 = string;
+  export type KnowledgeScopes = ScopeRef[];
+  export type KnowledgeSourceIds1 = string[];
   export type McpQueries = McpToolSnapshot[];
   export type MemoryScopes1 = ScopeRef[];
   /**
    * @minItems 1
    */
   export type Purposes = [
-    'read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send',
-    ...('read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send')[]
+    'read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send',
+    ...('read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send')[]
   ];
   export type ResourceIds1 = string[];
   export type Status5 = 'active' | 'revoked';
   export type Version15 = number;
   export type Grants = DataUseGrant[];
   export type Id19 = string;
-  export type Kind18 = 'file' | 'directory' | 'export';
+  export type Kind20 = 'file' | 'directory' | 'export';
   export type Label = string;
   export type SourceVersion1 = string | null;
   export type Version16 = number;
@@ -5884,7 +6963,7 @@ export namespace PublicEventSchema {
   export type CreatedAt7 = string;
   export type EventId10 = string;
   export type EventVersion7 = 1;
-  export type Kind19 = 'scope.deleted' | 'scope.revoked' | 'accounting.settled';
+  export type Kind21 = 'scope.deleted' | 'scope.revoked' | 'accounting.settled';
   export type Epoch2 = number;
   export type Status6 = 'deleted';
   export type Deletions = DeletionReceipt[];
@@ -5902,7 +6981,7 @@ export namespace PublicEventSchema {
   export type CreatedAt8 = string;
   export type EventId11 = string;
   export type EventVersion8 = 1;
-  export type Kind20 = 'delivery.changed';
+  export type Kind22 = 'delivery.changed';
   export type AssistantName = string | null;
   export type Attempts = number;
   export type Consumers = ResultConsumption[];
@@ -5928,7 +7007,7 @@ export namespace PublicEventSchema {
   export type CreatedAt9 = string;
   export type EventId12 = string;
   export type EventVersion9 = 1;
-  export type Kind21 = 'admission.stopped';
+  export type Kind23 = 'admission.stopped';
   export type Generation = number;
   export type AdmissionFences = AdmissionFence[];
   export type RunId21 = string | null;
@@ -5941,7 +7020,7 @@ export namespace PublicEventSchema {
   export type CreatedAt10 = string;
   export type EventId13 = string;
   export type EventVersion10 = 1;
-  export type Kind22 = 'memory.changed' | 'memory.policy_changed';
+  export type Kind24 = 'memory.changed' | 'memory.policy_changed';
   export type AutoOrganize = boolean;
   export type ModelProfileId2 = string | null;
   export type ReadProfile = boolean;
@@ -5961,7 +7040,7 @@ export namespace PublicEventSchema {
   export type CreatedAt11 = string;
   export type EventId14 = string;
   export type EventVersion11 = 1;
-  export type Kind23 = 'memory.maintenance_changed';
+  export type Kind25 = 'memory.maintenance_changed';
   export type Id23 = string;
   export type PolicyVersion1 = number;
   export type Reason5 = string | null;
@@ -5977,7 +7056,7 @@ export namespace PublicEventSchema {
   export type CreatedAt12 = string;
   export type EventId16 = string;
   export type EventVersion12 = 1;
-  export type Kind24 = 'skill.changed';
+  export type Kind26 = 'skill.changed';
   export type Revision1 = number;
   export type SkillId1 = string;
   export type Status9 = 'active' | 'deleted';
@@ -5991,7 +7070,7 @@ export namespace PublicEventSchema {
   export type CreatedAt13 = string;
   export type EventId17 = string;
   export type EventVersion13 = 1;
-  export type Kind25 = 'environment.changed';
+  export type Kind27 = 'environment.changed';
   export type EnvironmentId1 = string;
   export type RunId26 = string | null;
   export type Seq13 = number | null;
@@ -6003,7 +7082,7 @@ export namespace PublicEventSchema {
   export type CreatedAt14 = string;
   export type EventId18 = string;
   export type EventVersion14 = 1;
-  export type Kind26 = 'mcp.changed';
+  export type Kind28 = 'mcp.changed';
   export type ConfigRevision1 = number;
   export type ServerId1 = string;
   export type RunId27 = string | null;
@@ -6016,7 +7095,7 @@ export namespace PublicEventSchema {
   export type CreatedAt15 = string;
   export type EventId19 = string;
   export type EventVersion15 = 1;
-  export type Kind27 = 'naming.policy_saved';
+  export type Kind29 = 'naming.policy_saved';
   export type ConnectionVersion2 = number;
   export type Endpoint2 = string;
   export type MaxCostUnits1 = string | null;
@@ -6031,6 +7110,19 @@ export namespace PublicEventSchema {
   export type SessionId20 = string | null;
   export type TaskId22 = string | null;
   export type WorkspaceId20 = string | null;
+  export type ActivityId19 = string | null;
+  export type CausationId16 = string | null;
+  export type CreatedAt16 = string;
+  export type EventId20 = string;
+  export type EventVersion16 = 1;
+  export type Kind30 = 'knowledge.changed';
+  export type SettingsRevision = number | null;
+  export type WorkspaceId21 = string | null;
+  export type RunId29 = string | null;
+  export type Seq16 = number | null;
+  export type SessionId21 = string | null;
+  export type TaskId23 = string | null;
+  export type WorkspaceId22 = string | null;
 
   export interface WorkspaceEvent {
     activity_id: ActivityId;
@@ -6391,6 +7483,7 @@ export namespace PublicEventSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind12;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -6495,7 +7588,7 @@ export namespace PublicEventSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind12;
+    kind: Kind13;
     note: Note;
     source: Source2;
     verified_at: VerifiedAt;
@@ -6581,13 +7674,14 @@ export namespace PublicEventSchema {
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind13;
+    kind: Kind14;
     session_id: SessionId8;
     workspace_id: WorkspaceId6;
   }
@@ -6628,14 +7722,14 @@ export namespace PublicEventSchema {
     attached_file_ids?: AttachedFileIds;
     budget_group_id: BudgetGroupId1;
     budget_id: BudgetId;
-    config: ConfigSnapshot;
+    config: Config;
     deadline_at: DeadlineAt1;
     execution_session_id: ExecutionSessionId1;
     file_inputs: FileInputs1;
     follow_up_closed: FollowUpClosed;
     id: Id14;
     interaction_session_id: InteractionSessionId;
-    kind: Kind14;
+    kind: Kind16;
     output: Output;
     reason: Reason3;
     root_task_id: RootTaskId1;
@@ -6654,11 +7748,16 @@ export namespace PublicEventSchema {
      */
     [k: string]: number;
   }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind15;
+  }
   export interface FileInputs1 {
     [k: string]: SelectedFileVersion;
   }
   export interface AgentResult {
     artifact_ids: ArtifactIds;
+    citations?: Citations;
     evidence_refs: EvidenceRefs;
     handled_failures: HandledFailures;
     status: Status3;
@@ -6667,6 +7766,10 @@ export namespace PublicEventSchema {
     unresolved: Unresolved;
     verification: Verification;
   }
+  export interface CitationRef {
+    evidence_id: EvidenceId;
+    marker: Marker;
+  }
   export interface FailureDisposition {
     reason: Reason2;
     result_version: ResultVersion2;
@@ -6674,6 +7777,7 @@ export namespace PublicEventSchema {
   }
   export interface RunOutput {
     artifact_ids: ArtifactIds1;
+    citations?: Citations1;
     handled_failures: HandledFailures1;
     summary: Summary1;
     unresolved: Unresolved1;
@@ -6684,7 +7788,7 @@ export namespace PublicEventSchema {
     deadline_at: DeadlineAt2;
     executor_id: ExecutorId;
     id: Id15;
-    kind: Kind16;
+    kind: Kind18;
     origin_task_id: OriginTaskId;
     parent_task_id: ParentTaskId;
     reason: Reason4;
@@ -6696,7 +7800,7 @@ export namespace PublicEventSchema {
   export interface TaskExecutionBinding {
     additional_result_inputs: AdditionalResultInputs;
     agent_work: AgentWork | null;
-    config: ConfigSnapshot;
+    config: Config1;
     delegation_depth: DelegationDepth;
     execution_session_id: ExecutionSessionId2;
     file_inputs: FileInputs2;
@@ -6708,7 +7812,7 @@ export namespace PublicEventSchema {
   export interface AgentWork {
     goal: Goal;
     input_refs: InputRefs;
-    kind: Kind15;
+    kind: Kind17;
     output_schema: OutputSchema;
     profile_id: ProfileId;
     success_criteria: SuccessCriteria;
@@ -6736,7 +7840,7 @@ export namespace PublicEventSchema {
     created_at: CreatedAt6;
     event_id: EventId9;
     event_version: EventVersion6;
-    kind: Kind17;
+    kind: Kind19;
     payload: PublicPolicyChange;
     run_id: RunId18;
     seq: Seq6;
@@ -6785,6 +7889,8 @@ export namespace PublicEventSchema {
     destination: Destination1;
     epoch: Epoch1;
     id: Id18;
+    knowledge_scopes?: KnowledgeScopes;
+    knowledge_source_ids?: KnowledgeSourceIds1;
     mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes1;
@@ -6803,7 +7909,7 @@ export namespace PublicEventSchema {
   }
   export interface ResourceRef {
     id: Id19;
-    kind: Kind18;
+    kind: Kind20;
     label: Label;
     scope: ScopeRef;
     source_version: SourceVersion1;
@@ -6815,7 +7921,7 @@ export namespace PublicEventSchema {
     created_at: CreatedAt7;
     event_id: EventId10;
     event_version: EventVersion7;
-    kind: Kind19;
+    kind: Kind21;
     payload: PublicLifecycleChange;
     run_id: RunId19;
     seq: Seq7;
@@ -6844,7 +7950,7 @@ export namespace PublicEventSchema {
     created_at: CreatedAt8;
     event_id: EventId11;
     event_version: EventVersion8;
-    kind: Kind20;
+    kind: Kind22;
     payload: DeliveryChange;
     run_id: RunId20;
     seq: Seq8;
@@ -6878,7 +7984,7 @@ export namespace PublicEventSchema {
     created_at: CreatedAt9;
     event_id: EventId12;
     event_version: EventVersion9;
-    kind: Kind21;
+    kind: Kind23;
     payload: AdmissionChange;
     run_id: RunId21;
     seq: Seq9;
@@ -6899,7 +8005,7 @@ export namespace PublicEventSchema {
     created_at: CreatedAt10;
     event_id: EventId13;
     event_version: EventVersion10;
-    kind: Kind22;
+    kind: Kind24;
     payload: MemoryChange;
     run_id: RunId22;
     seq: Seq10;
@@ -6934,7 +8040,7 @@ export namespace PublicEventSchema {
     created_at: CreatedAt11;
     event_id: EventId14;
     event_version: EventVersion11;
-    kind: Kind23;
+    kind: Kind25;
     payload: MemoryMaintenanceNotice;
     run_id: RunId24;
     seq: Seq11;
@@ -6960,7 +8066,7 @@ export namespace PublicEventSchema {
     created_at: CreatedAt12;
     event_id: EventId16;
     event_version: EventVersion12;
-    kind: Kind24;
+    kind: Kind26;
     payload: SkillNotice;
     run_id: RunId25;
     seq: Seq12;
@@ -6980,7 +8086,7 @@ export namespace PublicEventSchema {
     created_at: CreatedAt13;
     event_id: EventId17;
     event_version: EventVersion13;
-    kind: Kind25;
+    kind: Kind27;
     payload: EnvironmentChanged;
     run_id: RunId26;
     seq: Seq13;
@@ -7000,7 +8106,7 @@ export namespace PublicEventSchema {
     created_at: CreatedAt14;
     event_id: EventId18;
     event_version: EventVersion14;
-    kind: Kind26;
+    kind: Kind28;
     payload: McpNotice;
     run_id: RunId27;
     seq: Seq14;
@@ -7019,7 +8125,7 @@ export namespace PublicEventSchema {
     created_at: CreatedAt15;
     event_id: EventId19;
     event_version: EventVersion15;
-    kind: Kind27;
+    kind: Kind29;
     payload: TitlePolicy;
     run_id: RunId28;
     seq: Seq15;
@@ -7040,6 +8146,48 @@ export namespace PublicEventSchema {
     max_tokens: MaxTokens;
     model_profile_id: ModelProfileId3;
     model_version: ModelVersion1;
+  }
+  export interface KnowledgeEvent {
+    activity_id: ActivityId19;
+    causation_id: CausationId16;
+    created_at: CreatedAt16;
+    event_id: EventId20;
+    event_version: EventVersion16;
+    kind: Kind30;
+    payload: KnowledgeNotice;
+    run_id: RunId29;
+    seq: Seq16;
+    session_id: SessionId21;
+    task_id: TaskId23;
+    workspace_id: WorkspaceId22;
+  }
+  export interface KnowledgeNotice {
+    job_revisions: JobRevisions;
+    profile_revisions: ProfileRevisions;
+    settings_revision: SettingsRevision;
+    source_revisions: SourceRevisions;
+    workspace_id: WorkspaceId21;
+  }
+  export interface JobRevisions {
+    /**
+     * This interface was referenced by `JobRevisions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface ProfileRevisions {
+    /**
+     * This interface was referenced by `ProfileRevisions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface SourceRevisions {
+    /**
+     * This interface was referenced by `SourceRevisions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
   }
 
 }
@@ -7861,6 +9009,7 @@ export namespace RunDetailSchema {
   export type AttachedFileIds = string[] | null;
   export type BudgetGroupId = string;
   export type BudgetId = string;
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -7886,6 +9035,7 @@ export namespace RunDetailSchema {
   export type SkillIds = string[];
   export type Version5 = number;
   export type AgentExecutorId = string;
+  export type Kind5 = 'agent';
   export type Assumptions1 = string[];
   export type CatalogVersion1 = string | null;
   export type Currency1 = 'USD';
@@ -7916,7 +9066,7 @@ export namespace RunDetailSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind5 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind6 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source3 = string | null;
   export type VerifiedAt = string | null;
@@ -7939,6 +9089,7 @@ export namespace RunDetailSchema {
   export type Version7 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind7 = 'deterministic';
   export type DeadlineAt = string;
   export type ExecutionSessionId1 = string;
   export type FileIdentity = string;
@@ -7947,9 +9098,12 @@ export namespace RunDetailSchema {
   export type FollowUpClosed = boolean;
   export type Id10 = string;
   export type InteractionSessionId = string | null;
-  export type Kind6 = 'user' | 'managed' | 'follow_up' | 'maintenance';
+  export type Kind8 = 'user' | 'managed' | 'follow_up' | 'maintenance' | 'knowledge';
   export type Output = AgentResult | RunOutput | null;
   export type ArtifactIds = string[];
+  export type EvidenceId = string;
+  export type Marker = number;
+  export type Citations = CitationRef[];
   export type EvidenceRefs = string[];
   export type Reason = string;
   export type ResultVersion1 = number;
@@ -7963,6 +9117,7 @@ export namespace RunDetailSchema {
   export type Unresolved = string[];
   export type Verification = string[];
   export type ArtifactIds1 = string[];
+  export type Citations1 = CitationRef[];
   export type HandledFailures1 = FailureDisposition[];
   export type Summary1 = string;
   /**
@@ -7973,7 +9128,8 @@ export namespace RunDetailSchema {
   export type RootTaskId1 = string;
   export type ScopeDependencies = ScopeDependency[];
   export type ExcludedSourceIds = string[];
-  export type Kind7 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind9 = 'user_global' | 'workspace' | 'session';
   export type SessionId1 = string | null;
   export type WorkspaceId1 = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -8018,9 +9174,10 @@ export namespace RunDetailSchema {
   export type AdditionalResultInputs = ResultInput[];
   export type Goal = string;
   export type InputRefs = string[];
-  export type Kind8 = 'agent';
+  export type Kind10 = 'agent';
   export type ProfileId = string;
   export type SuccessCriteria = string[];
+  export type Config1 = ConfigSnapshot | DeterministicConfigSnapshot;
   export type DelegationDepth = number;
   export type ExecutionSessionId2 = string;
   export type InputArtifacts = ArtifactRef[];
@@ -8029,7 +9186,7 @@ export namespace RunDetailSchema {
   export type DeadlineAt1 = string | null;
   export type ExecutorId = string;
   export type Id11 = string;
-  export type Kind9 = 'agent' | 'tool';
+  export type Kind11 = 'agent' | 'tool';
   export type OriginTaskId = string | null;
   export type ParentTaskId = string | null;
   export type Reason2 = string | null;
@@ -8364,14 +9521,14 @@ export namespace RunDetailSchema {
     attached_file_ids?: AttachedFileIds;
     budget_group_id: BudgetGroupId;
     budget_id: BudgetId;
-    config: ConfigSnapshot;
+    config: Config;
     deadline_at: DeadlineAt;
     execution_session_id: ExecutionSessionId1;
     file_inputs: FileInputs;
     follow_up_closed: FollowUpClosed;
     id: Id10;
     interaction_session_id: InteractionSessionId;
-    kind: Kind6;
+    kind: Kind8;
     output: Output;
     reason: Reason1;
     root_task_id: RootTaskId1;
@@ -8393,6 +9550,7 @@ export namespace RunDetailSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind5;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -8509,7 +9667,7 @@ export namespace RunDetailSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind5;
+    kind: Kind6;
     note: Note;
     source: Source3;
     verified_at: VerifiedAt;
@@ -8535,6 +9693,10 @@ export namespace RunDetailSchema {
   export interface Tools2 {
     [k: string]: string;
   }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind7;
+  }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
   }
@@ -8554,6 +9716,7 @@ export namespace RunDetailSchema {
   }
   export interface AgentResult {
     artifact_ids: ArtifactIds;
+    citations?: Citations;
     evidence_refs: EvidenceRefs;
     handled_failures: HandledFailures;
     status: Status3;
@@ -8562,6 +9725,10 @@ export namespace RunDetailSchema {
     unresolved: Unresolved;
     verification: Verification;
   }
+  export interface CitationRef {
+    evidence_id: EvidenceId;
+    marker: Marker;
+  }
   export interface FailureDisposition {
     reason: Reason;
     result_version: ResultVersion1;
@@ -8569,19 +9736,21 @@ export namespace RunDetailSchema {
   }
   export interface RunOutput {
     artifact_ids: ArtifactIds1;
+    citations?: Citations1;
     handled_failures: HandledFailures1;
     summary: Summary1;
     unresolved: Unresolved1;
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind7;
+    kind: Kind9;
     session_id: SessionId1;
     workspace_id: WorkspaceId1;
   }
@@ -8617,7 +9786,7 @@ export namespace RunDetailSchema {
     deadline_at: DeadlineAt1;
     executor_id: ExecutorId;
     id: Id11;
-    kind: Kind9;
+    kind: Kind11;
     origin_task_id: OriginTaskId;
     parent_task_id: ParentTaskId;
     reason: Reason2;
@@ -8629,7 +9798,7 @@ export namespace RunDetailSchema {
   export interface TaskExecutionBinding {
     additional_result_inputs: AdditionalResultInputs;
     agent_work: AgentWork | null;
-    config: ConfigSnapshot;
+    config: Config1;
     delegation_depth: DelegationDepth;
     execution_session_id: ExecutionSessionId2;
     file_inputs: FileInputs1;
@@ -8655,7 +9824,7 @@ export namespace RunDetailSchema {
   export interface AgentWork {
     goal: Goal;
     input_refs: InputRefs;
-    kind: Kind8;
+    kind: Kind10;
     output_schema: OutputSchema;
     profile_id: ProfileId;
     success_criteria: SuccessCriteria;
@@ -9014,6 +10183,7 @@ export namespace RunPageSchema {
   export type AttachedFileIds = string[] | null;
   export type BudgetGroupId = string;
   export type BudgetId = string;
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -9044,6 +10214,7 @@ export namespace RunPageSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -9074,7 +10245,7 @@ export namespace RunPageSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind1 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source1 = string | null;
   export type VerifiedAt = string | null;
@@ -9097,6 +10268,7 @@ export namespace RunPageSchema {
   export type Version2 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind2 = 'deterministic';
   export type DeadlineAt = string;
   export type ExecutionSessionId = string;
   export type FileIdentity = string;
@@ -9107,9 +10279,12 @@ export namespace RunPageSchema {
   export type FollowUpClosed = boolean;
   export type Id2 = string;
   export type InteractionSessionId = string | null;
-  export type Kind1 = 'user' | 'managed' | 'follow_up' | 'maintenance';
+  export type Kind3 = 'user' | 'managed' | 'follow_up' | 'maintenance' | 'knowledge';
   export type Output = AgentResult | RunOutput | null;
   export type ArtifactIds = string[];
+  export type EvidenceId = string;
+  export type Marker = number;
+  export type Citations = CitationRef[];
   export type EvidenceRefs = string[];
   export type Reason = string;
   export type ResultVersion = number;
@@ -9124,6 +10299,7 @@ export namespace RunPageSchema {
   export type Unresolved = string[];
   export type Verification = string[];
   export type ArtifactIds1 = string[];
+  export type Citations1 = CitationRef[];
   export type HandledFailures1 = FailureDisposition[];
   export type Summary1 = string;
   /**
@@ -9134,7 +10310,8 @@ export namespace RunPageSchema {
   export type RootTaskId = string;
   export type ScopeDependencies = ScopeDependency[];
   export type ExcludedSourceIds = string[];
-  export type Kind2 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind4 = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -9170,14 +10347,14 @@ export namespace RunPageSchema {
     attached_file_ids?: AttachedFileIds;
     budget_group_id: BudgetGroupId;
     budget_id: BudgetId;
-    config: ConfigSnapshot;
+    config: Config;
     deadline_at: DeadlineAt;
     execution_session_id: ExecutionSessionId;
     file_inputs: FileInputs;
     follow_up_closed: FollowUpClosed;
     id: Id2;
     interaction_session_id: InteractionSessionId;
-    kind: Kind1;
+    kind: Kind3;
     output: Output;
     reason: Reason1;
     root_task_id: RootTaskId;
@@ -9199,6 +10376,7 @@ export namespace RunPageSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -9322,7 +10500,7 @@ export namespace RunPageSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind;
+    kind: Kind1;
     note: Note;
     source: Source1;
     verified_at: VerifiedAt;
@@ -9348,6 +10526,10 @@ export namespace RunPageSchema {
   export interface Tools2 {
     [k: string]: string;
   }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind2;
+  }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
   }
@@ -9368,6 +10550,7 @@ export namespace RunPageSchema {
   }
   export interface AgentResult {
     artifact_ids: ArtifactIds;
+    citations?: Citations;
     evidence_refs: EvidenceRefs;
     handled_failures: HandledFailures;
     status: Status;
@@ -9376,6 +10559,10 @@ export namespace RunPageSchema {
     unresolved: Unresolved;
     verification: Verification;
   }
+  export interface CitationRef {
+    evidence_id: EvidenceId;
+    marker: Marker;
+  }
   export interface FailureDisposition {
     reason: Reason;
     result_version: ResultVersion;
@@ -9383,19 +10570,21 @@ export namespace RunPageSchema {
   }
   export interface RunOutput {
     artifact_ids: ArtifactIds1;
+    citations?: Citations1;
     handled_failures: HandledFailures1;
     summary: Summary1;
     unresolved: Unresolved1;
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind2;
+    kind: Kind4;
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
@@ -9423,6 +10612,7 @@ export namespace RunSnapshotSchema {
   export type AttachedFileIds = string[] | null;
   export type BudgetGroupId = string;
   export type BudgetId = string;
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -9453,6 +10643,7 @@ export namespace RunSnapshotSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -9483,7 +10674,7 @@ export namespace RunSnapshotSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind1 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source1 = string | null;
   export type VerifiedAt = string | null;
@@ -9506,6 +10697,7 @@ export namespace RunSnapshotSchema {
   export type Version2 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind2 = 'deterministic';
   export type DeadlineAt = string;
   export type ExecutionSessionId = string;
   export type FileIdentity = string;
@@ -9516,9 +10708,12 @@ export namespace RunSnapshotSchema {
   export type FollowUpClosed = boolean;
   export type Id2 = string;
   export type InteractionSessionId = string | null;
-  export type Kind1 = 'user' | 'managed' | 'follow_up' | 'maintenance';
+  export type Kind3 = 'user' | 'managed' | 'follow_up' | 'maintenance' | 'knowledge';
   export type Output = AgentResult | RunOutput | null;
   export type ArtifactIds = string[];
+  export type EvidenceId = string;
+  export type Marker = number;
+  export type Citations = CitationRef[];
   export type EvidenceRefs = string[];
   export type Reason = string;
   export type ResultVersion = number;
@@ -9533,6 +10728,7 @@ export namespace RunSnapshotSchema {
   export type Unresolved = string[];
   export type Verification = string[];
   export type ArtifactIds1 = string[];
+  export type Citations1 = CitationRef[];
   export type HandledFailures1 = FailureDisposition[];
   export type Summary1 = string;
   /**
@@ -9543,7 +10739,8 @@ export namespace RunSnapshotSchema {
   export type RootTaskId = string;
   export type ScopeDependencies = ScopeDependency[];
   export type ExcludedSourceIds = string[];
-  export type Kind2 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind4 = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -9571,14 +10768,14 @@ export namespace RunSnapshotSchema {
     attached_file_ids?: AttachedFileIds;
     budget_group_id: BudgetGroupId;
     budget_id: BudgetId;
-    config: ConfigSnapshot;
+    config: Config;
     deadline_at: DeadlineAt;
     execution_session_id: ExecutionSessionId;
     file_inputs: FileInputs;
     follow_up_closed: FollowUpClosed;
     id: Id2;
     interaction_session_id: InteractionSessionId;
-    kind: Kind1;
+    kind: Kind3;
     output: Output;
     reason: Reason1;
     root_task_id: RootTaskId;
@@ -9600,6 +10797,7 @@ export namespace RunSnapshotSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -9723,7 +10921,7 @@ export namespace RunSnapshotSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind;
+    kind: Kind1;
     note: Note;
     source: Source1;
     verified_at: VerifiedAt;
@@ -9749,6 +10947,10 @@ export namespace RunSnapshotSchema {
   export interface Tools2 {
     [k: string]: string;
   }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind2;
+  }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
   }
@@ -9769,6 +10971,7 @@ export namespace RunSnapshotSchema {
   }
   export interface AgentResult {
     artifact_ids: ArtifactIds;
+    citations?: Citations;
     evidence_refs: EvidenceRefs;
     handled_failures: HandledFailures;
     status: Status;
@@ -9777,6 +10980,10 @@ export namespace RunSnapshotSchema {
     unresolved: Unresolved;
     verification: Verification;
   }
+  export interface CitationRef {
+    evidence_id: EvidenceId;
+    marker: Marker;
+  }
   export interface FailureDisposition {
     reason: Reason;
     result_version: ResultVersion;
@@ -9784,19 +10991,21 @@ export namespace RunSnapshotSchema {
   }
   export interface RunOutput {
     artifact_ids: ArtifactIds1;
+    citations?: Citations1;
     handled_failures: HandledFailures1;
     summary: Summary1;
     unresolved: Unresolved1;
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind2;
+    kind: Kind4;
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
@@ -9887,6 +11096,63 @@ export namespace SaveConnectionCommandSchema {
 
 }
 export type SaveConnectionCommand = SaveConnectionCommandSchema.SaveConnectionCommand;
+
+export namespace SaveEmbeddingProfileCommandSchema {
+  export type ConnectionId = string | null;
+  export type Dimensions = number;
+  export type DisplayName = string;
+  export type DocumentPrefix = string;
+  export type Id = string;
+  export type LocalResourceId = string | null;
+  export type ModelId = string;
+  export type ModelRevision = string | null;
+  export type Currency = 'USD';
+  export type InputPerMillion = number | string | null;
+  export type ModelId1 = string | null;
+  export type Multiplier = number | string | null;
+  export type ProviderId = string | null;
+  export type Provider = 'openai' | 'fastembed';
+  export type QueryPrefix = string;
+  export type RequestDimensions = boolean;
+  export type RequestTimeoutSeconds = number;
+  export type Revision = number;
+  export type CommandId = string;
+  export type ExpectedVersion = number | null;
+
+  export interface SaveEmbeddingProfileCommand {
+    data: EmbeddingProfile;
+    meta: CommandMeta;
+  }
+  export interface EmbeddingProfile {
+    connection_id?: ConnectionId;
+    dimensions: Dimensions;
+    display_name: DisplayName;
+    document_prefix?: DocumentPrefix;
+    id?: Id;
+    local_resource_id?: LocalResourceId;
+    model_id: ModelId;
+    model_revision?: ModelRevision;
+    pricing?: EmbeddingPricing;
+    provider: Provider;
+    query_prefix?: QueryPrefix;
+    request_dimensions?: RequestDimensions;
+    request_timeout_seconds?: RequestTimeoutSeconds;
+    revision?: Revision;
+  }
+  export interface EmbeddingPricing {
+    currency?: Currency;
+    input_per_million?: InputPerMillion;
+    model_id?: ModelId1;
+    multiplier?: Multiplier;
+    provider_id?: ProviderId;
+  }
+  export interface CommandMeta {
+    command_id?: CommandId;
+    expected_version?: ExpectedVersion;
+  }
+
+}
+export type SaveEmbeddingProfileCommand = SaveEmbeddingProfileCommandSchema.SaveEmbeddingProfileCommand;
 
 export namespace SaveExecutionEnvironmentCommandSchema {
   export type CwdMode = 'attempt' | 'package_copy';
@@ -10191,7 +11457,7 @@ export namespace ScopeStateSchema {
 export type ScopeState = ScopeStateSchema.ScopeState;
 
 export namespace SessionSchema {
-  export type AgentProfileId = string;
+  export type AgentProfileId = string | null;
   export type Archived = boolean;
   export type AutomaticTitle = 'pending' | number | null;
   export type Id = string;
@@ -10219,6 +11485,7 @@ export namespace SessionContextSchema {
   export type CalculatedUnits = string | null;
   export type Compaction = boolean;
   export type CostPending = true | null;
+  export type EmbeddingKind = ('query' | 'document') | null;
   export type FileChanged = boolean;
   export type Changed = boolean;
   export type End = number | null;
@@ -10233,7 +11500,7 @@ export namespace SessionContextSchema {
   export type Id = string;
   export type InputLimit = number | null;
   export type InputTokens = number | null;
-  export type Kind = 'model' | 'inspect' | 'read';
+  export type Kind = 'model' | 'embedding' | 'inspect' | 'read';
   export type Model = string | null;
   export type OutputTokens = number | null;
   export type State = 'prepared' | 'dispatched' | 'succeeded' | 'failed' | 'uncertain';
@@ -10242,6 +11509,7 @@ export namespace SessionContextSchema {
   export type Watermark = string;
   export type Files1 = ContextFile[];
   export type HiddenFileCount1 = number;
+  export type HiddenKnowledgeCount = number;
   export type ActivityId = string | null;
   export type CompactedMessageCount = number;
   export type CompactionReason = string | null;
@@ -10250,6 +11518,12 @@ export namespace SessionContextSchema {
   export type OmittedMessageCount = number;
   export type State1 = ('prepared' | 'dispatched' | 'succeeded' | 'failed' | 'uncertain') | null;
   export type SummaryCount = number;
+  export type EndLine = number;
+  export type EvidenceId = string;
+  export type Historical = boolean;
+  export type Name1 = string;
+  export type StartLine = number;
+  export type Knowledge = ContextKnowledge[];
   export type FileChanged1 = true | null;
   export type ReplacementFileIds = string[];
   export type RunId = string;
@@ -10271,7 +11545,9 @@ export namespace SessionContextSchema {
     activities: PageContextActivity;
     files: Files1;
     hidden_file_count: HiddenFileCount1;
+    hidden_knowledge_count: HiddenKnowledgeCount;
     history: ContextUsageSummary | null;
+    knowledge: Knowledge;
     latest_request: ContextActivity | null;
     round: ContextRound | null;
     units_per_currency: UnitsPerCurrency;
@@ -10286,6 +11562,7 @@ export namespace SessionContextSchema {
     calculated_units: CalculatedUnits;
     compaction: Compaction;
     cost_pending?: CostPending;
+    embedding_kind?: EmbeddingKind;
     file_changed: FileChanged;
     files: Files;
     hidden_file_count: HiddenFileCount;
@@ -10321,6 +11598,13 @@ export namespace SessionContextSchema {
   export interface ReasonCounts {
     [k: string]: number;
   }
+  export interface ContextKnowledge {
+    end_line: EndLine;
+    evidence_id: EvidenceId;
+    historical: Historical;
+    name: Name1;
+    start_line: StartLine;
+  }
   export interface ContextRound {
     file_changed?: FileChanged1;
     replacement_file_ids?: ReplacementFileIds;
@@ -10338,6 +11622,12 @@ export namespace SessionContextUsageSchema {
   export type CachedInputTokens = number;
   export type CachedTokensWithReportedInput = number;
   export type CalculatedUnits = string;
+  export type EmbeddingCalculatedUnits = string;
+  export type EmbeddingInputReportedRequests = number;
+  export type EmbeddingInputTokens = number;
+  export type EmbeddingPendingCostRequests = number;
+  export type EmbeddingRequests = number;
+  export type EmbeddingUnknownCostRequests = number;
   export type InputReportedRequests = number;
   export type InputTokens = number;
   export type OutputReportedRequests = number;
@@ -10353,6 +11643,12 @@ export namespace SessionContextUsageSchema {
     cached_input_tokens: CachedInputTokens;
     cached_tokens_with_reported_input: CachedTokensWithReportedInput;
     calculated_units: CalculatedUnits;
+    embedding_calculated_units: EmbeddingCalculatedUnits;
+    embedding_input_reported_requests: EmbeddingInputReportedRequests;
+    embedding_input_tokens: EmbeddingInputTokens;
+    embedding_pending_cost_requests: EmbeddingPendingCostRequests;
+    embedding_requests: EmbeddingRequests;
+    embedding_unknown_cost_requests: EmbeddingUnknownCostRequests;
     input_reported_requests: InputReportedRequests;
     input_tokens: InputTokens;
     output_reported_requests: OutputReportedRequests;
@@ -10448,7 +11744,7 @@ export namespace SessionInboxEntrySchema {
 export type SessionInboxEntry = SessionInboxEntrySchema.SessionInboxEntry;
 
 export namespace SessionPageSchema {
-  export type AgentProfileId = string;
+  export type AgentProfileId = string | null;
   export type Archived = boolean;
   export type AutomaticTitle = 'pending' | number | null;
   export type Id = string;
@@ -10574,6 +11870,7 @@ export namespace SessionRunPageSchema {
   export type AttachedFileIds = string[] | null;
   export type BudgetGroupId = string;
   export type BudgetId = string;
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -10604,6 +11901,7 @@ export namespace SessionRunPageSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -10634,7 +11932,7 @@ export namespace SessionRunPageSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind1 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source1 = string | null;
   export type VerifiedAt = string | null;
@@ -10657,6 +11955,7 @@ export namespace SessionRunPageSchema {
   export type Version2 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind2 = 'deterministic';
   export type DeadlineAt = string;
   export type ExecutionSessionId = string;
   export type FileIdentity = string;
@@ -10667,9 +11966,12 @@ export namespace SessionRunPageSchema {
   export type FollowUpClosed = boolean;
   export type Id2 = string;
   export type InteractionSessionId = string | null;
-  export type Kind1 = 'user' | 'managed' | 'follow_up' | 'maintenance';
+  export type Kind3 = 'user' | 'managed' | 'follow_up' | 'maintenance' | 'knowledge';
   export type Output = AgentResult | RunOutput | null;
   export type ArtifactIds = string[];
+  export type EvidenceId = string;
+  export type Marker = number;
+  export type Citations = CitationRef[];
   export type EvidenceRefs = string[];
   export type Reason = string;
   export type ResultVersion = number;
@@ -10684,6 +11986,7 @@ export namespace SessionRunPageSchema {
   export type Unresolved = string[];
   export type Verification = string[];
   export type ArtifactIds1 = string[];
+  export type Citations1 = CitationRef[];
   export type HandledFailures1 = FailureDisposition[];
   export type Summary1 = string;
   /**
@@ -10694,7 +11997,8 @@ export namespace SessionRunPageSchema {
   export type RootTaskId = string;
   export type ScopeDependencies = ScopeDependency[];
   export type ExcludedSourceIds = string[];
-  export type Kind2 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind4 = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -10735,14 +12039,14 @@ export namespace SessionRunPageSchema {
     attached_file_ids?: AttachedFileIds;
     budget_group_id: BudgetGroupId;
     budget_id: BudgetId;
-    config: ConfigSnapshot;
+    config: Config;
     deadline_at: DeadlineAt;
     execution_session_id: ExecutionSessionId;
     file_inputs: FileInputs;
     follow_up_closed: FollowUpClosed;
     id: Id2;
     interaction_session_id: InteractionSessionId;
-    kind: Kind1;
+    kind: Kind3;
     output: Output;
     reason: Reason1;
     root_task_id: RootTaskId;
@@ -10764,6 +12068,7 @@ export namespace SessionRunPageSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -10887,7 +12192,7 @@ export namespace SessionRunPageSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind;
+    kind: Kind1;
     note: Note;
     source: Source1;
     verified_at: VerifiedAt;
@@ -10913,6 +12218,10 @@ export namespace SessionRunPageSchema {
   export interface Tools2 {
     [k: string]: string;
   }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind2;
+  }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
   }
@@ -10933,6 +12242,7 @@ export namespace SessionRunPageSchema {
   }
   export interface AgentResult {
     artifact_ids: ArtifactIds;
+    citations?: Citations;
     evidence_refs: EvidenceRefs;
     handled_failures: HandledFailures;
     status: Status;
@@ -10941,6 +12251,10 @@ export namespace SessionRunPageSchema {
     unresolved: Unresolved;
     verification: Verification;
   }
+  export interface CitationRef {
+    evidence_id: EvidenceId;
+    marker: Marker;
+  }
   export interface FailureDisposition {
     reason: Reason;
     result_version: ResultVersion;
@@ -10948,19 +12262,21 @@ export namespace SessionRunPageSchema {
   }
   export interface RunOutput {
     artifact_ids: ArtifactIds1;
+    citations?: Citations1;
     handled_failures: HandledFailures1;
     summary: Summary1;
     unresolved: Unresolved1;
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind2;
+    kind: Kind4;
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
@@ -10987,6 +12303,84 @@ export namespace SessionRunPageSchema {
 
 }
 export type SessionRunPage = SessionRunPageSchema.SessionRunPage;
+
+export namespace SetProjectKnowledgeCommandSchema {
+  export type Id = string;
+  export type Revision = number;
+  export type Destination = string | null;
+  export type Kind = 'user_global' | 'workspace' | 'session';
+  export type SessionId = string | null;
+  export type WorkspaceId = string | null;
+  export type KnowledgeScopes = ScopeRef[];
+  export type KnowledgeSourceIds = string[];
+  export type CatalogHash = string;
+  export type ConfigRevision = number;
+  export type Destination1 = string;
+  export type OriginalName = string;
+  export type ServerId = string;
+  export type McpQueries = McpToolSnapshot[];
+  export type MemoryScopes = ScopeRef[];
+  /**
+   * @minItems 1
+   */
+  export type Purposes = [
+    'read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send',
+    ...('read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send')[]
+  ];
+  export type ResourceIds = string[];
+  export type Grants = GrantCommand[];
+  export type CommandId = string;
+  export type ExpectedVersion = number | null;
+
+  export interface SetProjectKnowledgeCommand {
+    data: SetProjectKnowledge;
+    meta: CommandMeta;
+  }
+  export interface SetProjectKnowledge {
+    embedding_profile: EmbeddingProfileRef | null;
+    grants?: Grants;
+  }
+  export interface EmbeddingProfileRef {
+    id: Id;
+    revision: Revision;
+  }
+  export interface GrantCommand {
+    destination?: Destination;
+    knowledge_scopes?: KnowledgeScopes;
+    knowledge_source_ids?: KnowledgeSourceIds;
+    mcp_queries?: McpQueries;
+    mcp_versions?: McpVersions;
+    memory_scopes?: MemoryScopes;
+    purposes: Purposes;
+    resource_ids?: ResourceIds;
+    scope: ScopeRef;
+  }
+  export interface ScopeRef {
+    kind: Kind;
+    session_id?: SessionId;
+    workspace_id?: WorkspaceId;
+  }
+  export interface McpToolSnapshot {
+    catalog_hash: CatalogHash;
+    config_revision: ConfigRevision;
+    destination: Destination1;
+    original_name: OriginalName;
+    server_id: ServerId;
+  }
+  export interface McpVersions {
+    /**
+     * This interface was referenced by `McpVersions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface CommandMeta {
+    command_id?: CommandId;
+    expected_version?: ExpectedVersion;
+  }
+
+}
+export type SetProjectKnowledgeCommand = SetProjectKnowledgeCommandSchema.SetProjectKnowledgeCommand;
 
 export namespace SetWorkspaceDirectoryCommandSchema {
   export type ResourceId = string | null;
@@ -11720,6 +13114,7 @@ export type SkillView = SkillViewSchema.SkillView;
 
 export namespace SourceSelectionSchema {
   export type ExcludedSourceIds = string[];
+  export type KnowledgeSourceIds = string[];
   export type Kind = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
@@ -11728,6 +13123,7 @@ export namespace SourceSelectionSchema {
 
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
@@ -11755,6 +13151,26 @@ export namespace SourceSelectionSchema {
 
 }
 export type SourceSelection = SourceSelectionSchema.SourceSelection;
+
+export namespace SourceVersionSchema {
+  export type ByteSize = number;
+  export type ContentHash = string;
+  export type CreatedAt = string;
+  export type MediaType = 'text/plain' | 'text/markdown';
+  export type SourceId = string;
+  export type Version = number;
+
+  export interface SourceVersion {
+    byte_size: ByteSize;
+    content_hash: ContentHash;
+    created_at: CreatedAt;
+    media_type: MediaType;
+    source_id: SourceId;
+    version: Version;
+  }
+
+}
+export type SourceVersion = SourceVersionSchema.SourceVersion;
 
 export namespace StageSkillCommandSchema {
   export type BaseHash = string | null;
@@ -11813,6 +13229,7 @@ export namespace StartRunCommandSchema {
   export type ReasoningEffort = ('none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max') | null;
   export type SourceResult = string | null;
   export type ExcludedSourceIds = string[];
+  export type KnowledgeSourceIds = string[];
   export type Kind = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
@@ -11864,6 +13281,7 @@ export namespace StartRunCommandSchema {
   }
   export interface SourceSelection {
     excluded_source_ids?: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes?: MemoryScopes;
     resource_ids?: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
@@ -11955,7 +13373,8 @@ export namespace StreamEventSchema {
     | SkillEvent
     | EnvironmentEvent
     | McpEvent
-    | TitlePolicyEvent;
+    | TitlePolicyEvent
+    | KnowledgeEvent;
   export type ActivityId = string | null;
   export type CausationId = string | null;
   export type CreatedAt = string;
@@ -11978,7 +13397,7 @@ export namespace StreamEventSchema {
   export type EventId1 = string;
   export type EventVersion1 = 1;
   export type Kind1 = 'session.created' | 'session.updated';
-  export type AgentProfileId = string;
+  export type AgentProfileId = string | null;
   export type Archived = boolean;
   export type AutomaticTitle = 'pending' | number | null;
   export type Id1 = string;
@@ -12250,6 +13669,7 @@ export namespace StreamEventSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind12 = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency1 = 'USD';
@@ -12275,7 +13695,7 @@ export namespace StreamEventSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens1 = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind12 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind13 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source2 = string | null;
   export type VerifiedAt = string | null;
@@ -12330,7 +13750,8 @@ export namespace StreamEventSchema {
   export type SessionId7 = string;
   export type SourceResult1 = string | null;
   export type ExcludedSourceIds = string[];
-  export type Kind13 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind14 = 'user_global' | 'workspace' | 'session';
   export type SessionId8 = string | null;
   export type WorkspaceId6 = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -12354,14 +13775,19 @@ export namespace StreamEventSchema {
   export type AttachedFileIds = string[] | null;
   export type BudgetGroupId1 = string;
   export type BudgetId = string;
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
+  export type Kind15 = 'deterministic';
   export type DeadlineAt1 = string;
   export type ExecutionSessionId1 = string;
   export type FollowUpClosed = boolean;
   export type Id14 = string;
   export type InteractionSessionId = string | null;
-  export type Kind14 = 'user' | 'managed' | 'follow_up' | 'maintenance';
+  export type Kind16 = 'user' | 'managed' | 'follow_up' | 'maintenance' | 'knowledge';
   export type Output = AgentResult | RunOutput | null;
   export type ArtifactIds = string[];
+  export type EvidenceId = string;
+  export type Marker = number;
+  export type Citations = CitationRef[];
   export type EvidenceRefs = string[];
   export type Reason2 = string;
   export type ResultVersion2 = number;
@@ -12375,6 +13801,7 @@ export namespace StreamEventSchema {
   export type Unresolved = string[];
   export type Verification = string[];
   export type ArtifactIds1 = string[];
+  export type Citations1 = CitationRef[];
   export type HandledFailures1 = FailureDisposition[];
   export type Summary1 = string;
   /**
@@ -12403,9 +13830,10 @@ export namespace StreamEventSchema {
   export type AdditionalResultInputs = ResultInput[];
   export type Goal = string;
   export type InputRefs = string[];
-  export type Kind15 = 'agent';
+  export type Kind17 = 'agent';
   export type ProfileId = string;
   export type SuccessCriteria = string[];
+  export type Config1 = ConfigSnapshot | DeterministicConfigSnapshot;
   export type DelegationDepth = number;
   export type ExecutionSessionId2 = string;
   export type InputArtifacts = ArtifactRef[];
@@ -12414,7 +13842,7 @@ export namespace StreamEventSchema {
   export type DeadlineAt2 = string | null;
   export type ExecutorId = string;
   export type Id15 = string;
-  export type Kind16 = 'agent' | 'tool';
+  export type Kind18 = 'agent' | 'tool';
   export type OriginTaskId = string | null;
   export type ParentTaskId = string | null;
   export type Reason4 = string | null;
@@ -12453,7 +13881,7 @@ export namespace StreamEventSchema {
   export type CreatedAt6 = string;
   export type EventId9 = string;
   export type EventVersion6 = 1;
-  export type Kind17 =
+  export type Kind19 =
     | 'resource.registered'
     | 'resource.updated'
     | 'grant.created'
@@ -12483,21 +13911,23 @@ export namespace StreamEventSchema {
   export type Destination1 = string | null;
   export type Epoch1 = number;
   export type Id18 = string;
+  export type KnowledgeScopes = ScopeRef[];
+  export type KnowledgeSourceIds1 = string[];
   export type McpQueries = McpToolSnapshot[];
   export type MemoryScopes1 = ScopeRef[];
   /**
    * @minItems 1
    */
   export type Purposes = [
-    'read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send',
-    ...('read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send')[]
+    'read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send',
+    ...('read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send')[]
   ];
   export type ResourceIds1 = string[];
   export type Status5 = 'active' | 'revoked';
   export type Version15 = number;
   export type Grants = DataUseGrant[];
   export type Id19 = string;
-  export type Kind18 = 'file' | 'directory' | 'export';
+  export type Kind20 = 'file' | 'directory' | 'export';
   export type Label = string;
   export type SourceVersion1 = string | null;
   export type Version16 = number;
@@ -12512,7 +13942,7 @@ export namespace StreamEventSchema {
   export type CreatedAt7 = string;
   export type EventId10 = string;
   export type EventVersion7 = 1;
-  export type Kind19 = 'scope.deleted' | 'scope.revoked' | 'accounting.settled';
+  export type Kind21 = 'scope.deleted' | 'scope.revoked' | 'accounting.settled';
   export type Epoch2 = number;
   export type Status6 = 'deleted';
   export type Deletions = DeletionReceipt[];
@@ -12530,7 +13960,7 @@ export namespace StreamEventSchema {
   export type CreatedAt8 = string;
   export type EventId11 = string;
   export type EventVersion8 = 1;
-  export type Kind20 = 'delivery.changed';
+  export type Kind22 = 'delivery.changed';
   export type AssistantName = string | null;
   export type Attempts = number;
   export type Consumers = ResultConsumption[];
@@ -12556,7 +13986,7 @@ export namespace StreamEventSchema {
   export type CreatedAt9 = string;
   export type EventId12 = string;
   export type EventVersion9 = 1;
-  export type Kind21 = 'admission.stopped';
+  export type Kind23 = 'admission.stopped';
   export type Generation = number;
   export type AdmissionFences = AdmissionFence[];
   export type RunId21 = string | null;
@@ -12569,7 +13999,7 @@ export namespace StreamEventSchema {
   export type CreatedAt10 = string;
   export type EventId13 = string;
   export type EventVersion10 = 1;
-  export type Kind22 = 'memory.changed' | 'memory.policy_changed';
+  export type Kind24 = 'memory.changed' | 'memory.policy_changed';
   export type AutoOrganize = boolean;
   export type ModelProfileId2 = string | null;
   export type ReadProfile = boolean;
@@ -12589,7 +14019,7 @@ export namespace StreamEventSchema {
   export type CreatedAt11 = string;
   export type EventId14 = string;
   export type EventVersion11 = 1;
-  export type Kind23 = 'memory.maintenance_changed';
+  export type Kind25 = 'memory.maintenance_changed';
   export type Id23 = string;
   export type PolicyVersion1 = number;
   export type Reason5 = string | null;
@@ -12605,7 +14035,7 @@ export namespace StreamEventSchema {
   export type CreatedAt12 = string;
   export type EventId16 = string;
   export type EventVersion12 = 1;
-  export type Kind24 = 'skill.changed';
+  export type Kind26 = 'skill.changed';
   export type Revision1 = number;
   export type SkillId1 = string;
   export type Status9 = 'active' | 'deleted';
@@ -12619,7 +14049,7 @@ export namespace StreamEventSchema {
   export type CreatedAt13 = string;
   export type EventId17 = string;
   export type EventVersion13 = 1;
-  export type Kind25 = 'environment.changed';
+  export type Kind27 = 'environment.changed';
   export type EnvironmentId1 = string;
   export type RunId26 = string | null;
   export type Seq13 = number | null;
@@ -12631,7 +14061,7 @@ export namespace StreamEventSchema {
   export type CreatedAt14 = string;
   export type EventId18 = string;
   export type EventVersion14 = 1;
-  export type Kind26 = 'mcp.changed';
+  export type Kind28 = 'mcp.changed';
   export type ConfigRevision1 = number;
   export type ServerId1 = string;
   export type RunId27 = string | null;
@@ -12644,7 +14074,7 @@ export namespace StreamEventSchema {
   export type CreatedAt15 = string;
   export type EventId19 = string;
   export type EventVersion15 = 1;
-  export type Kind27 = 'naming.policy_saved';
+  export type Kind29 = 'naming.policy_saved';
   export type ConnectionVersion2 = number;
   export type Endpoint2 = string;
   export type MaxCostUnits1 = string | null;
@@ -12659,17 +14089,30 @@ export namespace StreamEventSchema {
   export type SessionId20 = string | null;
   export type TaskId22 = string | null;
   export type WorkspaceId20 = string | null;
+  export type ActivityId19 = string | null;
+  export type CausationId16 = string | null;
+  export type CreatedAt16 = string;
   export type EventId20 = string;
-  export type Kind28 = 'durable';
-  export type ActivityId19 = string;
+  export type EventVersion16 = 1;
+  export type Kind30 = 'knowledge.changed';
+  export type SettingsRevision = number | null;
+  export type WorkspaceId21 = string | null;
+  export type RunId29 = string | null;
+  export type Seq16 = number | null;
+  export type SessionId21 = string | null;
+  export type TaskId23 = string | null;
+  export type WorkspaceId22 = string | null;
+  export type EventId21 = string;
+  export type Kind31 = 'durable';
+  export type ActivityId20 = string;
   export type Index = number;
-  export type Kind29 = 'delta' | 'reasoning_delta';
+  export type Kind32 = 'delta' | 'reasoning_delta';
   export type Text3 = string;
 
   export interface DurableEvent {
     event: Event;
-    event_id: EventId20;
-    kind: Kind28;
+    event_id: EventId21;
+    kind: Kind31;
   }
   export interface WorkspaceEvent {
     activity_id: ActivityId;
@@ -13030,6 +14473,7 @@ export namespace StreamEventSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind12;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -13134,7 +14578,7 @@ export namespace StreamEventSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind12;
+    kind: Kind13;
     note: Note;
     source: Source2;
     verified_at: VerifiedAt;
@@ -13220,13 +14664,14 @@ export namespace StreamEventSchema {
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind13;
+    kind: Kind14;
     session_id: SessionId8;
     workspace_id: WorkspaceId6;
   }
@@ -13267,14 +14712,14 @@ export namespace StreamEventSchema {
     attached_file_ids?: AttachedFileIds;
     budget_group_id: BudgetGroupId1;
     budget_id: BudgetId;
-    config: ConfigSnapshot;
+    config: Config;
     deadline_at: DeadlineAt1;
     execution_session_id: ExecutionSessionId1;
     file_inputs: FileInputs1;
     follow_up_closed: FollowUpClosed;
     id: Id14;
     interaction_session_id: InteractionSessionId;
-    kind: Kind14;
+    kind: Kind16;
     output: Output;
     reason: Reason3;
     root_task_id: RootTaskId1;
@@ -13293,11 +14738,16 @@ export namespace StreamEventSchema {
      */
     [k: string]: number;
   }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind15;
+  }
   export interface FileInputs1 {
     [k: string]: SelectedFileVersion;
   }
   export interface AgentResult {
     artifact_ids: ArtifactIds;
+    citations?: Citations;
     evidence_refs: EvidenceRefs;
     handled_failures: HandledFailures;
     status: Status3;
@@ -13306,6 +14756,10 @@ export namespace StreamEventSchema {
     unresolved: Unresolved;
     verification: Verification;
   }
+  export interface CitationRef {
+    evidence_id: EvidenceId;
+    marker: Marker;
+  }
   export interface FailureDisposition {
     reason: Reason2;
     result_version: ResultVersion2;
@@ -13313,6 +14767,7 @@ export namespace StreamEventSchema {
   }
   export interface RunOutput {
     artifact_ids: ArtifactIds1;
+    citations?: Citations1;
     handled_failures: HandledFailures1;
     summary: Summary1;
     unresolved: Unresolved1;
@@ -13323,7 +14778,7 @@ export namespace StreamEventSchema {
     deadline_at: DeadlineAt2;
     executor_id: ExecutorId;
     id: Id15;
-    kind: Kind16;
+    kind: Kind18;
     origin_task_id: OriginTaskId;
     parent_task_id: ParentTaskId;
     reason: Reason4;
@@ -13335,7 +14790,7 @@ export namespace StreamEventSchema {
   export interface TaskExecutionBinding {
     additional_result_inputs: AdditionalResultInputs;
     agent_work: AgentWork | null;
-    config: ConfigSnapshot;
+    config: Config1;
     delegation_depth: DelegationDepth;
     execution_session_id: ExecutionSessionId2;
     file_inputs: FileInputs2;
@@ -13347,7 +14802,7 @@ export namespace StreamEventSchema {
   export interface AgentWork {
     goal: Goal;
     input_refs: InputRefs;
-    kind: Kind15;
+    kind: Kind17;
     output_schema: OutputSchema;
     profile_id: ProfileId;
     success_criteria: SuccessCriteria;
@@ -13375,7 +14830,7 @@ export namespace StreamEventSchema {
     created_at: CreatedAt6;
     event_id: EventId9;
     event_version: EventVersion6;
-    kind: Kind17;
+    kind: Kind19;
     payload: PublicPolicyChange;
     run_id: RunId18;
     seq: Seq6;
@@ -13424,6 +14879,8 @@ export namespace StreamEventSchema {
     destination: Destination1;
     epoch: Epoch1;
     id: Id18;
+    knowledge_scopes?: KnowledgeScopes;
+    knowledge_source_ids?: KnowledgeSourceIds1;
     mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes1;
@@ -13442,7 +14899,7 @@ export namespace StreamEventSchema {
   }
   export interface ResourceRef {
     id: Id19;
-    kind: Kind18;
+    kind: Kind20;
     label: Label;
     scope: ScopeRef;
     source_version: SourceVersion1;
@@ -13454,7 +14911,7 @@ export namespace StreamEventSchema {
     created_at: CreatedAt7;
     event_id: EventId10;
     event_version: EventVersion7;
-    kind: Kind19;
+    kind: Kind21;
     payload: PublicLifecycleChange;
     run_id: RunId19;
     seq: Seq7;
@@ -13483,7 +14940,7 @@ export namespace StreamEventSchema {
     created_at: CreatedAt8;
     event_id: EventId11;
     event_version: EventVersion8;
-    kind: Kind20;
+    kind: Kind22;
     payload: DeliveryChange;
     run_id: RunId20;
     seq: Seq8;
@@ -13517,7 +14974,7 @@ export namespace StreamEventSchema {
     created_at: CreatedAt9;
     event_id: EventId12;
     event_version: EventVersion9;
-    kind: Kind21;
+    kind: Kind23;
     payload: AdmissionChange;
     run_id: RunId21;
     seq: Seq9;
@@ -13538,7 +14995,7 @@ export namespace StreamEventSchema {
     created_at: CreatedAt10;
     event_id: EventId13;
     event_version: EventVersion10;
-    kind: Kind22;
+    kind: Kind24;
     payload: MemoryChange;
     run_id: RunId22;
     seq: Seq10;
@@ -13573,7 +15030,7 @@ export namespace StreamEventSchema {
     created_at: CreatedAt11;
     event_id: EventId14;
     event_version: EventVersion11;
-    kind: Kind23;
+    kind: Kind25;
     payload: MemoryMaintenanceNotice;
     run_id: RunId24;
     seq: Seq11;
@@ -13599,7 +15056,7 @@ export namespace StreamEventSchema {
     created_at: CreatedAt12;
     event_id: EventId16;
     event_version: EventVersion12;
-    kind: Kind24;
+    kind: Kind26;
     payload: SkillNotice;
     run_id: RunId25;
     seq: Seq12;
@@ -13619,7 +15076,7 @@ export namespace StreamEventSchema {
     created_at: CreatedAt13;
     event_id: EventId17;
     event_version: EventVersion13;
-    kind: Kind25;
+    kind: Kind27;
     payload: EnvironmentChanged;
     run_id: RunId26;
     seq: Seq13;
@@ -13639,7 +15096,7 @@ export namespace StreamEventSchema {
     created_at: CreatedAt14;
     event_id: EventId18;
     event_version: EventVersion14;
-    kind: Kind26;
+    kind: Kind28;
     payload: McpNotice;
     run_id: RunId27;
     seq: Seq14;
@@ -13658,7 +15115,7 @@ export namespace StreamEventSchema {
     created_at: CreatedAt15;
     event_id: EventId19;
     event_version: EventVersion15;
-    kind: Kind27;
+    kind: Kind29;
     payload: TitlePolicy;
     run_id: RunId28;
     seq: Seq15;
@@ -13680,10 +15137,52 @@ export namespace StreamEventSchema {
     model_profile_id: ModelProfileId3;
     model_version: ModelVersion1;
   }
-  export interface DeltaEvent {
+  export interface KnowledgeEvent {
     activity_id: ActivityId19;
+    causation_id: CausationId16;
+    created_at: CreatedAt16;
+    event_id: EventId20;
+    event_version: EventVersion16;
+    kind: Kind30;
+    payload: KnowledgeNotice;
+    run_id: RunId29;
+    seq: Seq16;
+    session_id: SessionId21;
+    task_id: TaskId23;
+    workspace_id: WorkspaceId22;
+  }
+  export interface KnowledgeNotice {
+    job_revisions: JobRevisions;
+    profile_revisions: ProfileRevisions;
+    settings_revision: SettingsRevision;
+    source_revisions: SourceRevisions;
+    workspace_id: WorkspaceId21;
+  }
+  export interface JobRevisions {
+    /**
+     * This interface was referenced by `JobRevisions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface ProfileRevisions {
+    /**
+     * This interface was referenced by `ProfileRevisions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface SourceRevisions {
+    /**
+     * This interface was referenced by `SourceRevisions`'s JSON-Schema definition
+     * via the `patternProperty` "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$".
+     */
+    [k: string]: number;
+  }
+  export interface DeltaEvent {
+    activity_id: ActivityId20;
     index: Index;
-    kind: Kind29;
+    kind: Kind32;
     text: Text3;
   }
 
@@ -13767,6 +15266,7 @@ export namespace SubmitTaskCommandSchema {
   export type MaxTasks = number;
   export type MaxTotalTokens = number | null;
   export type ExcludedSourceIds = string[];
+  export type KnowledgeSourceIds = string[];
   export type Kind = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
@@ -13811,6 +15311,7 @@ export namespace SubmitTaskCommandSchema {
   }
   export interface SourceSelection {
     excluded_source_ids?: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes?: MemoryScopes;
     resource_ids?: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
@@ -13895,6 +15396,7 @@ export namespace TaskCenterItemSchema {
   export type JsonValue = unknown;
   export type ProfileId = string;
   export type SuccessCriteria = string[];
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -13925,6 +15427,7 @@ export namespace TaskCenterItemSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind1 = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -13955,7 +15458,7 @@ export namespace TaskCenterItemSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind1 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind2 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source1 = string | null;
   export type VerifiedAt = string | null;
@@ -13978,6 +15481,7 @@ export namespace TaskCenterItemSchema {
   export type Version2 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind3 = 'deterministic';
   export type DelegationDepth = number;
   export type ExecutionSessionId = string;
   export type FileIdentity = string;
@@ -13994,7 +15498,8 @@ export namespace TaskCenterItemSchema {
   export type InputArtifacts = ArtifactRef[];
   export type InteractionSessionId = string | null;
   export type ExcludedSourceIds = string[];
-  export type Kind2 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind4 = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -14003,7 +15508,7 @@ export namespace TaskCenterItemSchema {
   export type DeadlineAt = string | null;
   export type ExecutorId = string;
   export type Id3 = string;
-  export type Kind3 = 'agent' | 'tool';
+  export type Kind5 = 'agent' | 'tool';
   export type OriginTaskId1 = string | null;
   export type ParentTaskId = string | null;
   export type Reason = string | null;
@@ -14026,14 +15531,18 @@ export namespace TaskCenterItemSchema {
   export type AttachedFileIds = string[] | null;
   export type BudgetGroupId = string;
   export type BudgetId = string;
+  export type Config1 = ConfigSnapshot | DeterministicConfigSnapshot;
   export type DeadlineAt1 = string;
   export type ExecutionSessionId1 = string;
   export type FollowUpClosed = boolean;
   export type Id4 = string;
   export type InteractionSessionId1 = string | null;
-  export type Kind4 = 'user' | 'managed' | 'follow_up' | 'maintenance';
+  export type Kind6 = 'user' | 'managed' | 'follow_up' | 'maintenance' | 'knowledge';
   export type Output = AgentResult | RunOutput | null;
   export type ArtifactIds = string[];
+  export type EvidenceId = string;
+  export type Marker = number;
+  export type Citations = CitationRef[];
   export type EvidenceRefs = string[];
   export type Reason1 = string;
   export type ResultVersion2 = number;
@@ -14047,6 +15556,7 @@ export namespace TaskCenterItemSchema {
   export type Unresolved = string[];
   export type Verification = string[];
   export type ArtifactIds1 = string[];
+  export type Citations1 = CitationRef[];
   export type HandledFailures1 = FailureDisposition[];
   export type Summary1 = string;
   /**
@@ -14093,7 +15603,7 @@ export namespace TaskCenterItemSchema {
     deadline_at: DeadlineAt;
     executor_id: ExecutorId;
     id: Id3;
-    kind: Kind3;
+    kind: Kind5;
     origin_task_id: OriginTaskId1;
     parent_task_id: ParentTaskId;
     reason: Reason;
@@ -14105,7 +15615,7 @@ export namespace TaskCenterItemSchema {
   export interface TaskExecutionBinding {
     additional_result_inputs: AdditionalResultInputs;
     agent_work: AgentWork | null;
-    config: ConfigSnapshot;
+    config: Config;
     delegation_depth: DelegationDepth;
     execution_session_id: ExecutionSessionId;
     file_inputs: FileInputs;
@@ -14146,6 +15656,7 @@ export namespace TaskCenterItemSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind1;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -14269,7 +15780,7 @@ export namespace TaskCenterItemSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind1;
+    kind: Kind2;
     note: Note;
     source: Source1;
     verified_at: VerifiedAt;
@@ -14294,6 +15805,10 @@ export namespace TaskCenterItemSchema {
   }
   export interface Tools2 {
     [k: string]: string;
+  }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind3;
   }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
@@ -14323,13 +15838,14 @@ export namespace TaskCenterItemSchema {
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind2;
+    kind: Kind4;
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
@@ -14354,14 +15870,14 @@ export namespace TaskCenterItemSchema {
     attached_file_ids?: AttachedFileIds;
     budget_group_id: BudgetGroupId;
     budget_id: BudgetId;
-    config: ConfigSnapshot;
+    config: Config1;
     deadline_at: DeadlineAt1;
     execution_session_id: ExecutionSessionId1;
     file_inputs: FileInputs1;
     follow_up_closed: FollowUpClosed;
     id: Id4;
     interaction_session_id: InteractionSessionId1;
-    kind: Kind4;
+    kind: Kind6;
     output: Output;
     reason: Reason2;
     root_task_id: RootTaskId;
@@ -14385,6 +15901,7 @@ export namespace TaskCenterItemSchema {
   }
   export interface AgentResult {
     artifact_ids: ArtifactIds;
+    citations?: Citations;
     evidence_refs: EvidenceRefs;
     handled_failures: HandledFailures;
     status: Status;
@@ -14393,6 +15910,10 @@ export namespace TaskCenterItemSchema {
     unresolved: Unresolved;
     verification: Verification;
   }
+  export interface CitationRef {
+    evidence_id: EvidenceId;
+    marker: Marker;
+  }
   export interface FailureDisposition {
     reason: Reason1;
     result_version: ResultVersion2;
@@ -14400,6 +15921,7 @@ export namespace TaskCenterItemSchema {
   }
   export interface RunOutput {
     artifact_ids: ArtifactIds1;
+    citations?: Citations1;
     handled_failures: HandledFailures1;
     summary: Summary1;
     unresolved: Unresolved1;
@@ -14440,6 +15962,7 @@ export namespace TaskCenterPageSchema {
   export type JsonValue = unknown;
   export type ProfileId = string;
   export type SuccessCriteria = string[];
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -14470,6 +15993,7 @@ export namespace TaskCenterPageSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind1 = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -14500,7 +16024,7 @@ export namespace TaskCenterPageSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind1 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind2 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source1 = string | null;
   export type VerifiedAt = string | null;
@@ -14523,6 +16047,7 @@ export namespace TaskCenterPageSchema {
   export type Version2 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind3 = 'deterministic';
   export type DelegationDepth = number;
   export type ExecutionSessionId = string;
   export type FileIdentity = string;
@@ -14539,7 +16064,8 @@ export namespace TaskCenterPageSchema {
   export type InputArtifacts = ArtifactRef[];
   export type InteractionSessionId = string | null;
   export type ExcludedSourceIds = string[];
-  export type Kind2 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind4 = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -14548,7 +16074,7 @@ export namespace TaskCenterPageSchema {
   export type DeadlineAt = string | null;
   export type ExecutorId = string;
   export type Id3 = string;
-  export type Kind3 = 'agent' | 'tool';
+  export type Kind5 = 'agent' | 'tool';
   export type OriginTaskId1 = string | null;
   export type ParentTaskId = string | null;
   export type Reason = string | null;
@@ -14571,14 +16097,18 @@ export namespace TaskCenterPageSchema {
   export type AttachedFileIds = string[] | null;
   export type BudgetGroupId = string;
   export type BudgetId = string;
+  export type Config1 = ConfigSnapshot | DeterministicConfigSnapshot;
   export type DeadlineAt1 = string;
   export type ExecutionSessionId1 = string;
   export type FollowUpClosed = boolean;
   export type Id4 = string;
   export type InteractionSessionId1 = string | null;
-  export type Kind4 = 'user' | 'managed' | 'follow_up' | 'maintenance';
+  export type Kind6 = 'user' | 'managed' | 'follow_up' | 'maintenance' | 'knowledge';
   export type Output = AgentResult | RunOutput | null;
   export type ArtifactIds = string[];
+  export type EvidenceId = string;
+  export type Marker = number;
+  export type Citations = CitationRef[];
   export type EvidenceRefs = string[];
   export type Reason1 = string;
   export type ResultVersion2 = number;
@@ -14592,6 +16122,7 @@ export namespace TaskCenterPageSchema {
   export type Unresolved = string[];
   export type Verification = string[];
   export type ArtifactIds1 = string[];
+  export type Citations1 = CitationRef[];
   export type HandledFailures1 = FailureDisposition[];
   export type Summary1 = string;
   /**
@@ -14646,7 +16177,7 @@ export namespace TaskCenterPageSchema {
     deadline_at: DeadlineAt;
     executor_id: ExecutorId;
     id: Id3;
-    kind: Kind3;
+    kind: Kind5;
     origin_task_id: OriginTaskId1;
     parent_task_id: ParentTaskId;
     reason: Reason;
@@ -14658,7 +16189,7 @@ export namespace TaskCenterPageSchema {
   export interface TaskExecutionBinding {
     additional_result_inputs: AdditionalResultInputs;
     agent_work: AgentWork | null;
-    config: ConfigSnapshot;
+    config: Config;
     delegation_depth: DelegationDepth;
     execution_session_id: ExecutionSessionId;
     file_inputs: FileInputs;
@@ -14699,6 +16230,7 @@ export namespace TaskCenterPageSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind1;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -14822,7 +16354,7 @@ export namespace TaskCenterPageSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind1;
+    kind: Kind2;
     note: Note;
     source: Source1;
     verified_at: VerifiedAt;
@@ -14847,6 +16379,10 @@ export namespace TaskCenterPageSchema {
   }
   export interface Tools2 {
     [k: string]: string;
+  }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind3;
   }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
@@ -14876,13 +16412,14 @@ export namespace TaskCenterPageSchema {
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind2;
+    kind: Kind4;
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
@@ -14907,14 +16444,14 @@ export namespace TaskCenterPageSchema {
     attached_file_ids?: AttachedFileIds;
     budget_group_id: BudgetGroupId;
     budget_id: BudgetId;
-    config: ConfigSnapshot;
+    config: Config1;
     deadline_at: DeadlineAt1;
     execution_session_id: ExecutionSessionId1;
     file_inputs: FileInputs1;
     follow_up_closed: FollowUpClosed;
     id: Id4;
     interaction_session_id: InteractionSessionId1;
-    kind: Kind4;
+    kind: Kind6;
     output: Output;
     reason: Reason2;
     root_task_id: RootTaskId;
@@ -14938,6 +16475,7 @@ export namespace TaskCenterPageSchema {
   }
   export interface AgentResult {
     artifact_ids: ArtifactIds;
+    citations?: Citations;
     evidence_refs: EvidenceRefs;
     handled_failures: HandledFailures;
     status: Status;
@@ -14946,6 +16484,10 @@ export namespace TaskCenterPageSchema {
     unresolved: Unresolved;
     verification: Verification;
   }
+  export interface CitationRef {
+    evidence_id: EvidenceId;
+    marker: Marker;
+  }
   export interface FailureDisposition {
     reason: Reason1;
     result_version: ResultVersion2;
@@ -14953,6 +16495,7 @@ export namespace TaskCenterPageSchema {
   }
   export interface RunOutput {
     artifact_ids: ArtifactIds1;
+    citations?: Citations1;
     handled_failures: HandledFailures1;
     summary: Summary1;
     unresolved: Unresolved1;
@@ -14990,6 +16533,7 @@ export namespace TaskExecutionBindingSchema {
   export type JsonValue = unknown;
   export type ProfileId = string;
   export type SuccessCriteria = string[];
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -15020,6 +16564,7 @@ export namespace TaskExecutionBindingSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind1 = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -15050,7 +16595,7 @@ export namespace TaskExecutionBindingSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind1 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind2 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source1 = string | null;
   export type VerifiedAt = string | null;
@@ -15073,6 +16618,7 @@ export namespace TaskExecutionBindingSchema {
   export type Version2 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind3 = 'deterministic';
   export type DelegationDepth = number;
   export type ExecutionSessionId = string;
   export type FileIdentity = string;
@@ -15089,7 +16635,8 @@ export namespace TaskExecutionBindingSchema {
   export type InputArtifacts = ArtifactRef[];
   export type InteractionSessionId = string | null;
   export type ExcludedSourceIds = string[];
-  export type Kind2 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind4 = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -15098,7 +16645,7 @@ export namespace TaskExecutionBindingSchema {
   export interface TaskExecutionBinding {
     additional_result_inputs: AdditionalResultInputs;
     agent_work: AgentWork | null;
-    config: ConfigSnapshot;
+    config: Config;
     delegation_depth: DelegationDepth;
     execution_session_id: ExecutionSessionId;
     file_inputs: FileInputs;
@@ -15139,6 +16686,7 @@ export namespace TaskExecutionBindingSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind1;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -15262,7 +16810,7 @@ export namespace TaskExecutionBindingSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind1;
+    kind: Kind2;
     note: Note;
     source: Source1;
     verified_at: VerifiedAt;
@@ -15287,6 +16835,10 @@ export namespace TaskExecutionBindingSchema {
   }
   export interface Tools2 {
     [k: string]: string;
+  }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind3;
   }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
@@ -15313,13 +16865,14 @@ export namespace TaskExecutionBindingSchema {
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind2;
+    kind: Kind4;
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
@@ -15396,6 +16949,7 @@ export namespace TaskPageSchema {
   export type JsonValue = unknown;
   export type ProfileId = string;
   export type SuccessCriteria = string[];
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -15426,6 +16980,7 @@ export namespace TaskPageSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind1 = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -15456,7 +17011,7 @@ export namespace TaskPageSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind1 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind2 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source1 = string | null;
   export type VerifiedAt = string | null;
@@ -15479,6 +17034,7 @@ export namespace TaskPageSchema {
   export type Version2 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind3 = 'deterministic';
   export type DelegationDepth = number;
   export type ExecutionSessionId = string;
   export type FileIdentity = string;
@@ -15495,7 +17051,8 @@ export namespace TaskPageSchema {
   export type InputArtifacts = ArtifactRef[];
   export type InteractionSessionId = string | null;
   export type ExcludedSourceIds = string[];
-  export type Kind2 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind4 = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -15504,7 +17061,7 @@ export namespace TaskPageSchema {
   export type DeadlineAt = string | null;
   export type ExecutorId = string;
   export type Id3 = string;
-  export type Kind3 = 'agent' | 'tool';
+  export type Kind5 = 'agent' | 'tool';
   export type OriginTaskId = string | null;
   export type ParentTaskId = string | null;
   export type Reason = string | null;
@@ -15537,7 +17094,7 @@ export namespace TaskPageSchema {
     deadline_at: DeadlineAt;
     executor_id: ExecutorId;
     id: Id3;
-    kind: Kind3;
+    kind: Kind5;
     origin_task_id: OriginTaskId;
     parent_task_id: ParentTaskId;
     reason: Reason;
@@ -15549,7 +17106,7 @@ export namespace TaskPageSchema {
   export interface TaskExecutionBinding {
     additional_result_inputs: AdditionalResultInputs;
     agent_work: AgentWork | null;
-    config: ConfigSnapshot;
+    config: Config;
     delegation_depth: DelegationDepth;
     execution_session_id: ExecutionSessionId;
     file_inputs: FileInputs;
@@ -15590,6 +17147,7 @@ export namespace TaskPageSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind1;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -15713,7 +17271,7 @@ export namespace TaskPageSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind1;
+    kind: Kind2;
     note: Note;
     source: Source1;
     verified_at: VerifiedAt;
@@ -15738,6 +17296,10 @@ export namespace TaskPageSchema {
   }
   export interface Tools2 {
     [k: string]: string;
+  }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind3;
   }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
@@ -15764,13 +17326,14 @@ export namespace TaskPageSchema {
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind2;
+    kind: Kind4;
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
@@ -15896,6 +17459,7 @@ export namespace TaskSnapshotSchema {
   export type JsonValue = unknown;
   export type ProfileId = string;
   export type SuccessCriteria = string[];
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -15926,6 +17490,7 @@ export namespace TaskSnapshotSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind1 = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -15956,7 +17521,7 @@ export namespace TaskSnapshotSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind1 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind2 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source1 = string | null;
   export type VerifiedAt = string | null;
@@ -15979,6 +17544,7 @@ export namespace TaskSnapshotSchema {
   export type Version2 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind3 = 'deterministic';
   export type DelegationDepth = number;
   export type ExecutionSessionId = string;
   export type FileIdentity = string;
@@ -15995,7 +17561,8 @@ export namespace TaskSnapshotSchema {
   export type InputArtifacts = ArtifactRef[];
   export type InteractionSessionId = string | null;
   export type ExcludedSourceIds = string[];
-  export type Kind2 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind4 = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -16004,7 +17571,7 @@ export namespace TaskSnapshotSchema {
   export type DeadlineAt = string | null;
   export type ExecutorId = string;
   export type Id3 = string;
-  export type Kind3 = 'agent' | 'tool';
+  export type Kind5 = 'agent' | 'tool';
   export type OriginTaskId = string | null;
   export type ParentTaskId = string | null;
   export type Reason = string | null;
@@ -16029,7 +17596,7 @@ export namespace TaskSnapshotSchema {
     deadline_at: DeadlineAt;
     executor_id: ExecutorId;
     id: Id3;
-    kind: Kind3;
+    kind: Kind5;
     origin_task_id: OriginTaskId;
     parent_task_id: ParentTaskId;
     reason: Reason;
@@ -16041,7 +17608,7 @@ export namespace TaskSnapshotSchema {
   export interface TaskExecutionBinding {
     additional_result_inputs: AdditionalResultInputs;
     agent_work: AgentWork | null;
-    config: ConfigSnapshot;
+    config: Config;
     delegation_depth: DelegationDepth;
     execution_session_id: ExecutionSessionId;
     file_inputs: FileInputs;
@@ -16082,6 +17649,7 @@ export namespace TaskSnapshotSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind1;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -16205,7 +17773,7 @@ export namespace TaskSnapshotSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind1;
+    kind: Kind2;
     note: Note;
     source: Source1;
     verified_at: VerifiedAt;
@@ -16230,6 +17798,10 @@ export namespace TaskSnapshotSchema {
   }
   export interface Tools2 {
     [k: string]: string;
+  }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind3;
   }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
@@ -16256,13 +17828,14 @@ export namespace TaskSnapshotSchema {
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind2;
+    kind: Kind4;
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
@@ -16386,7 +17959,9 @@ export namespace ToolSpecListSchema {
   export type ServerId = string;
   export type ModelVisible = boolean;
   export type Name = string;
-  export type RequiredPurposes = ('read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send')[];
+  export type RequiredPurposes = (
+    'read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send'
+  )[];
   export type RequiresApproval = boolean;
   export type RetryClass = 'read_only' | 'idempotent' | 'never';
   export type Version = string;
@@ -16761,6 +18336,7 @@ export namespace WorkspaceSnapshotSchema {
   export type AttachedFileIds = string[] | null;
   export type BudgetGroupId = string;
   export type BudgetId = string;
+  export type Config = ConfigSnapshot | DeterministicConfigSnapshot;
   export type ConfigSnapshot = ConfigSnapshot1 & ConfigSnapshot2;
   export type ConfigSnapshot1 =
     | {
@@ -16791,6 +18367,7 @@ export namespace WorkspaceSnapshotSchema {
   export type Destination = string;
   export type OriginalName = string;
   export type ServerId = string;
+  export type Kind = 'agent';
   export type Assumptions = string[];
   export type CatalogVersion = string | null;
   export type Currency = 'USD';
@@ -16821,7 +18398,7 @@ export namespace WorkspaceSnapshotSchema {
   export type MaxInputTokens = number | null;
   export type MaxOutputTokens = number;
   export type MaxSupportedOutputTokens = number | null;
-  export type Kind = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
+  export type Kind1 = 'user' | 'service' | 'observed' | 'catalog' | 'application' | 'unknown';
   export type Note = string | null;
   export type Source1 = string | null;
   export type VerifiedAt = string | null;
@@ -16844,6 +18421,7 @@ export namespace WorkspaceSnapshotSchema {
   export type Version2 = number;
   export type PricingUnknownReason = string | null;
   export type PricingUnknownReason1 = string | null;
+  export type Kind2 = 'deterministic';
   export type DeadlineAt = string;
   export type ExecutionSessionId = string;
   export type FileIdentity = string;
@@ -16854,9 +18432,12 @@ export namespace WorkspaceSnapshotSchema {
   export type FollowUpClosed = boolean;
   export type Id2 = string;
   export type InteractionSessionId = string | null;
-  export type Kind1 = 'user' | 'managed' | 'follow_up' | 'maintenance';
+  export type Kind3 = 'user' | 'managed' | 'follow_up' | 'maintenance' | 'knowledge';
   export type Output = AgentResult | RunOutput | null;
   export type ArtifactIds = string[];
+  export type EvidenceId = string;
+  export type Marker = number;
+  export type Citations = CitationRef[];
   export type EvidenceRefs = string[];
   export type Reason = string;
   export type ResultVersion = number;
@@ -16871,6 +18452,7 @@ export namespace WorkspaceSnapshotSchema {
   export type Unresolved = string[];
   export type Verification = string[];
   export type ArtifactIds1 = string[];
+  export type Citations1 = CitationRef[];
   export type HandledFailures1 = FailureDisposition[];
   export type Summary1 = string;
   /**
@@ -16881,7 +18463,8 @@ export namespace WorkspaceSnapshotSchema {
   export type RootTaskId = string;
   export type ScopeDependencies = ScopeDependency[];
   export type ExcludedSourceIds = string[];
-  export type Kind2 = 'user_global' | 'workspace' | 'session';
+  export type KnowledgeSourceIds = string[];
+  export type Kind4 = 'user_global' | 'workspace' | 'session';
   export type SessionId = string | null;
   export type WorkspaceId = string | null;
   export type MemoryScopes = ScopeRef[];
@@ -16907,14 +18490,16 @@ export namespace WorkspaceSnapshotSchema {
   export type Destination1 = string | null;
   export type Epoch1 = number;
   export type Id3 = string;
+  export type KnowledgeScopes = ScopeRef[];
+  export type KnowledgeSourceIds1 = string[];
   export type McpQueries = McpToolSnapshot[];
   export type MemoryScopes1 = ScopeRef[];
   /**
    * @minItems 1
    */
   export type Purposes = [
-    'read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send',
-    ...('read' | 'model_send' | 'export' | 'tool_send' | 'local_process_send')[]
+    'read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send',
+    ...('read' | 'model_send' | 'embedding_send' | 'export' | 'tool_send' | 'local_process_send')[]
   ];
   export type ResourceIds1 = string[];
   export type Status1 = 'active' | 'revoked';
@@ -16998,18 +18583,18 @@ export namespace WorkspaceSnapshotSchema {
   export type ReasoningEffort1 = ('none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max') | null;
   export type SessionId2 = string;
   export type Id6 = string;
-  export type Kind3 = 'file' | 'directory' | 'export';
+  export type Kind5 = 'file' | 'directory' | 'export';
   export type Label = string;
   export type SourceVersion1 = string | null;
   export type Version7 = number;
   export type Items4 = ResourceRef[];
   export type NextCursor4 = string | null;
   export type Watermark4 = string;
-  export type AgentProfileId = string;
+  export type AgentProfileId = string | null;
   export type Archived = boolean;
   export type AutomaticTitle = 'pending' | number | null;
   export type Id7 = string;
-  export type Kind4 = 'interaction' | 'execution';
+  export type Kind6 = 'interaction' | 'execution';
   export type Title = string;
   export type Version8 = number;
   export type WorkspaceId3 = string;
@@ -17045,14 +18630,14 @@ export namespace WorkspaceSnapshotSchema {
     attached_file_ids?: AttachedFileIds;
     budget_group_id: BudgetGroupId;
     budget_id: BudgetId;
-    config: ConfigSnapshot;
+    config: Config;
     deadline_at: DeadlineAt;
     execution_session_id: ExecutionSessionId;
     file_inputs: FileInputs;
     follow_up_closed: FollowUpClosed;
     id: Id2;
     interaction_session_id: InteractionSessionId;
-    kind: Kind1;
+    kind: Kind3;
     output: Output;
     reason: Reason1;
     root_task_id: RootTaskId;
@@ -17074,6 +18659,7 @@ export namespace WorkspaceSnapshotSchema {
   export interface ConfigSnapshot2 {
     agent_profile: AgentProfile;
     catalog: CatalogVersions;
+    kind: Kind;
     members: Members;
     model_pricing: PricingSnapshot | null;
     model_profile: ResolvedModelProfile;
@@ -17197,7 +18783,7 @@ export namespace WorkspaceSnapshotSchema {
     [k: string]: MetadataSource;
   }
   export interface MetadataSource {
-    kind: Kind;
+    kind: Kind1;
     note: Note;
     source: Source1;
     verified_at: VerifiedAt;
@@ -17223,6 +18809,10 @@ export namespace WorkspaceSnapshotSchema {
   export interface Tools2 {
     [k: string]: string;
   }
+  export interface DeterministicConfigSnapshot {
+    catalog: CatalogVersions;
+    kind: Kind2;
+  }
   export interface FileInputs {
     [k: string]: SelectedFileVersion;
   }
@@ -17243,6 +18833,7 @@ export namespace WorkspaceSnapshotSchema {
   }
   export interface AgentResult {
     artifact_ids: ArtifactIds;
+    citations?: Citations;
     evidence_refs: EvidenceRefs;
     handled_failures: HandledFailures;
     status: Status;
@@ -17251,6 +18842,10 @@ export namespace WorkspaceSnapshotSchema {
     unresolved: Unresolved;
     verification: Verification;
   }
+  export interface CitationRef {
+    evidence_id: EvidenceId;
+    marker: Marker;
+  }
   export interface FailureDisposition {
     reason: Reason;
     result_version: ResultVersion;
@@ -17258,19 +18853,21 @@ export namespace WorkspaceSnapshotSchema {
   }
   export interface RunOutput {
     artifact_ids: ArtifactIds1;
+    citations?: Citations1;
     handled_failures: HandledFailures1;
     summary: Summary1;
     unresolved: Unresolved1;
   }
   export interface SourceSelection {
     excluded_source_ids: ExcludedSourceIds;
+    knowledge_source_ids?: KnowledgeSourceIds;
     memory_scopes: MemoryScopes;
     resource_ids: ResourceIds;
     skill_execution_permissions?: SkillExecutionPermissions;
     skill_versions: SkillVersions1;
   }
   export interface ScopeRef {
-    kind: Kind2;
+    kind: Kind4;
     session_id: SessionId;
     workspace_id: WorkspaceId;
   }
@@ -17297,6 +18894,8 @@ export namespace WorkspaceSnapshotSchema {
     destination: Destination1;
     epoch: Epoch1;
     id: Id3;
+    knowledge_scopes?: KnowledgeScopes;
+    knowledge_source_ids?: KnowledgeSourceIds1;
     mcp_queries: McpQueries;
     mcp_versions: McpVersions;
     memory_scopes: MemoryScopes1;
@@ -17384,7 +18983,7 @@ export namespace WorkspaceSnapshotSchema {
   }
   export interface ResourceRef {
     id: Id6;
-    kind: Kind3;
+    kind: Kind5;
     label: Label;
     scope: ScopeRef;
     source_version: SourceVersion1;
@@ -17400,7 +18999,7 @@ export namespace WorkspaceSnapshotSchema {
     archived: Archived;
     automatic_title?: AutomaticTitle;
     id: Id7;
-    kind: Kind4;
+    kind: Kind6;
     title: Title;
     version: Version8;
     workspace_id: WorkspaceId3;

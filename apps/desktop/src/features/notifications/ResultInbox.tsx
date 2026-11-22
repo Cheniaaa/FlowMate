@@ -37,6 +37,7 @@ interface ResultInboxProps {
   onMessage?: (deliveryId: string) => void;
   messageDeliveryIds?: ReadonlySet<string>;
   activities?: readonly ActivityView[];
+  onOpenEvidence?: (id: string) => void;
 }
 
 export default function ResultInbox(props: ResultInboxProps) {
@@ -49,7 +50,7 @@ export default function ResultInbox(props: ResultInboxProps) {
 }
 
 function ResultInboxView({ client, store, sessionId, runId, deliveryIds, sourceWatermark = '0', onCommand, onOpen, onSummarize,
-  summaryBlocked = false, onArtifact, onMessage, messageDeliveryIds, activities = [] }: ResultInboxProps) {
+  summaryBlocked = false, onArtifact, onMessage, messageDeliveryIds, activities = [], onOpenEvidence }: ResultInboxProps) {
   const headingId = useId();
   const projection = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const commands = useSyncExternalStore(store.subscribe, store.getCommandsSnapshot);
@@ -148,7 +149,8 @@ function ResultInboxView({ client, store, sessionId, runId, deliveryIds, sourceW
     const task = projection.tasks[entry.result.task_id];
     const run = projection.runs[entry.result.run_id];
     return entry.task_name || task?.binding.agent_work?.goal || entry.assistant_name
-      || task?.binding.config.agent_profile.display_name || run?.config.agent_profile.display_name || '后台交付';
+      || (task?.binding.config.kind === 'agent' ? task.binding.config.agent_profile.display_name : undefined)
+      || (run?.config.kind === 'agent' ? run.config.agent_profile.display_name : undefined) || '后台交付';
   }
   function artifactLinks(entry: SessionInboxEntry, selected: NonNullable<typeof preview>) {
     if (!onArtifact || selected.result.artifacts.length === 0) return null;
@@ -209,11 +211,13 @@ function ResultInboxView({ client, store, sessionId, runId, deliveryIds, sourceW
       </div>
       {entry.delivery_state === 'pending' && <p className="muted">通知仍在等待投递；不会重新执行任务。</p>}
       {preview?.id === entry.id && preview.resultVersion === entry.result_version && preview.sourceWatermark === sourceWatermark && available && <section className="mt-3" aria-label="结果预览">
-        {isAgentResult(preview.result.result) ? <AgentResultView result={preview.result.result} /> : <pre>{JSON.stringify(preview.result.result, null, 2)}</pre>}
+        {isAgentResult(preview.result.result) ? <AgentResultView result={preview.result.result} onOpenEvidence={onOpenEvidence} /> : <pre>{JSON.stringify(preview.result.result, null, 2)}</pre>}
          {artifactLinks(entry, preview)}
         {preview.result.artifacts.length === 0 && <p className="muted">暂无产物</p>}</section>}
-      {entry.consumers.length > 0 && <details><summary>查看消费记录</summary><ol>{entry.consumers.map(item => <li key={item.id}>
-        {projection.tasks[item.task_id]?.binding.config.agent_profile.display_name ?? '助理'} · 结果版本 {item.result_version}</li>)}</ol></details>}
+      {entry.consumers.length > 0 && <details><summary>查看消费记录</summary><ol>{entry.consumers.map(item => {
+        const config = projection.tasks[item.task_id]?.binding.config;
+        return <li key={item.id}>{config?.kind === 'agent' ? config.agent_profile.display_name : '任务'} · 结果版本 {item.result_version}</li>;
+      })}</ol></details>}
     </article>; })}
     {!deliveryIds && projection.resultPages[sessionId]?.next_cursor && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act(() => store.refreshResults(sessionId, projection.resultPages[sessionId].next_cursor!))}>更多结果</Button>}
   </section>;

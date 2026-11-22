@@ -8,7 +8,7 @@ afterEach(() => vi.unstubAllGlobals());
 const entry: SessionInboxEntry = { id, version: 4, target_session_id: id, source_event_id: '9007199254740993',
   result: { run_id: id, task_id: secondId, lifetime: 'managed', submitted_state: 'completed' }, result_version: 1,
   source_valid: true, delivery_state: 'failed', viewed_at: null, consumers: [], dependencies: [], attempts: 3, last_error: 'OSError' };
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 
 it('workspace stop-all丢响应不走Session命令查询；核对原样重POST，不换generation/id', async () => {
   const writes: unknown[] = [], paths: string[] = [];
@@ -38,7 +38,7 @@ it('retry只重投；回执pending不能标成成功投递，同version当前来
   });
   const store = createRuntimeStore(client());
   await store.dispatch({ type: 'retryDelivery', args: [id, commandMeta(entry.version)] });
-  expect(writes).toEqual([`/v3/results/${id}/retry`]);
+  expect(writes).toEqual([`/v4/results/${id}/retry`]);
   expect(store.getSnapshot().deliveries[id].delivery_state).toBe('pending');
   expect(store.getSnapshot().deliveries[id].source_valid).toBe(false);
 });

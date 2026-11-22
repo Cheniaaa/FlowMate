@@ -12,7 +12,7 @@ import type { ActivityView } from '../../generated/contracts';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => undefined) }));
 afterEach(() => { toast.dismiss(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks(); });
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 const workspace = { id, version: 1, name: '反馈项目', directory_resource_id: null };
 const session = { id, version: 1, workspace_id: id, title: '反馈会话', agent_profile_id: id, kind: 'interaction', archived: false };
 function message(n: number, runId: string, text = `输入 ${n}`): ModelMessage {
@@ -52,7 +52,7 @@ it('后台交付实时进入会话一次，保持正在输入的草稿和焦点'
   const report = { ...initial, id: uuid(678), event_id: '9007199254740994',
     origin: 'background_report' as const, parts: [{ kind: 'text' as const, text: '后台交付正文' }] };
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream({ start(controller) { stream = controller; } }));
     if (path.endsWith('/messages')) return Response.json(page([initial]));
     if (path.endsWith('/runs')) return Response.json(page([final]));
@@ -84,7 +84,7 @@ it('105条乱序UUID历史：只在任务范围保留原连接失败，翻页和
   const messages = [...runs].reverse().map((value, n) => message(n, value.id));
   const batches: string[][] = [], heavy: string[] = [];
   vi.stubGlobal('fetch', async (url: string) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', '');
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path.endsWith('/run-feedback')) {
       const ids = parsed.searchParams.getAll('run_id'); batches.push(ids);
@@ -128,7 +128,7 @@ it.each([false, true])('缺凭据异步失败保留输入并定位真实连接�
   const input = message(0, run.id, '保留本次输入');
   let current: RunSnapshot = { ...run, state: 'queued' };
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream({ start(controller) { stream = controller; } }));
     if (path.endsWith('/runs') && init.method === 'POST') return Response.json(current);
     if (path.endsWith('/runs')) return Response.json(page([]));
@@ -172,7 +172,7 @@ it.each([
   let mark = event.event_id;
   const markedPage = <T,>(items: T[]) => ({ ...page(items), watermark: mark });
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', '');
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', '');
     if (init.method === 'POST') {
       const body = JSON.parse(init.body as string); writes.push({ path, body });
       queued = { ...pendingUserCommand, command_id: body.meta.command_id,
@@ -261,7 +261,7 @@ it('消息反馈读取失败可明确只读重试，重试期间锁定按钮，�
   const stopped: RunSnapshot = { ...run, state: 'cancelled', reason: 'user_cancelled' };
   let reads = 0;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     requests.push({ path, method: init.method ?? 'GET' });
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path.endsWith('/run-feedback')) {
@@ -298,7 +298,7 @@ it('切会话后不显示前会话的读取重试，迟到的重试失败也不�
   const other = { ...session, id: secondId, title: '无需重试的会话' };
   let reads = 0;
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path.endsWith('/run-feedback')) {
       if (++reads === 1) throw new TypeError('fixture offline');
@@ -333,7 +333,7 @@ it.each([false, true])('新认证错误只在前台右上角出现一次并定�
     kind: 'model', operation: 'model.generate', state: 'dispatched', error: null, usage: null,
     actual_units: null, dependencies: [], script_execution: null };
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream({ start(controller) { stream = controller; } }));
     if (path.endsWith('/messages')) return Response.json(page([message(0, run.id, '问文档')]));
     if (path.endsWith('/runs')) return Response.json(page([current]));
@@ -391,7 +391,7 @@ it('会话只显示同轮一次最终答复，重新挂载仍保留同文不同�
     message(2, second.id, '第二轮'), { ...message(3, second.id, output.summary), role: 'assistant' },
   ];
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path.endsWith('/messages')) return Response.json(page(messages));
     if (path.endsWith('/runs')) return Response.json(page([second, first]));

@@ -13,7 +13,7 @@ export const maintenanceRun = { ...run, id: '00000000-0000-4000-8000-00000000007
 export const maintenanceTask: TaskHandle = { run_id: maintenanceRun.id, task_id: maintenanceRun.root_task_id, lifetime: 'managed', submitted_state: 'queued' };
 export const maintenanceNotice: MemoryMaintenanceNotice = { id: '00000000-0000-4000-8000-000000000074',
   scope: maintenancePolicy.scope, policy_version: maintenancePolicy.version, source_boundary: sourceBoundary, task: maintenanceTask, reason: null };
-export const sourceItem: TaskCenterPage['items'][number] = { run: sourceRun, pending_count: 0, delivery_state: null, origin_task_id: null,
+export const sourceItem: TaskCenterPage['items'][number] & { run: typeof sourceRun } = { run: sourceRun, pending_count: 0, delivery_state: null, origin_task_id: null,
   root: { id: sourceRun.root_task_id, version: 1, run_id: sourceRun.id, binding, kind: 'agent', executor_id: 'builtin.agent',
     parent_task_id: null, origin_task_id: null, state: 'completed', created_seq: 1, deadline_at: null, result_version: null, reason: null } };
 export const maintenanceDetail: RunDetail = { ...runDetailSummary, run: maintenanceRun,

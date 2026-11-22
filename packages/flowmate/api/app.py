@@ -27,6 +27,8 @@ def create_app(runtime, connection_policy, *, host):
     from flowmate.api.skill_execution import router as script_router
     app.include_router(environments_router(runtime))
     app.include_router(script_router(runtime))
+    from flowmate.api.knowledge import router as knowledge_router
+    app.include_router(knowledge_router(runtime))
 
     def failure(code, message, status, *, retryable=False, related_ids=()):
         return JSONResponse(ErrorEnvelope(error=ErrorBody(code=code, safe_message=message,

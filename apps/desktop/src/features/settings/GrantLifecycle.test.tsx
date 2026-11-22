@@ -15,7 +15,7 @@ function setup({ failure, gate }: { failure?: 'rejected' | 'transport'; gate?: P
   const workspace = { id, version: 1, name: '授权项目', directory_resource_id: null };
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
-    if (path === '/v3/grants' && init.method === 'POST') {
+    if (path === '/v4/grants' && init.method === 'POST') {
       const request: GrantRequest = JSON.parse(String(init.body)); writes.push(request);
       await gate;
       if (failure === 'rejected' && writes.length === 1) return Response.json({ error: {
@@ -44,7 +44,7 @@ function setup({ failure, gate }: { failure?: 'rejected' | 'transport'; gate?: P
       id: remoteSnapshot.server_id, revision: remoteSnapshot.config_revision, display_name: '受控 MCP' } }]));
     throw new Error(path);
   });
-  return { writes, client: new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 }) };
+  return { writes, client: new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 }) };
 }
 
 async function editGrant(user: ReturnType<typeof userEvent.setup>) {

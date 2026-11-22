@@ -220,8 +220,9 @@ class ToolGateway:
 
 
 class ToolExecutor:
-    def __init__(self, gateway):
+    def __init__(self, gateway, *, knowledge=None):
         self.gateway = gateway
+        self.knowledge = knowledge
 
     async def step(self, ctx, checkpoint):
         if checkpoint.tool_call is None:
@@ -229,6 +230,17 @@ class ToolExecutor:
         call = ToolInvocation.model_validate(checkpoint.tool_call)
         tool = self.gateway.catalog.get(call.name, call.version)
         tool.validate_input(call.arguments)
+        if call.name == "knowledge.search" and self.knowledge is not None and self.knowledge.embedding is not None:
+            from flowmate.knowledge.contracts import KnowledgeSearchRequest
+
+            try:
+                preparation = self.knowledge.embedding.prepare_query(ctx, call.call_id,
+                    KnowledgeSearchRequest.model_validate(call.arguments),
+                    _merge_dependencies(ctx.scope_dependencies, call.dependencies))
+                if preparation is not None:
+                    return preparation
+            except DomainError as error:
+                return StepDecision(kind="fail", reason=error.code)
         return StepDecision(kind="activity", intent=ActivityIntent(kind="tool", origin=checkpoint.tool_origin, operation=call.name,
             arguments=call.model_dump(mode="json"), dependencies=_merge_dependencies(ctx.scope_dependencies, call.dependencies)))
 

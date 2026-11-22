@@ -29,14 +29,14 @@ it('settings 先订阅再领取；打开/关闭保持 Conversation DOM 与草稿
     const path = new URL(url).pathname;
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return json(page([]));
     if (path.endsWith('/events')) return new Response(new ReadableStream());
-    const values: Record<string, unknown> = { '/v3/workspaces': page([workspace]), '/v3/profiles': page([agent]), '/v3/models': page([]), '/v3/model-connections': page([]), '/v3/provider-presets': [],
-      '/v3/navigation': { default_workspace_id: id, workspaces: page([]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id },
-      [`/v3/workspaces/${id}/directory`]: { workspace_id: id, workspace_version: 1, state: 'unlinked', reason: null, resource: null },
-      [`/v3/workspaces/${id}/snapshot`]: { workspace, sessions: page([session]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id },
-      [`/v3/sessions/${id}/messages`]: page([]), [`/v3/sessions/${id}/runs`]: page([]) };
+    const values: Record<string, unknown> = { '/v4/workspaces': page([workspace]), '/v4/profiles': page([agent]), '/v4/models': page([]), '/v4/model-connections': page([]), '/v4/provider-presets': [],
+      '/v4/navigation': { default_workspace_id: id, workspaces: page([]), recent_sessions: page([]), pending_count: 0, watermark: event.event_id },
+      [`/v4/workspaces/${id}/directory`]: { workspace_id: id, workspace_version: 1, state: 'unlinked', reason: null, resource: null },
+      [`/v4/workspaces/${id}/snapshot`]: { workspace, sessions: page([session]), active_runs: page([]), pending_questions: page([]), pending_approvals: page([]), resources: page([]), grants: page([]), watermark: event.event_id },
+      [`/v4/sessions/${id}/messages`]: page([]), [`/v4/sessions/${id}/runs`]: page([]) };
     return json(values[path]);
   });
-  const user = userEvent.setup(); render(<WorkbenchWindow client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  const user = userEvent.setup(); render(<WorkbenchWindow client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   await screen.findByRole('heading', { name: '聊天' });
   const input = screen.getByLabelText('消息'); await user.type(input, '保持草稿');
   const runConfiguration = screen.getByRole('button', { name: '运行配置' });
@@ -72,7 +72,7 @@ it('能力、助理和记忆共享可操作的侧栏，返回原会话保留草�
   const workspace = { id, version: 1, name: '项目', directory_resource_id: null };
   const session = { id, version: 1, workspace_id: id, title: '原会话', agent_profile_id: id, kind: 'interaction', archived: false };
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     const values: Record<string, unknown> = { '/workspaces': page([workspace]), '/profiles': page([agent]),
       '/navigation': { default_workspace_id: id, workspaces: page([{ workspace, sessions: page([session]), pending_count: 0 }]),
@@ -83,7 +83,7 @@ it('能力、助理和记忆共享可操作的侧栏，返回原会话保留草�
     return json(values[path] ?? page([]));
   });
   const user = userEvent.setup();
-  render(<WorkbenchWindow client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  render(<WorkbenchWindow client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   await screen.findByRole('heading', { name: '原会话' });
   const input = screen.getByLabelText('消息');
   await user.type(input, '保留这份草稿');
@@ -120,7 +120,7 @@ it('任务连接入口及重复快捷窗导航均定位目标，取消及在途�
   const session = { id, version: 1, workspace_id: id, title: '聊天', agent_profile_id: id, kind: 'interaction', archived: false };
   const save = deferred<Response>();
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (init.method === 'PUT') return save.promise;
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return json(page([]));
@@ -142,7 +142,7 @@ it('任务连接入口及重复快捷窗导航均定位目标，取消及在途�
           task_count: 1, steps: 1, total_tokens: 0, reserved_tokens: 0 }, watermark: event.event_id } };
     return json(values[path]);
   });
-  render(<WorkbenchWindow client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  render(<WorkbenchWindow client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   await screen.findByText('失败输入');
   expect(screen.queryByRole('button', { name: '检查连接' })).toBeNull();
   fireEvent.click(document.querySelector('[data-conversation-panel="tasks"]')!);
@@ -176,7 +176,7 @@ it.each([false, true])('注册后领取首次导航，跨workspace查询归属/�
   vi.mocked(listen).mockImplementation((name, callback) => { if (name === 'workbench-navigation') wake = callback; return registered.promise; });
   let pendingId: string | null = secondId;
   vi.mocked(invoke).mockImplementation(async name => {
-    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 3 };
+    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'test-token', protocol_version: 4 };
     if (name === 'take_workbench_navigation') { const value = pendingId; pendingId = null; return value ? { target: { kind: 'run', run_id: value }, from_quick: true } : null; }
     if (name === 'take_settings_navigation') return null;
     throw new Error(`未定义原生命令 ${name}`);
@@ -188,7 +188,7 @@ it.each([false, true])('注册后领取首次导航，跨workspace查询归属/�
   const targetRun = { ...run, id: secondId, workspace_id: secondId, interaction_session_id: secondId, execution_session_id: secondId, state: 'completed', output: { summary: '目标任务摘要', artifact_ids: [], unresolved: [], handled_failures: [] } };
   const latePage = deferred<Response>(); const releaseRun = deferred<void>(); const requests: string[] = [];
   vi.stubGlobal('fetch', async (url: string) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', ''); requests.push(path + parsed.search);
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', ''); requests.push(path + parsed.search);
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return json(page([]));
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path === `/workspaces/${id}/sessions`) return latePage.promise;

@@ -20,7 +20,7 @@ from flowmate.integrations.configuration_contracts import (
 
 
 def router(configuration, *, publisher=None):
-    route = APIRouter(prefix="/v3/capabilities/mcp")
+    route = APIRouter(prefix="/v4/capabilities/mcp")
 
     @route.get("", response_model=Page[McpServerView])
     async def servers(scope_kind: Literal["user_global", "workspace"],

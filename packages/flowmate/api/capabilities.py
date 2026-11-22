@@ -68,7 +68,7 @@ SaveSkillExportCommand = Command[SaveSkillExport]
 
 
 def router(runtime):
-    route = APIRouter(prefix="/v3/capabilities")
+    route = APIRouter(prefix="/v4/capabilities")
 
     def selected(scope_kind, workspace_id):
         if (scope_kind == "workspace") != (workspace_id is not None):

@@ -32,7 +32,7 @@ function server(conflict = false, modelBlocked = false) {
   });
   return { writes, reads, blocked: () => { notices = [{ ...maintenanceNotice, task: null, reason: 'allocation_exceeded' }]; } };
 }
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 
 it('从真实普通Run选择读取正式边界/策略，单次确认提交，不改自动整理并按真实Handle打开任务', async () => {
   const api = server(), runtime = client(), store = createRuntimeStore(runtime), open = vi.fn(), user = userEvent.setup();
@@ -114,8 +114,8 @@ it('记忆页候选的维护关联沿真实记录ID读取，打开关联返回�
   const runtime = client(), store = createRuntimeStore(runtime), open = vi.fn(), user = userEvent.setup(), reads: string[] = [];
   vi.stubGlobal('fetch', async (url: string) => {
     const path = new URL(url).pathname; reads.push(path);
-    if (path === `/v3/memory/records/${memory.id}/maintenance`) return Response.json(page([maintenanceNotice]));
-    if (path.endsWith('/tasks') || path.endsWith('/workspaces') || path === '/v3/memory/maintenance') return Response.json(page([]));
+    if (path === `/v4/memory/records/${memory.id}/maintenance`) return Response.json(page([maintenanceNotice]));
+    if (path.endsWith('/tasks') || path.endsWith('/workspaces') || path === '/v4/memory/maintenance') return Response.json(page([]));
     if (path.endsWith('/records')) return Response.json(page([memory]));
     if (path.endsWith('/evidence')) return Response.json(page(memory.evidence.map(evidence => ({ evidence, available: true, reason: null }))));
     if (path.endsWith(memory.id)) return Response.json(memory);
@@ -129,6 +129,6 @@ it('记忆页候选的维护关联沿真实记录ID读取，打开关联返回�
   expect(screen.queryByText(maintenanceNotice.source_boundary.run_id)).toBeNull();
   expect(screen.queryByText(maintenanceNotice.source_boundary.event_id, { exact: false })).toBeNull();
   expect(open).toHaveBeenCalledWith(maintenanceTask);
-  expect(reads).toContain(`/v3/memory/records/${memory.id}/maintenance`);
+  expect(reads).toContain(`/v4/memory/records/${memory.id}/maintenance`);
   expect(maintenanceTask.task_id).not.toBe(sourceItem.root.id);
 });

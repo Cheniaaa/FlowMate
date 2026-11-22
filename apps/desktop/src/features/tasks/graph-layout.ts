@@ -1,5 +1,5 @@
 import type { ActivityView, JoinFact, ResultConsumption, TaskSnapshot, WaitRecord } from '../../generated/contracts';
-import { operationLabel } from './operation-label';
+import { activityLabel } from './operation-label';
 
 export interface GraphNode {
   id: string;
@@ -67,17 +67,17 @@ export function buildTaskGraph(
   const allNodes: GraphNode[] = [];
   for (const task of orderedTasks) {
     allNodes.push({ id: task.id, entity_kind: 'task', x: 126 + depth(task) * 16, y: 42 + allNodes.length * 84,
-      state: task.state, label: task.kind === 'tool' ? '工具任务' : task.binding.agent_work ? `成员 · ${task.binding.config.agent_profile.display_name}` : task.parent_task_id === null ? '主任务' : '子任务' });
+      state: task.state, label: task.kind === 'tool' ? '工具任务' : task.binding.agent_work && task.binding.config.kind === 'agent' ? `成员 · ${task.binding.config.agent_profile.display_name}` : task.parent_task_id === null ? '主任务' : '子任务' });
     // Activity 的 ID 排序只保证稳定展示，不表示创建时间或调用先后。
     for (const activity of activitiesByTask.get(task.id) ?? []) {
       allNodes.push({ id: activity.id, entity_kind: 'activity', x: 126 + (depth(task) + 1) * 16,
         y: 42 + allNodes.length * 84, state: activity.state,
-        label: activity.kind === 'model' ? '模型回复' : operationLabel(activity.operation, task) });
+        label: activityLabel(activity, task) });
     }
   }
   for (const activity of orderedActivities.filter(item => !taskById.has(item.task_id))) {
     allNodes.push({ id: activity.id, entity_kind: 'activity', x: 126, y: 42 + allNodes.length * 84,
-      state: activity.state, label: activity.kind === 'model' ? '模型回复' : operationLabel(activity.operation) });
+      state: activity.state, label: activityLabel(activity) });
   }
 
   // 先布局再过滤，折叠不会改变仍可见节点的坐标。

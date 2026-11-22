@@ -76,7 +76,7 @@ it('正式设置保存一份 URL/Key、发现两页别名后，聊天切换产�
         throw new Error(`联合验收未定义的宿主 IPC：${command}`);
       });
       vi.stubGlobal('fetch', (input: RequestInfo | URL, init: RequestInit = {}) => {
-        if (!String(input).startsWith(fixture!.connection.base_url + '/v3/')) throw new Error(`禁止外部请求：${input}`);
+        if (!String(input).startsWith(fixture!.connection.base_url + '/v4/')) throw new Error(`禁止外部请求：${input}`);
         requests.push({ path: new URL(String(input)).pathname, method: init.method ?? 'GET',
           body: init.body ? JSON.parse(String(init.body)) : undefined });
         return nativeFetch(input, { ...init, headers: {
@@ -93,8 +93,10 @@ it('正式设置保存一份 URL/Key、发现两页别名后，聊天切换产�
       stage = 'settings-save-url-key';
       await user.click(screen.getByTitle('设置'));
       const settings = await screen.findByRole('dialog', { name: '设置' });
-      await user.click(await within(settings).findByRole('button', { name: '新建连接' }));
-      await user.type(within(settings).getByLabelText('连接名称'), '单连接双别名离线网关');
+      const createConnection = await within(settings).findByRole('button', { name: '新建连接' });
+      await waitFor(() => expect(createConnection).toHaveProperty('disabled', false));
+      await user.click(createConnection);
+      await user.type(await within(settings).findByLabelText('连接名称'), '单连接双别名离线网关');
       await user.type(within(settings).getByLabelText('Endpoint'), fixture.endpoint);
       await user.type(within(settings).getByLabelText('API Key（仅保存到系统凭据）'), fixture.synthetic_key);
       await user.selectOptions(within(settings).getByLabelText('协议'), 'openai_compatible');
@@ -159,7 +161,7 @@ it('正式设置保存一份 URL/Key、发现两页别名后，聊天切换产�
         const session = (await client.sessions(fixture.workspace_id)).items.find(item => item.title === '同一网关两个真实型号')!;
         let detail: RunDetail | undefined;
         await waitFor(async () => {
-          const run = (await client.sessionRuns(session.id)).items.find(item => item.config.model_profile.id === profile.id)!;
+          const run = (await client.sessionRuns(session.id)).items.find(item => item.config.kind === 'agent' && item.config.model_profile.id === profile.id)!;
           detail = await client.run(run.id);
           expect(['completed', 'failed', 'waiting_user', 'waiting_approval', 'blocked_incompatible'])
             .toContain(detail.run.state);
@@ -170,6 +172,8 @@ it('正式设置保存一份 URL/Key、发现两页别名后，聊天切换产�
           await screen.findByText(answer, {}, { timeout: 8_000 });
           expect(screen.getAllByText(answer)).toHaveLength(1);
         }
+        expect(detail!.run.config.kind).toBe('agent');
+        if (detail!.run.config.kind !== 'agent') throw new Error('对话运行缺少生成配置');
         expect(detail!.run.config.model_profile).toMatchObject({
           model_id: profile.model_id, connection_id: connection.id, endpoint: fixture.endpoint,
           protocol: 'openai_compatible', secret_ref: connection.secret_ref,

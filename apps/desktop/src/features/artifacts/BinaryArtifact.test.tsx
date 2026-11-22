@@ -6,7 +6,7 @@ import { id, secondId } from '../../test/fixtures';
 import ArtifactPanel from './ArtifactPanel';
 
 it('二进制详情可定位来源和导出固定产物，打开详情不会读取正文', () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   const reads = vi.spyOn(client, 'artifactContent').mockImplementation(() => new Promise(() => {}));
   const artifact: ArtifactRef = { id, version: 2, content_hash: 'f'.repeat(64), media_type: 'application/octet-stream',
     task_id: secondId, activity_id: id, dependencies: [] };

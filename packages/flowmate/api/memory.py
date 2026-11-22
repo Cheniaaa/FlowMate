@@ -32,7 +32,7 @@ from flowmate.policy.contracts import DataUseGrant
 
 
 def router(runtime):
-    route = APIRouter(prefix="/v3")
+    route = APIRouter(prefix="/v4")
 
     def scope(scope_kind, workspace_id):
         if (scope_kind == "workspace") != (workspace_id is not None):

@@ -24,7 +24,7 @@ it.each([false, true])('真实memory.propose成功回执配对读取当前候选
     if (current.status !== 'candidate') return Response.json({ error: { code: 'memory_candidate_resolved', safe_message: '候选已处理', retryable: false, related_ids: [] } }, { status: 409 });
     return Response.json(current);
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 }), store = createRuntimeStore(client);
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 }), store = createRuntimeStore(client);
   const user = userEvent.setup();
   const source = structuredClone(call);
   if (correction) {
@@ -33,7 +33,7 @@ it.each([false, true])('真实memory.propose成功回执配对读取当前候选
   }
   render(<MessageList client={client} store={store} messages={[result, source]} assistantName="助理" />);
   await screen.findByText(memory.text);
-  expect(reads).toContain(`/v3/memory/records/${memory.id}?receipt_message_id=${result.id}`);
+  expect(reads).toContain(`/v4/memory/records/${memory.id}?receipt_message_id=${result.id}`);
   expect(screen.getByText('适用范围：个人')).toBeTruthy();
   expect(screen.queryByRole('button', { name: '拒绝' })).toBeNull();
   await user.click(screen.getByRole('button', { name: correction ? '确认纠正' : '记住' }));
@@ -42,7 +42,7 @@ it.each([false, true])('真实memory.propose成功回执配对读取当前候选
   expect(writes[0]).toMatchObject({ data: { action: 'accept', scope: memory.scope }, meta: { expected_version: 1 } });
   expect(writes[0].data).not.toHaveProperty('text');
   expect(screen.queryByRole('button', { name: '拒绝' })).toBeNull();
-  expect(reads).toContain(`/v3/memory/records/${memory.id}/decisions?receipt_message_id=${result.id}`);
+  expect(reads).toContain(`/v4/memory/records/${memory.id}/decisions?receipt_message_id=${result.id}`);
   expect(screen.queryByRole('button', { name: /^(记住|确认纠正)$/ })).toBeNull();
 });
 
@@ -53,7 +53,7 @@ it('服务端拒绝伪配对时不退回无回执读取，不展示参数正文�
     if (url.includes('/evidence')) return Response.json(page([]));
     return Response.json({ error: { code: 'memory_receipt_invalid', safe_message: '回执与原调用不匹配', related_ids: [], retryable: false } }, { status: 409 });
   });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   render(<MessageList client={client} store={createRuntimeStore(client)} messages={[call, result]} assistantName="助理" />);
   await screen.findByText(/回执与原调用不匹配/);
   expect(screen.queryByText(memory.text)).toBeNull();
@@ -64,7 +64,7 @@ it('服务端拒绝伪配对时不退回无回执读取，不展示参数正文�
 it.each(['error', 'wrong-origin', 'wrong-call', 'ordinary', 'user-copy'] as const)('%s回执不误认候选，不从普通文本或错误结果读记录', async kind => {
   const reads: string[] = [];
   vi.stubGlobal('fetch', async (url: string) => { reads.push(url); throw new Error('不应查询'); });
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   const part = result.parts[0] as Extract<ModelMessage['parts'][number], { kind: 'tool_result' }>;
   const changed: ModelMessage = kind === 'user-copy' ? { ...result, role: 'user', parts: [{ kind: 'text', text: JSON.stringify(part.result) }] }
     : { ...result, parts: [{ ...part, error: kind === 'error' ? 'denied' : null, origin_message_id: kind === 'wrong-origin' ? memory.id : id,
@@ -81,7 +81,7 @@ it('另一窗拒绝/删除后聊天卡重读，不显示旧正文或仍可接受
     : current.status === 'candidate' ? Response.json(current) : Response.json({ error: {
       code: 'memory_candidate_resolved', safe_message: '候选已处理', retryable: false, related_ids: [],
     } }, { status: 409 }));
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 }), store = createRuntimeStore(client);
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 }), store = createRuntimeStore(client);
   render(<MessageList client={client} store={store} messages={[call, result]} assistantName="助理" />);
   await screen.findByText(memory.text);
   current = { ...current, revision: 2, status: 'rejected' };

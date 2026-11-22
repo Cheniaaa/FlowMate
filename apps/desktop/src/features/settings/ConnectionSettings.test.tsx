@@ -10,7 +10,7 @@ import Settings from './Settings';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 4 });
 async function openConnections() {
   render(<Settings client={client} />);
   await userEvent.click(await screen.findByRole('button', { name: new RegExp(connection.display_name) }));

@@ -29,6 +29,7 @@ interface TaskDetailProps {
   onOpen: (runId: string) => void;
   onExport?: (artifact: ArtifactRef) => Promise<void>; exportBlocked?: boolean;
   onOpenConnection?: (id: string) => void;
+  onOpenEvidence?: (workspaceId: string, evidenceId: string) => void;
 }
 
 export default function TaskDetail(props: TaskDetailProps) {
@@ -40,7 +41,7 @@ export default function TaskDetail(props: TaskDetailProps) {
   return <TaskDetailView key={identity.key} {...props} />;
 }
 
-function TaskDetailView({ client, store, runId, onCommand, onQuestion, onOpen, onExport, exportBlocked, onOpenConnection }: TaskDetailProps) {
+function TaskDetailView({ client, store, runId, onCommand, onQuestion, onOpen, onExport, exportBlocked, onOpenConnection, onOpenEvidence }: TaskDetailProps) {
   const [detail, setDetail] = useState<RunDetail>();
   const [sourceWatermark, setSourceWatermark] = useState('0');
   const [error, setError] = useState('');
@@ -196,6 +197,7 @@ function TaskDetailView({ client, store, runId, onCommand, onQuestion, onOpen, o
   }
   if (!detail) return <section aria-label="任务详情">{error ? <p role="alert">{error}</p> : <p>正在读取任务详情…</p>}<Button type="button" onClick={() => setRevision(value => value + 1)}>重新读取详情</Button></section>;
   const run = detail.run;
+  const config = run.config;
   const sourcesCurrent = detail.source_valid !== false && BigInt(detail.watermark) >= BigInt(sourceWatermark);
   const fixedActivities = sourcesCurrent ? [...detail.activities.items, ...(trace && BigInt(trace.watermark) >= BigInt(sourceWatermark)
     ? trace.items.flatMap(item => item.activities) : [])] : [];
@@ -217,25 +219,29 @@ function TaskDetailView({ client, store, runId, onCommand, onQuestion, onOpen, o
     {sourcesCurrent && detail.task_title && goal && detail.task_title !== goal && <details>
       <summary>完整任务目标</summary><p className="whitespace-pre-wrap">{goal}</p>
     </details>}
-    <p className="muted">负责人 {run.config.agent_profile.display_name}</p>
+    {config.kind === 'agent' && <p className="muted">负责人 {config.agent_profile.display_name}</p>}
     {!terminal(run.state) && <Button type="button" disabled={busy || commands.some(command => command.status === 'unconfirmed' && command.targetId === runId)}
-      onClick={() => { setBusy(true); onCommand({ type: 'cancel', args: [run.id, commandMeta(run.version)] }, { workspaceId: run.workspace_id, sessionId: run.interaction_session_id ?? '' }).then(() => setRevision(value => value + 1)).catch(error => setError(windowError(error))).finally(() => setBusy(false)); }}>{run.kind === 'maintenance' ? '停止记忆整理' : run.kind === 'managed' ? '停止该后台' : '停止本次对话'}</Button>}
+      onClick={() => { setBusy(true); onCommand({ type: 'cancel', args: [run.id, commandMeta(run.version)] }, { workspaceId: run.workspace_id, sessionId: run.interaction_session_id ?? '' }).then(() => setRevision(value => value + 1)).catch(error => setError(windowError(error))).finally(() => setBusy(false)); }}>{run.kind === 'knowledge' ? '停止资料处理' : run.kind === 'maintenance' ? '停止记忆整理' : run.kind === 'managed' ? '停止该后台' : '停止本次对话'}</Button>}
     {pendingQuestion && <Button type="button" onClick={event => onQuestion(runId, pendingQuestion.id, event.currentTarget)}>回答任务问题并返回草稿</Button>}
     {pendingApproval && <Button type="button" onClick={event => onQuestion(runId, pendingApproval.id, event.currentTarget)}>处理任务审批并返回草稿</Button>}
-    <details><summary>范围与固定配置</summary><p>模型：{run.config.model_profile.model_id}</p><p>后台执行：{run.allow_managed ? '已允许' : '未允许'}</p>
+    <details><summary>范围与固定配置</summary>{config.kind === 'agent' ? <><p>模型：{config.model_profile.model_id}</p><p>后台执行：{run.allow_managed ? '已允许' : '未允许'}</p></> : <p>资料处理</p>}
       <p>已选资料 {run.sources.resource_ids.length} 项 · Skill {Object.keys(run.sources.skill_versions).length} 项</p></details>
-    <section aria-label="运行预算"><h3>预算与费用</h3><RunCostSummary summary={detail.cost_summary} disclosureName={`task-${runId}`} /><p>步骤 {detail.budget.steps} / {detail.budget.limits.max_steps} · 请求 {detail.budget.model_requests} / {detail.budget.limits.max_model_requests}</p>
+    {config.kind === 'agent' || detail.budget.model_requests > 0 || detail.cost_summary.calculated_units !== '0'
+      || detail.cost_summary.unknown_request_count > 0 || detail.cost_summary.pending_request_count > 0
+      ? <section aria-label="运行预算"><h3>预算与费用</h3><RunCostSummary summary={detail.cost_summary} disclosureName={`task-${runId}`} /><p>步骤 {detail.budget.steps} / {detail.budget.limits.max_steps} · 请求 {detail.budget.model_requests} / {detail.budget.limits.max_model_requests}</p>
       <details><summary>预算详情</summary><p>累计 Token {detail.budget.total_tokens} / {detail.budget.limits.max_total_tokens ?? '未设上限'}</p>
         <p>已用预算单位 {detail.budget.spent_units} / {detail.budget.limits.max_cost_units ?? '未设上限'}</p></details></section>
+      : <section aria-label="执行用量"><h3>执行用量</h3><p>步骤 {detail.budget.steps} / {detail.budget.limits.max_steps}</p></section>}
     <div className="button-row">
       <Button type="button" size="sm" variant={tab === 'graph' ? 'secondary' : 'ghost'} aria-pressed={tab === 'graph'} onClick={() => setTab('graph')}>任务图</Button>
       <Button type="button" size="sm" variant={tab === 'list' ? 'secondary' : 'ghost'} aria-pressed={tab === 'list'} onClick={() => setTab('list')}>任务列表</Button>
-      <Button type="button" size="sm" variant={tab === 'members' ? 'secondary' : 'ghost'} aria-pressed={tab === 'members'} onClick={() => setTab('members')}>成员泳道</Button>
+      {config.kind === 'agent' && <Button type="button" size="sm" variant={tab === 'members' ? 'secondary' : 'ghost'} aria-pressed={tab === 'members'} onClick={() => setTab('members')}>成员泳道</Button>}
       <Button type="button" size="sm" variant={tab === 'trace' ? 'secondary' : 'ghost'} aria-pressed={tab === 'trace'} onClick={() => setTab('trace')}>原始 Trace</Button>
     </div>
     {tab === 'members' && (lanes?.sourceWatermark === sourceWatermark ? <MemberLanes lanes={lanes.items} onSelect={setSelected} onOpen={onOpen} /> : <p>正在读取真实成员…</p>)}
     {tab === 'members' && sourcesCurrent && lanes?.sourceWatermark === sourceWatermark && lanes.items.filter(lane => lane.task.id === selected && lane.task.binding.agent_work && lane.task.result_version !== null).map(lane =>
-      <MemberResult key={`${lane.task.id}:${lane.task.result_version}:${sourceWatermark}`} client={client} lane={lane} onExport={onExport} exportBlocked={exportBlocked} />)}
+      <MemberResult key={`${lane.task.id}:${lane.task.result_version}:${sourceWatermark}`} client={client} lane={lane} onExport={onExport} exportBlocked={exportBlocked}
+        onOpenEvidence={onOpenEvidence && (id => onOpenEvidence(run.workspace_id, id))} />)}
     {tab === 'graph' && <TaskGraph tasks={detail.tasks.items} activities={detail.activities.items} waits={detail.waits.items} consumptions={detail.consumptions.items} joins={detail.joins.items} collapsedIds={collapsed} selectedId={selected} onSelect={setSelected} onToggle={id => setCollapsed(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next; })} />}
     {tab === 'list' && <TaskList tasks={detail.tasks.items} activities={detail.activities.items} selectedId={selected} onSelect={setSelected} />}
     {sourcesCurrent && tab !== 'trace' && detail.activities.items.filter(activity => activity.operation === 'skills.run_script'
@@ -258,6 +264,7 @@ function TaskDetailView({ client, store, runId, onCommand, onQuestion, onOpen, o
         client={client} onExport={onExport} exportBlocked={exportBlocked} /></section>
     {run.interaction_session_id && <ResultInbox client={client} store={store} sessionId={run.interaction_session_id} runId={run.id} sourceWatermark={sourceWatermark}
       onCommand={command => onCommand(command, { workspaceId: run.workspace_id, sessionId: run.interaction_session_id! })} onOpen={onOpen}
+      onOpenEvidence={onOpenEvidence && (id => onOpenEvidence(run.workspace_id, id))}
       onArtifact={artifact => { setResultArtifact({ artifact, sourceWatermark }); setArtifactId(artifact.id); }} activities={fixedActivities} />}
   </section>;
 }

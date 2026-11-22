@@ -10,7 +10,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => undefined) })
 
 it('两窗同步撤销状态，重开历史时收回交付正文', async () => {
   const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
-  const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   const workspace = { id, version: 1, name: '交付测试项目', directory_resource_id: null };
   const session = { id, version: 1, workspace_id: id, title: '原会话', agent_profile_id: id, kind: 'interaction', archived: false };
   const dep = { scope_id: secondId, epoch: 1 };
@@ -28,7 +28,7 @@ it('两窗同步撤销状态，重开历史时收回交付正文', async () => {
   let sourceValid = true;
   const views: ReturnType<typeof render>[] = [];
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start: controller => { streams.push(controller); } }));
     if (path.endsWith('/messages')) return Response.json(page([{ ...report, source_valid: sourceValid }, reference]));
     if (path === `/sessions/${id}/results`) return Response.json({
@@ -112,7 +112,7 @@ it.each([[false, false], [true, false], [false, true]])('从聊天精确查看�
   const matchMedia = vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() });
   vi.stubGlobal('matchMedia', matchMedia);
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream());
     if (path.endsWith('/run-feedback')) return Response.json(page([]));
     if (path.includes('/results/') && init?.method === 'POST') {
@@ -142,7 +142,7 @@ it.each([[false, false], [true, false], [false, true]])('从聊天精确查看�
     if (!(path in routes)) throw new Error(`未定义的测试查询 ${path}`);
     return Response.json(routes[path]);
   });
-  const view = render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} compact={compact} />);
+  const view = render(<Conversation client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} compact={compact} />);
   try {
     const input = await screen.findByLabelText('消息');
     await user.type(input, '之前的草稿');

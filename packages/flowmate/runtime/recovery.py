@@ -48,6 +48,13 @@ MCP_QUERY_HANDLED = (
     "AND json_extract(r.requery,'$.original_activity_id')=a.id)))"
 )
 
+# 只释放已明确放弃的query向量义务；未知费用仍留在原Activity和预算账本。
+QUERY_RESULT_RELEASED = (
+    f"({MCP_QUERY_HANDLED} OR (json_extract(a.document,'$.intent.operation')='embedding.query' "
+    "AND json_extract(a.document,'$.intent.origin')='runtime' "
+    "AND json_extract(a.document,'$.embedding_query_abandoned')=1))"
+)
+
 # 命令与待办共用真实选择集；正常同伴、问题、审批及从属join不是条件恢复对象。
 CONDITION_WAITING_TASKS_SQL = (
     "SELECT t.id,t.run_id,t.document FROM tasks t JOIN runs r ON r.id=t.run_id "
@@ -60,13 +67,13 @@ CONDITION_WAITING_TASKS_SQL = (
     "AND NOT EXISTS(SELECT 1 FROM approvals a WHERE a.task_id=t.id AND a.status='pending') "
     "AND NOT EXISTS(SELECT 1 FROM waits w WHERE w.owner_task_id=t.id AND w.state='pending') "
     "AND NOT EXISTS(SELECT 1 FROM activities a WHERE a.task_id=t.id "
-    f"AND (a.state IN ('prepared','dispatched') OR (a.state='uncertain' AND ({MCP_QUERY_HANDLED}) IS NOT TRUE)))"
+    f"AND (a.state IN ('prepared','dispatched') OR (a.state='uncertain' AND ({QUERY_RESULT_RELEASED}) IS NOT TRUE)))"
 )
 
 
 def has_pending_activities(tx, task_id):
     return tx.execute("SELECT 1 FROM activities a WHERE a.task_id=? AND "
-        f"(a.state IN ('prepared','dispatched') OR (a.state='uncertain' AND ({MCP_QUERY_HANDLED}) IS NOT TRUE)) LIMIT 1",
+        f"(a.state IN ('prepared','dispatched') OR (a.state='uncertain' AND ({QUERY_RESULT_RELEASED}) IS NOT TRUE)) LIMIT 1",
         (task_id,)).fetchone() is not None
 
 
@@ -207,7 +214,7 @@ def check_resume(tx, run, tasks, *, policy, catalog=None, now):
             raise DomainError("resume_blocked", "意图已关闭或仍有用户输入待处理")
     uncertain_query = None
     retry_grant = None
-    for row in tx.execute(f"SELECT a.document, {MCP_QUERY_HANDLED} AS handled FROM activities a WHERE a.run_id=?", (run.id,)):
+    for row in tx.execute(f"SELECT a.document, {QUERY_RESULT_RELEASED} AS handled FROM activities a WHERE a.run_id=?", (run.id,)):
         activity = ActivitySnapshot.model_validate_json(row[0])
         if row["handled"]:
             continue
@@ -286,14 +293,33 @@ def recover(store, *, catalog=None):
                               "OR EXISTS(SELECT 1 FROM activities a WHERE a.run_id=runs.id AND a.state='dispatched')").fetchall():
             run = RunSnapshot.model_validate_json(row[0])
             activities = []
+            abandoned = {}
             for row in tx.execute("SELECT document FROM activities WHERE run_id=? AND state='dispatched'",
                                   (run.id,)):
-                activities.append(bump(ActivitySnapshot.model_validate_json(row[0]), state="uncertain"))
+                activity = ActivitySnapshot.model_validate_json(row[0])
+                query = (activity.intent.kind == "model" and activity.intent.origin == "runtime"
+                    and activity.intent.operation == "embedding.query")
+                activities.append(bump(activity, state="uncertain", embedding_query_abandoned=query))
+                if query:
+                    abandoned.setdefault(activity.task_id, set()).add(activity.id)
             if run.state in TERMINAL:
                 emit(tx, run, run.root_task_id, "runtime.recovered", RuntimeChange(activities=activities))
                 continue
+            if run.kind == "knowledge" and any(
+                    activity.intent.origin == "runtime" and activity.intent.operation == "embedding.document"
+                    for activity in activities):
+                emit(tx, run, run.root_task_id, "runtime.recovered", RuntimeChange(activities=activities))
+                stop_run(tx, run, "failed", "knowledge_document_unknown")
+                continue
             pending_queries = []
+            released_checkpoints = [bump(load(tx, Checkpoint, task_id), pending_activity_ids=[
+                id for id in load(tx, Checkpoint, task_id).pending_activity_ids if id not in ids])
+                for task_id, ids in abandoned.items()]
             root = load(tx, TaskSnapshot, run.root_task_id)
+            if root.executor_id == "knowledge.import":
+                from flowmate.knowledge.ingestion import recover_local_import
+                if recover_local_import(tx, run, root):
+                    continue
             if root.executor_id == "naming.title":
                 # 原样保留未派发的命名。已派发的结果未知，只保留原计费身份。
                 if activities:
@@ -332,7 +358,8 @@ def recover(store, *, catalog=None):
                                 reason="plugin_or_tool_version_unavailable" if incompatible else
                                     "mcp_query_uncertain" if query_waiting else "runtime_restart")
                 emit(tx, changed, run.root_task_id, "runtime.recovered",
-                     RuntimeChange(runs=[changed], tasks=tasks, activities=activities, outbox=outbox))
+                     RuntimeChange(runs=[changed], tasks=tasks, activities=activities, outbox=outbox,
+                         checkpoints=released_checkpoints))
                 if run.yield_requested:
                     from flowmate.runtime.followups import finish_yield
                     finish_yield(tx, run.id)

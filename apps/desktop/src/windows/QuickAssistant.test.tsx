@@ -15,7 +15,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.resetAllMocks(); window.history.replaceState(null, '', '/'); });
 const json = (value: unknown) => new Response(JSON.stringify(value));
-const connectionInfo = { base_url: 'http://127.0.0.1:54321', token: 'test-runtime-token', protocol_version: 3 };
+const connectionInfo = { base_url: 'http://127.0.0.1:54321', token: 'test-runtime-token', protocol_version: 4 };
 const uuid = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const settings = { quick_pinned: false, ball_enabled: false, shortcut: null, shortcut_error: null };
 const workspace = { id, version: 1, name: '工作笔记', directory_resource_id: null };
@@ -30,7 +30,7 @@ function boundary(label = 'quick') {
   const unlisten = vi.fn();
   vi.mocked(listen).mockImplementation(async (name, callback) => { handlers.set(name, callback); return unlisten; });
   vi.mocked(invoke).mockImplementation(async (name, args) => {
-    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'test-runtime-token', protocol_version: 3 };
+    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'test-runtime-token', protocol_version: 4 };
     if (name === 'window_settings') return settings;
     if (name === 'pending_counts' || name === 'take_workbench_navigation' || name === 'take_settings_navigation') return null;
     if (name === 'select_resources') return { resources: [{ id: secondId, version: 1, scope: (args as any).scope, label: 'notes.md', kind: 'file', source_version: null }] };
@@ -62,7 +62,7 @@ function businessServer() {
       budget: { id: run.budget_id, run_id: id, version: 1, limits, spent_units: '0', reserved_units: '0', model_requests: 1, steps: 1, task_count: 1, total_tokens: 0, reserved_tokens: 0 } };
   }
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', ''); requests.push(path);
+    const path = new URL(url).pathname.replace('/v4', ''); requests.push(path);
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer test-runtime-token');
     if (path.endsWith('/resource-coverage')) {
       const allowed = commands.some(command => command.path === '/grants');

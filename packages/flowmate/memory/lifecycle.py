@@ -21,7 +21,7 @@ def notify_personal_source_revocation(tx, provider, grant):
         tx.append_event(NewEvent(kind="memory.changed", payload=MemoryChange()))
 
 
-def invalidate_sources(tx, provider):
+def invalidate_sources(tx, provider, *, source_id=None):
     def invalid(dependencies):
         try:
             check_scopes(tx, dependencies)
@@ -41,6 +41,15 @@ def invalidate_sources(tx, provider):
         if invalid(record.dependencies):
             pending.append(record.id)
             scheduled.add(record.id)
+    # 复用同一反向图返回指定来源的实际派生项；其它已失效记忆不能被归到本次来源。
+    derived = set()
+    if source_id is not None:
+        lineage = deque(dependents[source_id])
+        while lineage:
+            id = lineage.popleft()
+            if id not in derived:
+                derived.add(id)
+                lineage.extend(dependents[id])
     # 当前依赖只建一次反向索引；删除围栏沿队列传播，不依赖 Provider 的枚举顺序。
     while pending:
         record = records[pending.popleft()]
@@ -67,3 +76,4 @@ def invalidate_sources(tx, provider):
             tx.execute("INSERT OR IGNORE INTO deleted_commands VALUES (?,?)", (row["command_id"], row["request_hash"]))
             tx.execute("DELETE FROM commands WHERE command_id=?", (row["command_id"],))
     tx.execute("DELETE FROM memory_policies WHERE scope_id IN (SELECT id FROM scopes WHERE status='deleted')")
+    return scheduled if source_id is None else scheduled & derived

@@ -12,7 +12,7 @@ fn request(host: &RuntimeHost, method: &str, path: &str, body: Value) -> (u16, V
     let body = if method == "GET" { String::new() } else { body.to_string() };
     let mut stream = TcpStream::connect(address).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(40))).unwrap();
-    write!(stream, "{method} /v3{path} HTTP/1.1\r\nHost: {address}\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+    write!(stream, "{method} /v4{path} HTTP/1.1\r\nHost: {address}\r\nOrigin: http://127.0.0.1:5173\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         host.connection.token, body.len()).unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();

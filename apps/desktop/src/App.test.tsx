@@ -12,7 +12,7 @@ import type { Approval, ModelMessage, Question, RunDetail, StreamEvent } from '.
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 4 });
 const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
 const workspace = { id, version: 1, name: '工作区', directory_resource_id: null };
 const session = { id, version: 1, workspace_id: id, title: '会话', agent_profile_id: id, kind: 'interaction' as const, archived: false };
@@ -21,7 +21,7 @@ const message = { id: secondId, run_id: id, role: 'assistant', parts: [{ kind: '
 function server(active = false, pending: { questions?: Question[]; approvals?: Approval[] } = {}) {
   const commands: { path: string; body: any }[] = [];
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/resource-coverage')) {
       const allowed = commands.some(command => command.path === '/grants');
       const ids = JSON.parse(init.body as string).resource_ids;
@@ -187,7 +187,7 @@ describe('最小产品对话', () => {
       const path = new URL(url).pathname;
       if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }));
       if (path.endsWith('/messages')) return json(page([]));
-      if (path === `/v3/runs/${id}`) {
+      if (path === `/v4/runs/${id}`) {
         const response = await previousFetch(url, init);
         const detail = await response.json();
         const empty = { ...page([]), watermark: '9007199254740994' };
@@ -227,7 +227,7 @@ describe('最小产品对话', () => {
       if (parsed.pathname.endsWith('/messages')) return json(parsed.searchParams.has('cursor')
         ? { ...page([currentUser]), watermark: '9007199254740994' }
         : { ...page([olderUser, olderAssistant]), next_cursor: 'page-2', watermark: '9007199254740994' });
-      if (parsed.pathname === `/v3/runs/${id}`) {
+      if (parsed.pathname === `/v4/runs/${id}`) {
         const detail = await (await previousFetch(url, init)).json();
         const empty = { ...page([]), watermark: '9007199254740994' };
         return json({ ...detail, tasks: empty, activities: empty, artifacts: empty, questions: empty, approvals: empty, waits: empty, consumptions: empty, joins: empty,
@@ -292,7 +292,7 @@ function deletionServer(artifactEntry?: 'delivery' | 'tool') {
   const requests: string[] = [];
   const pending = new Map<string, ReturnType<typeof deferred<Response>>>();
   const data = (url: URL) => {
-    const path = url.pathname.replace('/v3', '');
+    const path = url.pathname.replace('/v4', '');
     if (path.endsWith('/commands') || path.endsWith('/follow-ups')) return page([]);
     if (path === '/navigation') return { default_workspace_id: id, workspaces: { ...page([{ workspace, sessions: { ...page([session, other]), next_cursor: 'sessions-next' }, pending_count: 0 }]), next_cursor: 'workspaces-next' }, recent_sessions: page([]), pending_count: 0, watermark: event.event_id };
     if (path === `/sessions/${id}`) return session;
@@ -335,8 +335,8 @@ function deletionServer(artifactEntry?: 'delivery' | 'tool') {
 describe('删除与本地异步响应围栏', () => {
   it('已安装快照和SSE后删除当前session，迟到会话/审批分页不复活，另一session可继续使用', async () => {
     const fixture = deletionServer();
-    const lateSessions = fixture.hold(`GET /v3/workspaces/${id}/sessions?cursor=sessions-next`);
-    const lateApprovals = fixture.hold(`GET /v3/workspaces/${id}/approvals?cursor=approvals-next`);
+    const lateSessions = fixture.hold(`GET /v4/workspaces/${id}/sessions?cursor=sessions-next`);
+    const lateApprovals = fixture.hold(`GET /v4/workspaces/${id}/approvals?cursor=approvals-next`);
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('本机事件流已连接');
@@ -355,7 +355,7 @@ describe('删除与本地异步响应围栏', () => {
   it.each(['delete', 'switch', 'roundtrip'] as const)('产物内容读取期间%s，迟到原文不能显示或在返回原会话时从缓存复活', async mode => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
     const fixture = deletionServer('tool');
-    const request = `GET /v3/artifacts/${fixture.artifact.id}/content?offset=0`;
+    const request = `GET /v4/artifacts/${fixture.artifact.id}/content?offset=0`;
     const content = fixture.hold(request);
     const user = userEvent.setup();
     render(<Conversation client={client} />);
@@ -415,7 +415,7 @@ describe('删除与本地异步响应围栏', () => {
   it('已显示的产物原文、选择资料与历史在删除后立即清理，已删除选择不保留', async () => {
     const fixture = deletionServer('delivery');
     const text = 'already-visible-content';
-    fixture.hold(`GET /v3/artifacts/${fixture.artifact.id}/content?offset=0`).resolve(json({
+    fixture.hold(`GET /v4/artifacts/${fixture.artifact.id}/content?offset=0`).resolve(json({
       text, start: 0, end: text.length, total_chars: text.length, source_version: fixture.artifact.content_hash }));
     vi.mocked(invoke).mockResolvedValue({ resources: [{ id: secondId, version: 1,
       scope: { kind: 'session', workspace_id: id, session_id: id }, label: 'selected-original.md', kind: 'file', source_version: null }] });
@@ -436,7 +436,7 @@ describe('删除与本地异步响应围栏', () => {
   });
   it('删除工作区后迟到工作区分页不能恢复选项，本地资料/预览/会话选择一并清理', async () => {
     const fixture = deletionServer();
-    const workspaces = fixture.hold('GET /v3/navigation?cursor=workspaces-next');
+    const workspaces = fixture.hold('GET /v4/navigation?cursor=workspaces-next');
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('本机事件流已连接');
@@ -449,7 +449,7 @@ describe('删除与本地异步响应围栏', () => {
   });
   it('创建会话响应之前收到其删除事实，不恢复新会话或抢走当前会话选择', async () => {
     const fixture = deletionServer();
-    const created = fixture.hold(`POST /v3/workspaces/${id}/sessions`);
+    const created = fixture.hold(`POST /v4/workspaces/${id}/sessions`);
     const deletedId = '00000000-0000-4000-8000-000000000110';
     const user = userEvent.setup();
     render(<Conversation client={client} />);
@@ -468,8 +468,8 @@ describe('删除与本地异步响应围栏', () => {
     const question: Question = { id: secondId, version: 1, run_id: id, task_id: run.root_task_id, call_id: 'ask',
       message_id: secondId, question: 'deleted-question-content', answer_schema: { type: 'string' }, status: 'pending',
       answer_message_id: null, dependencies: [] };
-    const path = kind === 'history' ? `/v3/sessions/${id}/messages?cursor=history-next`
-      : `/v3/workspaces/${id}/${kind}?cursor=${kind}-next`;
+    const path = kind === 'history' ? `/v4/sessions/${id}/messages?cursor=history-next`
+      : `/v4/workspaces/${id}/${kind}?cursor=${kind}-next`;
     const held = fixture.hold('GET ' + path);
     const user = userEvent.setup();
     render(<Conversation client={client} />);
@@ -486,7 +486,7 @@ describe('删除与本地异步响应围栏', () => {
   it('审批decision响应迟到不能在删除后恢复私有参数', async () => {
     const fixture = deletionServer();
     fixture.detail.approvals.items = [fixture.approval];
-    const decision = fixture.hold(`POST /v3/approvals/${fixture.approval.id}/decision`);
+    const decision = fixture.hold(`POST /v4/approvals/${fixture.approval.id}/decision`);
     const user = userEvent.setup();
     render(<Conversation client={client} />);
     await screen.findByText('本机事件流已连接');

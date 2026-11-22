@@ -225,7 +225,7 @@ it('真实 ZIP 已写入但首响丢失，包失效后重试仍能查询并定�
   const runtimeFetch = globalThis.fetch;
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const path = new URL(String(input)).pathname;
-    const exportPath = '/v3/capabilities/skill-exports';
+    const exportPath = '/v4/capabilities/skill-exports';
     if (path.startsWith(`${exportPath}/`)) receiptQueries.push(path);
     const response = await runtimeFetch(input, init);
     if (path === exportPath && init.method === 'POST') {
@@ -263,7 +263,9 @@ it('真实 ZIP 已写入但首响丢失，包失效后重试仍能查询并定�
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('保留这条未提交目标');
   await user.click(screen.getByRole('button', { name: '选择 Skill' }));
   await user.click(await screen.findByRole('button', { name: '导出标准包' }));
-  await user.click(await screen.findByRole('button', { name: '重试保存' }));
+  const retry = await screen.findByRole('button', { name: '重试保存' });
+  await waitFor(() => expect(retry).toHaveProperty('disabled', false));
+  await user.click(retry);
   await waitFor(() => expect(saveStatuses).toEqual([200, 409]));
   await waitFor(() => expect(screen.getByRole('button', { name: '查询保存结果' })).toHaveProperty('disabled', false));
   expect(screen.getByRole('button', { name: '导出标准包' })).toHaveProperty('disabled', true);
@@ -277,7 +279,7 @@ it('真实 ZIP 已写入但首响丢失，包失效后重试仍能查询并定�
   const receipts = await client.skillExports({ scope_kind: 'workspace', workspace_id: fixture.workspace.id, skill_id: fixture.version.skill_id });
   expect(receipts).toHaveLength(1);
   expect(receipts[0]).toMatchObject({ state: 'saved', content_hash: fixture.version.content_hash, target_ref: fixture.target.id });
-  expect(receiptQueries).toEqual([`/v3/capabilities/skill-exports/${receipts[0].command_id}`]);
+  expect(receiptQueries).toEqual([`/v4/capabilities/skill-exports/${receipts[0].command_id}`]);
   expect(invoke).toHaveBeenCalledWith('choose_skill_export_target', {
     scope: { kind: 'workspace', workspace_id: fixture.workspace.id, session_id: null },
   });

@@ -6,19 +6,23 @@ import { Checkbox } from '../../components/ui/checkbox';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from '../../components/ui/field';
 import { NativeSelect, NativeSelectOption } from '../../components/ui/native-select';
 import { windowError } from '../../api/windows';
-import type { DataUseGrant, GrantRequest, McpServerView, ModelConnection, ModelProfile, ResourceRef, ScopeRef, SkillView, ToolSpecList } from '../../generated/contracts';
+import type { DataUseGrant, GrantRequest, KnowledgeSettings, KnowledgeSource, McpServerView, ModelConnection, ModelProfile, ResourceRef, ScopeRef, SkillView, ToolSpecList } from '../../generated/contracts';
 import type { EditorLifecycle } from '../settings/Settings';
 
-type Source = 'file' | 'memory' | 'mcp';
-type Purpose = 'model_send' | 'tool_send' | 'local_process_send';
+type Source = 'file' | 'memory' | 'mcp' | 'knowledge';
+type Purpose = 'model_send' | 'tool_send' | 'local_process_send' | 'embedding_send';
+const purposeLabels: Record<Purpose, string> = { model_send: '发送到模型', tool_send: '发送到 MCP 工具',
+  local_process_send: '发送到绑定的本机脚本', embedding_send: '发送到向量模型' };
 
-export default function GrantForm({ client, workspaceId, sessionId, resources, workspaceName, sessionTitles, onGranted, onBusyChange, onSaved }: {
+export default function GrantForm({ client, workspaceId, sessionId, resources, workspaceName, sessionTitles, onGranted, onBusyChange, onSaved,
+  initialSource = 'file', allowedPurposes }: {
   client: RuntimeClient; workspaceId: string; sessionId: string | null; resources: ResourceRef[]; onGranted: (grant: DataUseGrant) => void;
   workspaceName?: string; sessionTitles?: Readonly<Record<string, string>>;
+  initialSource?: Source; allowedPurposes?: readonly Purpose[];
 } & EditorLifecycle) {
   const fieldId = useId();
   const [catalog, setCatalog] = useState<{ tools: ToolSpecList; models: ModelProfile[]; connections: ModelConnection[]; servers: McpServerView[] }>();
-  const [source, setSource] = useState<Source>('file'), [purpose, setPurpose] = useState<Purpose>('model_send');
+  const [source, setSource] = useState<Source>(initialSource), [purpose, setPurpose] = useState<Purpose>(allowedPurposes?.[0] ?? 'model_send');
   const [scopeId, setScopeId] = useState(sessionId ?? workspaceId), [resourceIds, setResourceIds] = useState<string[]>([]);
   const [serverId, setServerId] = useState(''), [destination, setDestination] = useState('');
   const [locals, setLocals] = useState<{ value: string; label: string }[]>();
@@ -27,6 +31,35 @@ export default function GrantForm({ client, workspaceId, sessionId, resources, w
   const [generation, refresh] = useState(0);
   const working = useRef(false);
   const form = useRef<HTMLFormElement>(null);
+  const [knowledge, setKnowledge] = useState<KnowledgeSource[]>([]), [wholeKnowledge, setWholeKnowledge] = useState(true);
+  const [knowledgeIds, setKnowledgeIds] = useState<string[]>([]), [embeddingTargets, setEmbeddingTargets] = useState<{ value: string; label: string }[]>([]);
+  useEffect(() => {
+    if (source !== 'knowledge') return;
+    let ignore = false;
+    async function read() {
+      const items: KnowledgeSource[] = []; let cursor: string | undefined;
+      do { const page = await client.knowledgeSources(workspaceId, { cursor }); items.push(...page.items); cursor = page.next_cursor ?? undefined; } while (cursor);
+      if (!ignore) setKnowledge(items);
+    }
+    void read().catch(error => { if (!ignore) setError(windowError(error)); });
+    return () => { ignore = true; };
+  }, [client, source, workspaceId, generation]);
+  useEffect(() => {
+    if (purpose !== 'embedding_send') return;
+    let ignore = false; setEmbeddingTargets([]);
+    async function read() {
+      const [first, settings] = await Promise.all([client.embeddingProfiles(), client.knowledgeSettings(workspaceId)]);
+      const profiles = [...first.items]; let cursor = first.next_cursor;
+      while (cursor) { const next = await client.embeddingProfiles({ cursor }); profiles.push(...next.items); cursor = next.next_cursor; }
+      const references = new Map<string, NonNullable<KnowledgeSettings['active_profile']>>(profiles.map(profile => [`${profile.id}:${profile.revision}`, profile]));
+      for (const profile of [settings.active_profile, settings.desired_profile]) if (profile) references.set(`${profile.id}:${profile.revision}`, profile);
+      const views = await Promise.all([...references.values()].map(profile => client.embeddingProfile(profile.id, profile.revision)));
+      if (!ignore) setEmbeddingTargets([...new Map(views.flatMap(view => view.destination
+        ? [[view.destination, { value: view.destination, label: `${view.profile.display_name} · ${view.destination}` }] as const] : [])).values()]);
+    }
+    void read().catch(error => { if (!ignore) setError(windowError(error)); });
+    return () => { ignore = true; };
+  }, [client, purpose, workspaceId, generation]);
   useEffect(() => {
     let ignore = false; setCatalog(undefined); setError('');
     async function all<T>(read: (cursor?: string) => Promise<{ items: T[]; next_cursor: string | null }>) {
@@ -90,12 +123,14 @@ export default function GrantForm({ client, workspaceId, sessionId, resources, w
     const connection = catalog.connections.find(item => item.id === model.connection_id);
     return connection ? [[connection.endpoint, { value: connection.endpoint, label: `${model.display_name ?? model.model_id} · ${connection.display_name}` }] as const] : [];
   }) ?? []).values()];
-  const targets = purpose === 'tool_send' ? toolTargets : purpose === 'model_send' ? models : locals ?? [];
+  const targets = purpose === 'tool_send' ? toolTargets : purpose === 'model_send' ? models
+    : purpose === 'embedding_send' ? embeddingTargets : locals ?? [];
   const available = resources.filter(resource => resource.kind !== 'export'
     && (resource.scope.kind === 'workspace' || resource.scope.session_id === scope.session_id));
   const selected = available.filter(resource => resourceIds.includes(resource.id)).map(resource => resource.id);
   const canSubmit = !!catalog && targets.some(target => target.value === destination)
     && (source === 'file' ? scope.kind !== 'user_global' && selected.length > 0
+      : source === 'knowledge' ? scope.kind === 'workspace' && (wholeKnowledge || knowledgeIds.length > 0)
       : source === 'memory' ? scope.kind !== 'session'
       : !!selectedServer && serverAllowed(selectedServer));
 
@@ -106,6 +141,7 @@ export default function GrantForm({ client, workspaceId, sessionId, resources, w
     const request: GrantRequest = pending ?? { meta: commandMeta(), data: {
       scope, resource_ids: source === 'file' ? selected : [],
       memory_scopes: source === 'memory' ? [scope] : [],
+      ...(source === 'knowledge' ? { knowledge_scopes: wholeKnowledge ? [scope] : [], knowledge_source_ids: wholeKnowledge ? [] : knowledgeIds } : {}),
       mcp_versions: source === 'mcp' ? { [selectedServer!.id]: selectedServer!.revision } : {},
       purposes: [purpose], destination,
     } };
@@ -125,8 +161,8 @@ export default function GrantForm({ client, workspaceId, sessionId, resources, w
     <Button type="button" className="justify-self-start" disabled={busy || !!pending} onClick={() => { setDestination(''); setServerId(''); refresh(value => value + 1); }}>重新读取授权目录</Button>
     <FieldSet disabled={busy || !!pending}><FieldGroup>
       <Field><FieldLabel htmlFor={`${fieldId}-source`}>授权来源</FieldLabel>
-        <NativeSelect id={`${fieldId}-source`} value={source} onChange={event => { setSource(event.target.value as Source); setDestination(''); setPurpose('model_send'); setScopeId(workspaceId); }}>
-        <NativeSelectOption value="file">文件资料</NativeSelectOption><NativeSelectOption value="memory">长期记忆范围</NativeSelectOption><NativeSelectOption value="mcp">MCP 返回资料</NativeSelectOption>
+        <NativeSelect id={`${fieldId}-source`} value={source} onChange={event => { setSource(event.target.value as Source); setDestination(''); setPurpose(allowedPurposes?.[0] ?? 'model_send'); setScopeId(workspaceId); }}>
+        <NativeSelectOption value="file">文件资料</NativeSelectOption><NativeSelectOption value="knowledge">项目资料</NativeSelectOption><NativeSelectOption value="memory">长期记忆范围</NativeSelectOption><NativeSelectOption value="mcp">MCP 返回资料</NativeSelectOption>
       </NativeSelect></Field>
       <Field><FieldLabel htmlFor={`${fieldId}-scope`}>授权范围</FieldLabel>
       <NativeSelect id={`${fieldId}-scope`} value={scopeId} onChange={event => { setScopeId(event.target.value); setResourceIds([]); setDestination(''); }}>
@@ -139,6 +175,15 @@ export default function GrantForm({ client, workspaceId, sessionId, resources, w
         <Checkbox id={`${fieldId}-${resource.id}`} disabled={busy || !!pending} checked={resourceIds.includes(resource.id)} onCheckedChange={checked => setResourceIds(current => checked === true ? [...current, resource.id] : current.filter(id => id !== resource.id))} />
         <FieldLabel htmlFor={`${fieldId}-${resource.id}`}>{resource.label}</FieldLabel>
       </Field>)}</FieldSet>}
+      {source === 'knowledge' && <FieldSet><FieldLegend>项目知识来源</FieldLegend>
+        <Field orientation="horizontal"><Checkbox id={`${fieldId}-whole-knowledge`} checked={wholeKnowledge}
+          onCheckedChange={checked => setWholeKnowledge(checked === true)} />
+          <FieldLabel htmlFor={`${fieldId}-whole-knowledge`}>本项目全部资料（包含以后加入的资料）</FieldLabel></Field>
+        {!wholeKnowledge && knowledge.filter(item => !['removed', 'revoked', 'deleted'].includes(item.status)).map(item =>
+          <Field key={item.id} orientation="horizontal"><Checkbox id={`${fieldId}-source-${item.id}`} checked={knowledgeIds.includes(item.id)}
+            onCheckedChange={checked => setKnowledgeIds(current => checked === true ? [...current, item.id] : current.filter(id => id !== item.id))} />
+            <FieldLabel htmlFor={`${fieldId}-source-${item.id}`}>{item.label}</FieldLabel></Field>)}
+      </FieldSet>}
       {source === 'mcp' && <Field><FieldLabel htmlFor={`${fieldId}-server`}>返回资料的 MCP 配置</FieldLabel>
         <NativeSelect id={`${fieldId}-server`} value={serverId} onChange={event => setServerId(event.target.value)}>
         <NativeSelectOption value="">请选择服务</NativeSelectOption>{catalog?.servers.filter(item => serverAllowed(item.config)).map(item =>
@@ -146,9 +191,8 @@ export default function GrantForm({ client, workspaceId, sessionId, resources, w
       </NativeSelect></Field>}
       <Field><FieldLabel htmlFor={`${fieldId}-purpose`}>发送用途</FieldLabel>
       <NativeSelect id={`${fieldId}-purpose`} value={purpose} onChange={event => { setPurpose(event.target.value as Purpose); setDestination(''); }}>
-        <NativeSelectOption value="model_send">发送到模型</NativeSelectOption>
-        <NativeSelectOption value="tool_send">发送到 MCP 工具</NativeSelectOption>
-        <NativeSelectOption value="local_process_send">发送到绑定的本机脚本</NativeSelectOption>
+        {(allowedPurposes ?? ['model_send', 'embedding_send', 'tool_send', 'local_process_send'] as const).map(purpose =>
+          <NativeSelectOption key={purpose} value={purpose}>{purposeLabels[purpose]}</NativeSelectOption>)}
       </NativeSelect></Field>
       <Field><FieldLabel htmlFor={`${fieldId}-destination`}>实际接收目的地</FieldLabel>
       <NativeSelect id={`${fieldId}-destination`} value={destination} onChange={event => setDestination(event.target.value)}>

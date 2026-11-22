@@ -8,7 +8,7 @@ import { connection, model, page } from '../../test/fixtures';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 4 });
 
 describe('main 内设置凭据边界', () => {
   it('同一连接的两个模型共用一次凭据保存，模型命令不含地址或 Key', async () => {

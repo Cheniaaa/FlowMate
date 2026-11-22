@@ -9,14 +9,14 @@ import ProjectSidebar from './ProjectSidebar';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.resetAllMocks(); localStorage.clear(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 const workspace = { id, version: 1, name: '研究项目', directory_resource_id: null };
 const session = { id: secondId, version: 1, workspace_id: id, title: '真实会话', agent_profile_id: id, kind: 'interaction', archived: false };
 function server() {
   vi.stubGlobal('fetch', async (url: string) => {
     const path = new URL(url).pathname;
-    const values: Record<string, unknown> = { '/v3/navigation': { default_workspace_id: id, workspaces: page([{ workspace, sessions: page([session]), pending_count: 1 }]), recent_sessions: page([session]), pending_count: 1, watermark: event.event_id },
-      '/v3/navigation/sessions': page([session]), '/v3/tasks': page([{ ...run, interaction_session_id: secondId, execution_session_id: secondId }]), '/v3/inbox': page([{ id, kind: 'question', workspace_id: id, session_id: secondId, run_id: id,
+    const values: Record<string, unknown> = { '/v4/navigation': { default_workspace_id: id, workspaces: page([{ workspace, sessions: page([session]), pending_count: 1 }]), recent_sessions: page([session]), pending_count: 1, watermark: event.event_id },
+      '/v4/navigation/sessions': page([session]), '/v4/tasks': page([{ ...run, interaction_session_id: secondId, execution_session_id: secondId }]), '/v4/inbox': page([{ id, kind: 'question', workspace_id: id, session_id: secondId, run_id: id,
         question: { id, version: 1, run_id: id, task_id: id, call_id: 'ask', message_id: id, question: '确认范围', answer_schema: { type: 'string' }, status: 'pending', answer_message_id: null, dependencies: [] } }]) };
     return Response.json(values[path]);
   });
@@ -118,7 +118,7 @@ it('永久删除围栏过滤导航缓存与迟到全局查询，不恢复项目/
   let deferInbox = false;
   let finishInbox!: (value: Response) => void;
   const lateInbox = new Promise<Response>(resolve => { finishInbox = resolve; });
-  const fetch = vi.fn((url: string) => deferInbox && new URL(url).pathname === '/v3/inbox' ? lateInbox : originalFetch(url));
+  const fetch = vi.fn((url: string) => deferInbox && new URL(url).pathname === '/v4/inbox' ? lateInbox : originalFetch(url));
   vi.stubGlobal('fetch', fetch);
   const props = { client, onNavigate: vi.fn(), onCreated: vi.fn(), onSettings: vi.fn() };
   const view = render(<ProjectSidebar {...props} />); await screen.findByRole('button', { name: '真实会话' });
@@ -130,9 +130,9 @@ it('永久删除围栏过滤导航缓存与迟到全局查询，不恢复项目/
   await within(dialog).findByRole('button', { name: '确认范围' });
   deferInbox = true;
   view.rerender(<ProjectSidebar {...props} deletedSessionIds={[secondId]} refreshKey="session-deleted" />);
-  await waitFor(() => expect(fetch.mock.calls.filter(([url]) => new URL(url).pathname === '/v3/inbox')).toHaveLength(2));
+  await waitFor(() => expect(fetch.mock.calls.filter(([url]) => new URL(url).pathname === '/v4/inbox')).toHaveLength(2));
   expect(within(dialog).queryByRole('button', { name: '确认范围' })).toBeNull();
-  const staleResponse = await originalFetch('http://127.0.0.1:54321/v3/inbox?limit=50');
+  const staleResponse = await originalFetch('http://127.0.0.1:54321/v4/inbox?limit=50');
   await act(async () => { finishInbox(staleResponse); });
   expect(within(dialog).queryByRole('button', { name: '确认范围' })).toBeNull();
   await user.keyboard('{Escape}');
@@ -163,8 +163,8 @@ it('重投事件水位推进后待办4→3自动刷新，保留已加载项目/�
   }
   vi.stubGlobal('fetch', async (url: string) => {
     const parsed = new URL(url); requests.push(parsed.pathname + parsed.search);
-    if (parsed.pathname === `/v3/workspaces/${id}/sessions`) return Response.json({ ...page([tailSession]), next_cursor: 'session-next' });
-    if (parsed.pathname === '/v3/navigation') {
+    if (parsed.pathname === `/v4/workspaces/${id}/sessions`) return Response.json({ ...page([tailSession]), next_cursor: 'session-next' });
+    if (parsed.pathname === '/v4/navigation') {
       if (pendingCount === 3 && !parsed.searchParams.has('cursor')) return refreshed.then(response => response.clone());
       return Response.json(navigation(parsed.searchParams.get('cursor')));
     }
@@ -197,15 +197,15 @@ it('重投事件水位推进后待办4→3自动刷新，保留已加载项目/�
   expect(screen.getByRole('button', { name: targetSession.title })).toBe(target);
   const firstProject = screen.getByRole('button', { name: '研究项目' }).closest('section')!;
   await userEvent.click(within(firstProject).getByRole('button', { name: '更多项目会话' }));
-  expect(requests.at(-1)).toBe(`/v3/workspaces/${id}/sessions?cursor=session-next`);
+  expect(requests.at(-1)).toBe(`/v4/workspaces/${id}/sessions?cursor=session-next`);
   await userEvent.click(screen.getByRole('button', { name: '更多项目' }));
-  expect(requests.at(-1)).toBe('/v3/navigation?cursor=project-next');
+  expect(requests.at(-1)).toBe('/v4/navigation?cursor=project-next');
 });
 
 it('导航旧水位响应不把已更新的待办3回退成4，也不切换当前导航分区', async () => {
   let older = false;
   vi.stubGlobal('fetch', async (url: string) => {
-    if (new URL(url).pathname === '/v3/navigation/sessions') return Response.json(page([session]));
+    if (new URL(url).pathname === '/v4/navigation/sessions') return Response.json(page([session]));
     return Response.json({
       default_workspace_id: id,
       workspaces: page([{ workspace, sessions: page([session]), pending_count: older ? 4 : 3 }]),
@@ -239,7 +239,7 @@ it('居中待办按可读名称区分同名问题，并把操作交给原目标�
   const items = [question(id), question(secondId), recovery];
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
     const path = new URL(url).pathname; paths.push(path);
-    return path === '/v3/inbox' ? Response.json(page(items)) : previous(url, init);
+    return path === '/v4/inbox' ? Response.json(page(items)) : previous(url, init);
   });
   const onPendingOpen = vi.fn((_item, reopen: () => void) => reopen()), onPendingAction = vi.fn().mockResolvedValue(undefined);
   render(<ProjectSidebar client={client} onNavigate={vi.fn()} onCreated={vi.fn()} onSettings={vi.fn()} onPendingOpen={onPendingOpen} onPendingAction={onPendingAction} />);
@@ -258,5 +258,5 @@ it('居中待办按可读名称区分同名问题，并把操作交给原目标�
   expect(onPendingOpen).toHaveBeenCalledWith(items[1], expect.any(Function));
   await userEvent.click(await screen.findByRole('button', { name: '停止此任务' }));
   expect(onPendingAction).toHaveBeenCalledWith(recovery, { kind: 'cancel_run', target_id: secondId, expected_version: 3 }, expect.any(Function));
-  expect(paths.every(path => path === '/v3/navigation' || path === '/v3/inbox')).toBe(true);
+  expect(paths.every(path => path === '/v4/navigation' || path === '/v4/inbox')).toBe(true);
 });

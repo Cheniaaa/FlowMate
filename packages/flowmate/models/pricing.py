@@ -23,6 +23,8 @@ from flowmate.contracts.settings import (
 if TYPE_CHECKING:
     from genai_prices.types import ModelPrice
 
+    from flowmate.knowledge.contracts import EmbeddingProfile
+
 SCALE = 1_000_000_000
 
 
@@ -60,12 +62,14 @@ def _rules(prices: ModelPrice) -> dict[str, PriceRule]:
 
 
 def resolve_pricing(
-    profile: ModelProfile, defaults: PricingDefaults | None = None,
-    *, connection: ModelConnection | None = None,
+    profile: ModelProfile | EmbeddingProfile, defaults: PricingDefaults | None = None,
+    *, connection: ModelConnection | None = None, input_only: bool = False,
 ) -> PricingSnapshot | None:
     """固定本次调用的规则、来源与倍率；不依赖协议或 endpoint 猜价格。"""
     now = datetime.now(UTC)
-    pricing = profile.pricing
+    pricing = ModelPricing(**profile.pricing.model_dump()) if input_only else profile.pricing
+    if input_only and pricing.input_per_million is not None:
+        pricing = pricing.model_copy(update={"output_per_million": Decimal(0)})
     manual = _has_manual_rates(pricing)
     assumptions = []
     if manual:
@@ -119,7 +123,7 @@ def resolve_pricing(
                 or not any(found_model is entry for entry in found_provider.models)):
             return None  # alias、近似匹配和跨 provider fallback 均不是确切计价身份。
         rules = _rules(found_model.get_prices(now))
-        if "input_mtok" not in rules or "output_mtok" not in rules:
+        if "input_mtok" not in rules or (not input_only and "output_mtok" not in rules):
             return None
         variants = [
             PriceVariant(when=dict(variant.when), rules=_rules(variant.prices))
@@ -132,6 +136,9 @@ def resolve_pricing(
         multiplier = pricing.multiplier if pricing.multiplier is not None else (
             defaults or PricingDefaults()
         ).default_multiplier
+    if input_only:
+        rules["output_mtok"] = PriceRule(base=Decimal(0))
+        assumptions.append("embedding_has_no_output")
     content = {
         "rules": {key: rule.model_dump(mode="json") for key, rule in rules.items()},
         "variants": [variant.model_dump(mode="json") for variant in variants],

@@ -82,7 +82,7 @@ export async function generateContracts(document) {
   // 使用已有 Vite 在构建期打包 Ajv 的格式/Unicode helper；WebView 只加载纯 ESM 验证函数。
   const entry = fileURLToPath(new URL('__standalone-validators__.mjs', import.meta.url));
   const source = standaloneCode(ajv, exports);
-  const [bundle] = await build({ configFile: false, logLevel: 'silent',
+  const [bundle] = await build({ configFile: false, logLevel: 'silent', resolve: { preserveSymlinks: true },
     plugins: [{ name: 'flowmate-standalone', resolveId(id) { if (id === entry) return entry; }, load(id) { if (id === entry) return source; } }],
     build: { write: false, minify: false,
       rolldownOptions: { cwd: fileURLToPath(new URL('../', import.meta.url)) },

@@ -64,7 +64,7 @@ it.each(['main', 'quick', 'recovery'])('%s 实际 App → HTTP/SQLite/Scheduler 
       });
       vi.stubGlobal('fetch', (input: RequestInfo | URL, init: RequestInit = {}) => {
         const { pathname: path, search: query } = new URL(String(input));
-        if (!String(input).startsWith(fixture!.connection.base_url + '/v3/')) throw new Error(`禁止外部请求：${input}`);
+        if (!String(input).startsWith(fixture!.connection.base_url + '/v4/')) throw new Error(`禁止外部请求：${input}`);
         requests.push({ path, method: init.method ?? 'GET', query, body: init.body ? JSON.parse(String(init.body)) : undefined });
         return nativeFetch(input, { ...init, headers: {
           ...Object.fromEntries(new Headers(init.headers)), Origin: 'http://tauri.localhost',
@@ -136,13 +136,13 @@ it.each(['main', 'quick', 'recovery'])('%s 实际 App → HTTP/SQLite/Scheduler 
       if (interrupted) {
         expect(runs[0].id).toBe(interrupted.id);
         expect(requests.filter(item => item.method === 'POST' && item.path.endsWith('/resume'))).toEqual([{
-          path: `/v3/runs/${interrupted.id}/resume`, method: 'POST', query: '',
+          path: `/v4/runs/${interrupted.id}/resume`, method: 'POST', query: '',
           body: { command_id: expect.any(String), expected_version: interrupted.version },
         }]);
       }
       const detail = await client.run(runs[0].id);
       expect(detail.run.state).toBe('completed');
-      expect(detail.run.config.model_profile.id).toBe(fixture.model_id);
+      expect(detail.run.config).toMatchObject({ kind: 'agent', model_profile: { id: fixture.model_id } });
       expect(detail.run.output?.summary).toBe(answer);
       expect(detail.budget.model_requests).toBe(2);
       expect(detail.approvals.items).toHaveLength(0);

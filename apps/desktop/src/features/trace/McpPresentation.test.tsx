@@ -10,7 +10,7 @@ import ArtifactPanel from '../artifacts/ArtifactPanel';
 import { TracePanel } from './TracePanel';
 
 afterEach(() => vi.unstubAllGlobals());
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
 it('审批显示固定 MCP 工具名与实际服务地址，审批不代表资料外发授权', async () => {
@@ -24,9 +24,9 @@ it('审批显示固定 MCP 工具名与实际服务地址，审批不代表资�
 });
 
 it('现有未传client的Trace入口通过真实Runtime连接接口读取固定Task，不需要改对话组件', async () => {
-  vi.mocked(invoke).mockResolvedValue({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  vi.mocked(invoke).mockResolvedValue({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   vi.stubGlobal('fetch', async (url: string) => {
-    if (new URL(url).pathname === `/v3/tasks/${secondId}`) return Response.json(remoteTask);
+    if (new URL(url).pathname === `/v4/tasks/${secondId}`) return Response.json(remoteTask);
     throw new Error(url);
   });
   render(<TracePanel events={[remoteTrace]} />);
@@ -38,7 +38,7 @@ it('Trace从Task固定目录解析原名，未知结果不重发且外部费用�
   const paths: string[] = [];
   vi.stubGlobal('fetch', async (url: string) => {
     paths.push(new URL(url).pathname);
-    if (new URL(url).pathname === `/v3/tasks/${secondId}`) return Response.json(remoteTask);
+    if (new URL(url).pathname === `/v4/tasks/${secondId}`) return Response.json(remoteTask);
     throw new Error('不得读取当前工具目录解释历史');
   });
   render(<TracePanel events={[{
@@ -49,7 +49,7 @@ it('Trace从Task固定目录解析原名，未知结果不重发且外部费用�
   expect(screen.getByText('https://notes.example.invalid/mcp')).toBeTruthy();
   expect(screen.getByText('调用已发送，未收到结果。原调用不会自动重复。')).toBeTruthy();
   expect(screen.getByText(/外部费用未知/)).toBeTruthy();
-  expect(paths).toEqual([`/v3/tasks/${secondId}`]);
+  expect(paths).toEqual([`/v4/tasks/${secondId}`]);
 });
 
 it('Artifact用来源依赖与所属Task固定server修订展示返回资料，不按当前配置改写来源', async () => {

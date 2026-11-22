@@ -12,7 +12,7 @@ it('显式整理沿原命令冻结/重试；返回真实TaskHandle，详情查�
     if (offline) throw new TypeError('offline');
     return Response.json(maintenanceDetail);
   });
-  const store = createRuntimeStore(new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 }));
+  const store = createRuntimeStore(new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 }));
   const command = { meta: commandMeta(5), data: { scope: maintenancePolicy.scope, source_boundary: sourceBoundary,
     budget_confirmation: maintenanceBudgetConfirmation } };
   const first = await store.dispatch({ type: 'submitMemoryMaintenance', args: [command] });

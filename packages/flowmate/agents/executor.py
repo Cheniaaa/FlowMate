@@ -45,7 +45,7 @@ from flowmate.tools.catalog import ToolArgumentsError
 
 class AgentExecutor:
     def __init__(self, store, catalog, model, tools, context=None, *, policy, artifacts, clock=None,
-                 emit_delta=None, emit_reasoning_delta=None, maintenance=None):
+                 emit_delta=None, emit_reasoning_delta=None, maintenance=None, knowledge=None):
         self.store = store
         self.catalog = catalog
         self.model = model
@@ -63,6 +63,7 @@ class AgentExecutor:
         self.emit_delta = emit_delta
         self.emit_reasoning_delta = emit_reasoning_delta
         self.maintenance = maintenance
+        self.knowledge = knowledge
 
     def _calls(self, ctx, checkpoint):
         with self.store.transaction(write=False) as tx:
@@ -105,6 +106,13 @@ class AgentExecutor:
             with self.store.transaction(write=False) as tx:
                 check_scopes(tx, message.source_dependencies)
                 output = (AgentResult if task.binding.agent_work is not None else RunOutput).model_validate(args["output"])
+                if output.citations:
+                    if self.knowledge is None:
+                        raise DomainError("knowledge_unavailable", "知识引用服务未装配")
+                    from flowmate.knowledge.evidence import EvidenceService
+                    if any(f"[{citation.marker}]" not in output.summary for citation in output.citations):
+                        raise DomainError("invalid_output", "引用标记必须出现在答复正文中")
+                    EvidenceService(self.knowledge).resolve(ctx, [citation.evidence_id for citation in output.citations])
                 if task.binding.agent_work is not None:
                     if call.name != "agent.finish":
                         raise DomainError("invalid_output", "成员必须提交明确结构化交付")
@@ -216,6 +224,22 @@ class AgentExecutor:
                     except DomainError as failure:
                         error = failure.code
                         details = {"tool": call.name, "reason": failure.safe_message}
+                if (error is None and call.name == "knowledge.search" and self.knowledge is not None
+                        and self.knowledge.embedding is not None):
+                    if intents:
+                        break
+                    from flowmate.knowledge.contracts import KnowledgeSearchRequest
+
+                    try:
+                        preparation = self.knowledge.embedding.prepare_query(ctx, call.call_id,
+                            KnowledgeSearchRequest.model_validate(args),
+                            content_dependencies(checkpoint, message.source_dependencies),
+                            origin_message_id=message.id)
+                        if preparation is not None:
+                            return preparation
+                    except DomainError as failure:
+                        error = failure.code
+                        details = {"tool": call.name, "reason": failure.safe_message}
                 if error:
                     if intents:
                         break
@@ -276,6 +300,9 @@ class AgentExecutor:
                 return StepDecision(kind="fail", reason="invalid_output")
             if isinstance(output, AgentResult) and output.status == "failed":
                 return StepDecision(kind="fail", reason="agent_failed")
+            if output.citations:
+                from flowmate.knowledge.evidence import EvidenceService
+                EvidenceService(self.knowledge).resolve(ctx, [citation.evidence_id for citation in output.citations])
             return StepDecision(kind="complete", output=output)
         finalizing = checkpoint.phase == "preparing_structured_output"
         without_tools = task.binding.config.model_profile.capabilities.tools is False
@@ -418,6 +445,8 @@ class AgentExecutor:
             "phase": "dispatch_tools" if pending else "ready_model"})})
 
     async def drive_model(self, ctx, activity, cancel, before_send):
+        if activity.intent.operation in {"embedding.query", "embedding.document"}:
+            return await self.knowledge.embedding.drive(ctx, activity, cancel, before_send)
         from flowmate.tools.catalog import ToolSpec
         with self.store.transaction(write=False) as tx:
             task = load(tx, TaskSnapshot, ctx.task_id)
@@ -485,6 +514,8 @@ class AgentExecutor:
         return outcome.receipt, lambda latest: self.propose_receipt(ctx, latest, outcome)
 
     async def drive_tool(self, ctx, activity, cancel, before_send):
+        if activity.intent.operation in {"embedding.query", "embedding.document"}:
+            return await self.knowledge.embedding.drive(ctx, activity, cancel, before_send)
         return await self.tools.drive(ctx, activity, cancel, before_send, propose=self.propose_receipt,
                                       normalize=self._compact_result)
 
@@ -497,6 +528,11 @@ class AgentExecutor:
         with self.store.transaction(write=False) as tx:
             activity = load(tx, ActivitySnapshot, ctx.activity_id)
         operation = activity.intent.operation
+        if operation in {"knowledge.search", "knowledge.read", "knowledge.list_sources"}:
+            from flowmate.knowledge.contracts import KnowledgeResult
+            from flowmate.knowledge.evidence import trim_result
+            return outcome.model_copy(update={"result": trim_result(
+                KnowledgeResult.model_validate_json(json.dumps(result)), max_bytes).model_dump(mode="json")})
         is_mcp = activity.mcp_source is not None
         if outcome.error and not (is_mcp or operation == "skills.run_script"):
             return outcome

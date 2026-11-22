@@ -171,12 +171,23 @@ class MemoryService:
             # 普通原值及历史上直接保存的压缩回执沿原身份继续可读。
             return
         if (not activity.content_committed or activity.run_id != source["run_id"]
-                or activity.task_id != source["task_id"] or self.artifacts is None):
+                or activity.task_id != source["task_id"]):
             raise DomainError("invalid_evidence", "派生工具消息不属于实际提交的活动")
         call = ToolInvocation.model_validate(activity.intent.arguments)
         if call.call_id != part.call_id or call.name != activity.intent.operation:
             raise DomainError("invalid_evidence", "派生工具消息与实际调用身份不符")
         result = part.result
+        if activity.intent.operation in {"knowledge.search", "knowledge.read"}:
+            from flowmate.artifacts.tool_results import tool_result_bytes
+            from flowmate.knowledge.evidence import _result, _tool_evidence, trim_result
+            from flowmate.runtime.transitions import context_for
+
+            if (trim_result(_result(activity.receipt.result), tool_result_bytes(result)).model_dump(mode="json") != result
+                    or not _tool_evidence(tx, context_for(tx, activity.task_id), message)):
+                raise DomainError("invalid_evidence", "知识消息不是实际回执的已核验投影")
+            return
+        if self.artifacts is None:
+            raise DomainError("invalid_evidence", "工具摘要产物服务未装配")
         if not isinstance(result, dict) or result.get("truncated") is not True or "artifact_id" not in result:
             raise DomainError("invalid_evidence", "工具消息不是实际结果或已登记摘要")
         if result.get("kind") == "artifact_preview":

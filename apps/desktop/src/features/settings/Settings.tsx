@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { RuntimeClient } from '../../api/client';
 import type { SettingsSection } from '../../api/windows';
 import AssistantSettings from './AssistantSettings';
@@ -14,10 +14,12 @@ import { Button } from '../../components/ui/button';
 import IconButton from '../../components/IconButton';
 import AppearanceSettings from './AppearanceSettings';
 import TitleSettings from './TitleSettings';
+import EmbeddingSettings from './EmbeddingSettings';
 import './settings-density.css';
 
 export interface EditorLifecycle {
   onBusyChange?: (busy: boolean) => void;
+  onChanged?: (form: HTMLFormElement) => void;
   onSaved?: (form: HTMLFormElement) => void;
   onDiscard?: (form: HTMLFormElement) => void;
   onViewReady?: () => void;
@@ -29,6 +31,7 @@ export interface SettingsTransition {
 }
 export default function Settings({ client, section = 'models', connectionId, navigationSequence = 0, transition, onTransitionConsumed, onClose, onReturnFocus, runtimeStore, onSectionChange, onReturnToQuick, onReturnToMemory, memoryScope }: { client: RuntimeClient; section?: SettingsSection; connectionId?: string; navigationSequence?: number; transition?: SettingsTransition; onTransitionConsumed?: (id: number) => void; onClose?: () => void; onReturnFocus?: () => void; runtimeStore?: ReturnType<typeof createRuntimeStore>; onSectionChange?: (section: SettingsSection) => void; onReturnToQuick?: () => Promise<void>; onReturnToMemory?: () => void; memoryScope?: MemoryScope }) {
   const store = useMemo(() => runtimeStore ?? createRuntimeStore(client), [client, runtimeStore]);
+  const knowledgeProfilesRevision = useSyncExternalStore(store.subscribe, () => store.getSnapshot().knowledgeNotices.global?.watermark);
   const [tab, setTab] = useState(section);
   const [showTitleSettings, setShowTitleSettings] = useState(false);
   const [editorConnection, setEditorConnection] = useState(connectionId);
@@ -100,7 +103,8 @@ export default function Settings({ client, section = 'models', connectionId, nav
     // 编辑器 onSaved 早于 finally；等 busy 结束后统一执行最新请求。
     setRequestRevision(value => value + 1);
   }
-  const lifecycle: EditorLifecycle = { onBusyChange: setBusy, onSaved: completed, onDiscard: form => dirty.current.delete(form), onViewReady: keepFocusInside, guard };
+  const lifecycle: EditorLifecycle = { onBusyChange: setBusy, onChanged: form => dirty.current.add(form),
+    onSaved: completed, onDiscard: form => dirty.current.delete(form), onViewReady: keepFocusInside, guard };
   function selectTab(id: SettingsSection) {
     guard(() => {
       setGeneration(value => value + 1);
@@ -119,7 +123,7 @@ export default function Settings({ client, section = 'models', connectionId, nav
     <header className="settings-header"><div><DialogTitle asChild><h1>设置</h1></DialogTitle><p>管理连接、助理和本机偏好</p></div>
       <IconButton ref={closeButton} icon="close" label="关闭设置" disabled={busy} onClick={() => guard(() => onClose?.())} />
     </header><div className="settings-body"><nav className="settings-tabs" aria-label="设置类别">
-      {([['models', '连接与模型'], ['assistant', '助理设置'], ['resources', '资料与授权'], ['memory', '记忆与上下文'], ['environments', '运行环境'], ['appearance', '外观与主题'], ['windows', '窗口与快捷键']] as const).map(([id, label]) =>
+      {([['models', '连接与模型'], ['retrieval', '检索模型'], ['assistant', '助理设置'], ['resources', '资料与授权'], ['memory', '记忆与上下文'], ['environments', '运行环境'], ['appearance', '外观与主题'], ['windows', '窗口与快捷键']] as const).map(([id, label]) =>
          <Button key={id} variant="ghost" className="shrink-0 justify-start" disabled={busy} aria-pressed={tab === id} onClick={() => selectTab(id)}>{label}</Button>)}
     </nav>
     <div className="settings-content" data-section={tab} onChangeCapture={event => { const target = event.target as HTMLElement; const form = target.closest('form'); if (form && !target.hasAttribute('data-settings-search')) dirty.current.add(form); }}>
@@ -140,13 +144,15 @@ export default function Settings({ client, section = 'models', connectionId, nav
           </section>
         </>}
         {tab === 'assistant' && <AssistantSettings client={client} {...lifecycle} />}
+        {tab === 'retrieval' && <EmbeddingSettings client={client} refreshKey={knowledgeProfilesRevision}
+          onConnections={() => selectTab('models')} {...lifecycle} />}
         {tab === 'resources' && <ResourceSettings client={client} store={store} {...lifecycle} />}
         {tab === 'windows' && <WindowSettings {...lifecycle} />}
         {tab === 'memory' && <MemorySettings client={client} store={store} initialScope={memoryScope} {...lifecycle} />}
         {tab === 'environments' && <ExecutionEnvironments client={client} store={store} {...lifecycle} />}
         {tab === 'appearance' && <AppearanceSettings />}
       </div>
-    </div></div><footer className="settings-footer flex-wrap"><span>{tab === 'appearance' ? '立即应用到主工作台、快捷小窗和报告' : tab === 'environments' ? '环境变更需重新检测，旧运行不会自动切换' : tab === 'memory' ? '记忆策略不代替模型发送授权' : '配置修改仅对新运行生效'}</span>{returnError && <span role="alert">{returnError}</span>}
+    </div></div><footer className="settings-footer flex-wrap"><span>{tab === 'appearance' ? '立即应用到主工作台、快捷小窗和报告' : tab === 'environments' ? '环境变更需重新检测，旧运行不会自动切换' : tab === 'retrieval' ? '保存后，已有项目继续使用当前配置' : tab === 'memory' ? '记忆策略不代替模型发送授权' : '配置修改仅对新运行生效'}</span>{returnError && <span role="alert">{returnError}</span>}
       {onReturnToMemory && <IconButton icon="back" label="返回记忆与成长" disabled={busy} onClick={() => guard(onReturnToMemory)} />}
       {onReturnToQuick && <IconButton icon="quick" label="返回快捷小窗" disabled={busy} onClick={() => guard(() => { setBusy(true); setReturnError(''); void onReturnToQuick().catch(() => setReturnError('返回快捷小窗失败，请重试')).finally(() => setBusy(false)); })} />}
       <Button disabled={busy} onClick={() => guard(() => onClose?.())}>完成</Button></footer>

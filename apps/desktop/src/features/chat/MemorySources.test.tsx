@@ -19,7 +19,7 @@ function server(queued = false, grants?: DataUseGrant[]) {
   const session = { id, version: 1, workspace_id: id, title: '记忆范围会话', agent_profile_id: id, kind: 'interaction', archived: false };
   const summary = { ...run, kind: 'follow_up', allow_follow_up: true };
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', '');
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', '');
     if (init.method === 'POST') { writes.push({ path, body: JSON.parse(String(init.body)) }); return Response.json(queued ? pendingUserCommand : run); }
     if (path === '/settings/memory' || path === '/memory/grants' || path === '/memory/records') memoryReads.push(parsed);
     if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(controller) { streams.push(controller); } }));
@@ -68,7 +68,7 @@ function server(queued = false, grants?: DataUseGrant[]) {
       })}\n\n`)); });
     } };
 }
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 async function openRunConfiguration(user: ReturnType<typeof userEvent.setup>, view: Pick<typeof screen, 'findByRole'> = screen) {
   await user.click(await view.findByRole('button', { name: '运行配置' }));
   return within(await screen.findByRole('dialog', { name: '运行配置' }));
@@ -96,7 +96,7 @@ it('文件撤权后重新读取项目规则时只接受无缓存的服务端有�
   let revoked = false;
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
     const parsed = new URL(url);
-    if (parsed.pathname === '/v3/memory/records' && parsed.searchParams.get('scope_kind') === 'workspace') {
+    if (parsed.pathname === '/v4/memory/records' && parsed.searchParams.get('scope_kind') === 'workspace') {
       requests.push({ url: parsed, cache: init?.cache });
       return Response.json(page(revoked && init?.cache === 'no-store' ? [projectInstruction] : [projectPreference, projectInstruction]));
     }
@@ -121,7 +121,7 @@ it('另一个记忆分组首读 503 就地重试，已选排除项和第一组�
   let failOther = true;
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
     const parsed = new URL(url);
-    if (parsed.pathname === '/v3/memory/records' && parsed.searchParams.get('scope_kind') === 'workspace') {
+    if (parsed.pathname === '/v4/memory/records' && parsed.searchParams.get('scope_kind') === 'workspace') {
       queries.push(parsed);
       if (parsed.searchParams.get('profile_rules') === 'true') return Response.json(page([projectPreference]));
       if (failOther) return Response.json({ error: { code: 'unavailable', safe_message: '记录暂时不可用', related_ids: [], retryable: true } }, { status: 503 });
@@ -151,7 +151,7 @@ function projectRecords(wait?: Promise<void>) {
     const parsed = new URL(url);
     if (parsed.pathname.includes('/memory/records')) {
       reads.push(parsed);
-      if (parsed.pathname === '/v3/memory/records' && parsed.searchParams.get('scope_kind') === 'workspace') {
+      if (parsed.pathname === '/v4/memory/records' && parsed.searchParams.get('scope_kind') === 'workspace') {
         await wait;
         if (parsed.searchParams.get('profile_rules') === 'true') {
           if (parsed.searchParams.get('cursor') === 'next-rules') return Response.json(page([projectInstruction]));
@@ -192,7 +192,7 @@ it.each([false, true])('默认项目规则可直接按条排除且发送不扩�
   expect(api.writes[0]).toMatchObject({ path: `/sessions/${id}/${queued ? 'commands' : 'runs'}`, body: { data: {
     sources: { memory_scopes: [], resource_ids: [], excluded_source_ids: [excluded.id] },
   } } });
-  expect(reads.map(url => url.pathname)).toEqual(['/v3/memory/records', '/v3/memory/records']);
+  expect(reads.map(url => url.pathname)).toEqual(['/v4/memory/records', '/v4/memory/records']);
 });
 
 it('默认规则记录加载期间仍能发送空显式范围', async () => {
@@ -217,7 +217,7 @@ it('默认规则记录加载期间仍能发送空显式范围', async () => {
 it('个人画像按主助理授权预览，可排除单条而不加入额外个人资料', async () => {
   const api = server(false, [memoryGrant]), user = userEvent.setup();
   const personalRecordQueries = () => api.memoryReads.filter(url =>
-    url.pathname === '/v3/memory/records' && url.searchParams.get('scope_kind') === 'user_global');
+    url.pathname === '/v4/memory/records' && url.searchParams.get('scope_kind') === 'user_global');
   render(<Conversation client={client()} />);
   await screen.findByRole('heading', { name: '记忆范围会话' });
   expect(api.memoryReads).toEqual([]);
@@ -256,7 +256,7 @@ it('主模型未获授权时，仍可为成员排除项目默认偏好', async (
   const dialog = await openRunConfiguration(user);
   await user.click(await dialog.findByText('本次排除单条记忆', { selector: 'summary' }));
   await user.click(await dialog.findByRole('checkbox', { name: `本次排除：${projectPreference.text}` }));
-  expect(projectAccessReads()).toEqual(['/v3/settings/memory']);
+  expect(projectAccessReads()).toEqual(['/v4/settings/memory']);
   expect(dialog.getByRole('checkbox', { name: '本次读取其他项目记忆', checked: false })).toBeTruthy();
 
   await user.click(dialog.getByRole('checkbox', { name: '本次读取其他项目记忆' }));
@@ -269,8 +269,8 @@ it('主模型未获授权时，仍可为成员排除项目默认偏好', async (
   expect(api.writes[0]).toMatchObject({ path: `/sessions/${id}/runs`, body: { data: {
     model_profile_id: model.id, sources: { memory_scopes: [], excluded_source_ids: [projectPreference.id] },
   } } });
-  expect(projectAccessReads()).toEqual(['/v3/settings/memory', '/v3/memory/grants']);
-  expect(reads.map(url => [url.pathname, url.searchParams.get('profile_rules')])).toEqual([['/v3/memory/records', 'true']]);
+  expect(projectAccessReads()).toEqual(['/v4/settings/memory', '/v4/memory/grants']);
+  expect(reads.map(url => [url.pathname, url.searchParams.get('profile_rules')])).toEqual([['/v4/memory/records', 'true']]);
 });
 
 it('项目读取关闭后隐藏默认规则，配置关闭时不会刷新预览', async () => {

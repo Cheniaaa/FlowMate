@@ -23,7 +23,7 @@ it('助理仅从真实启用目录选择允许Skill，保存ID上界不伪造版
     throw new Error(path);
   });
   const user = userEvent.setup();
-  render(<AssistantSettings manageMembers client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 })} />);
+  render(<AssistantSettings manageMembers client={new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 })} />);
   await user.click(await screen.findByRole('checkbox', { name: 'release-note · 个人' }));
   await user.click(screen.getByRole('button', { name: '保存助理' }));
   await waitFor(() => expect(writes).toHaveLength(1));
@@ -44,7 +44,7 @@ it('Skill失效刷新允许目录，但未保存的助理名字/勾选保留至�
     throw new Error(path);
   });
   const user = userEvent.setup();
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   const view = render(<AssistantsPage client={client} skillsRevision={0} onClose={() => {}} />);
   await user.click(await screen.findByRole('checkbox', { name: 'release-note · 项目' }));
   const name = screen.getByLabelText('显示名称');

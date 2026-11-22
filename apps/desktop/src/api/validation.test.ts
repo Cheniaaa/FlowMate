@@ -17,9 +17,9 @@ describe('真实生成 Schema 的边界校验', () => {
   });
   it('未知服务容量保留 null，本地预算独立，能力 false 与零单价不被改写', () => {
     expect(validate('ModelResolution', modelResolution)).toEqual(modelResolution);
-    expect(validate('RunSnapshot', run).config.model_profile).toMatchObject({
+    expect(validate('RunSnapshot', run).config).toMatchObject({ kind: 'agent', model_profile: {
       context_window_tokens: 8192, max_input_tokens: null, max_supported_output_tokens: null,
-    });
+    } });
     const command = { meta: { command_id: id }, data: { connection_id: connection.id, model_id: 'custom',
       context_window_tokens: null, capabilities: { vision: false }, pricing: { input_per_million: '0', output_per_million: '0' } } };
     expect(validate('SaveModelCommand', command)).toEqual(command);

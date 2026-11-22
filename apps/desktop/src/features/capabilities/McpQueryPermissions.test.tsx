@@ -42,7 +42,7 @@ it('已启用工具无需填写接收模型地址，历史查询许可可单独�
   expect(writes).toEqual([]);
   fireEvent.click(revoke);
   await waitFor(() => expect(screen.queryByRole('button', { name: '撤销公共查询许可' })).toBeNull());
-  expect(writes.map(write => write.path)).toEqual([`/v3/grants/${grant.id}/revoke`]);
+  expect(writes.map(write => write.path)).toEqual([`/v4/grants/${grant.id}/revoke`]);
 });
 
 it('撤销未成功时保留可重试的原许可', async () => {

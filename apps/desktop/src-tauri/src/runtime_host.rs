@@ -25,6 +25,10 @@ use windows_sys::Win32::{
 #[path = "t13_native_integration.rs"]
 mod t13_integration;
 
+#[cfg(test)]
+#[path = "t8_embedding_runner.rs"]
+mod embedding_runner;
+
 pub fn permitted_origin(origin: &str, development: bool) -> bool {
     origin == if development { "http://127.0.0.1:5173" } else { "http://tauri.localhost" }
 }
@@ -255,12 +259,38 @@ impl RuntimeHost {
             Arc::new(CredentialStore::default()), Some(runtime))
     }
 
-    fn start_command(directory: &Path, executable: &Path, mut command: Command,
+    fn start_command(directory: &Path, executable: &Path, command: Command,
         development: bool, credentials: Arc<CredentialStore>, runtime: Option<&DevelopmentRuntime>) -> Result<Self, String> {
+        let start = Instant::now();
+        let (mut host, receiver) = Self::launch_command(directory, executable, command, development, credentials, runtime)?;
+        let ready: Ready = serde_json::from_value(receiver.recv_timeout(Duration::from_secs(90))
+            .map_err(|_| if host.channel.is_closed() { "runtime_ready_failed" } else { "runtime_ready_timeout" })?)
+            .map_err(|_| "invalid_runtime_ready")?;
+        if !host.valid_identity(ready.pid, &ready.runtime_version, runtime) || ready.port == 0 {
+            return Err("invalid_runtime_identity".into());
+        }
+        host.connection.base_url = format!("http://127.0.0.1:{}", ready.port);
+        let origin = if development { "http://127.0.0.1:5173" } else { "http://tauri.localhost" };
+        host.log.write(json!({"event": "host_ready", "host_pid": std::process::id(),
+            "launcher_pid": host.child.id(), "runtime_pid": ready.pid,
+            "startup_ms": start.elapsed().as_millis(), "executable": executable,
+            "data_dir": directory, "allowed_origin": origin, "job_assigned_before_startup": true}));
+        Ok(host)
+    }
+
+    fn valid_identity(&self, pid: u32, version: &str, runtime: Option<&DevelopmentRuntime>) -> bool {
+        let valid_pid = if let Some(runtime) = runtime {
+            self.job.lock().unwrap().as_ref().is_some_and(|job| job.valid_development_pid(&self.child, pid, &runtime.interpreter))
+        } else { pid == self.child.id() };
+        valid_pid && !version.is_empty() && !self.channel.is_closed()
+    }
+
+    fn launch_command(directory: &Path, executable: &Path, mut command: Command,
+        development: bool, credentials: Arc<CredentialStore>, runtime: Option<&DevelopmentRuntime>)
+        -> Result<(Self, mpsc::Receiver<Value>), String> {
         std::fs::create_dir_all(directory).map_err(|_| "data_directory_failed")?;
         let lock = host_lock(directory).map_err(|_| "already_running")?;
         let log = Log::new(directory).map_err(|_| "log_failed")?;
-        let start = Instant::now();
         let job = Job::new().map_err(|_| "job_create_failed")?;
         let mut random = [0u8; 32];
         if unsafe { BCryptGenRandom(std::ptr::null_mut(), random.as_mut_ptr(), 32,
@@ -313,26 +343,12 @@ impl RuntimeHost {
                 }
             }),
             Arc::new(move || { job_on_close.lock().unwrap().take(); }));
-        let connection = Connection { base_url: String::new(), token: token.clone(), protocol_version: 3 };
+        let connection = Connection { base_url: String::new(), token: token.clone(), protocol_version: 4 };
         // 构造后任何启动失败都会走 Drop，既释放实例锁也终止整个 Job。
-        let mut host = Self { _lock: lock, job, child, channel, credentials, notifications, connection, log, stopped: false };
+        let host = Self { _lock: lock, job, child, channel, credentials, notifications, connection, log, stopped: false };
         host.channel.event("startup", json!({"token":token,"data_dir":directory.to_string_lossy(),
             "allowed_origins":[origin],"desktop_diagnostics":false}))?;
-        let ready: Ready = serde_json::from_value(receiver.recv_timeout(Duration::from_secs(90))
-            .map_err(|_| if host.channel.is_closed() { "runtime_ready_failed" } else { "runtime_ready_timeout" })?)
-            .map_err(|_| "invalid_runtime_ready")?;
-        let valid_pid = if let Some(runtime) = runtime {
-            host.job.lock().unwrap().as_ref().is_some_and(|job| job.valid_development_pid(&host.child, ready.pid, &runtime.interpreter))
-        } else { ready.pid == host.child.id() };
-        if !valid_pid || ready.port == 0 || ready.runtime_version.is_empty() || host.channel.is_closed() {
-            return Err("invalid_runtime_identity".into());
-        }
-        host.connection.base_url = format!("http://127.0.0.1:{}", ready.port);
-        host.log.write(json!({"event": "host_ready", "host_pid": std::process::id(),
-            "launcher_pid": host.child.id(), "runtime_pid": ready.pid,
-            "startup_ms": start.elapsed().as_millis(), "executable": executable,
-            "data_dir": directory, "allowed_origin": origin, "job_assigned_before_startup": true}));
-        Ok(host)
+        Ok((host, receiver))
     }
 
     pub fn supervise(&mut self) -> bool {
@@ -429,12 +445,12 @@ assert sys.argv[1:] == ['runtime', '--data-dir', startup['params']['data_dir']]
 assert os.path.samefile(os.getcwd(), os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 assert 'FLOWMATE_TEST_INHERITED' not in os.environ
 assert 'PATH' not in os.environ
-assert startup['protocol_version'] == 3 and startup['stream_seq'] == 1
-print(json.dumps(dict(protocol_version=3, stream_seq=1, request_id='fixture-counts', kind='event', method='notifications.changed', params=dict(pending_questions=2,pending_approvals=3,pending_actions=7,unviewed_results=4))), flush=True)
-print(json.dumps(dict(protocol_version=3, stream_seq=2, request_id='fixture-ready', kind='event', method='ready', params=dict(port=31417, pid=os.getpid(), runtime_version='fixture-1'))), flush=True)
+assert startup['protocol_version'] == 4 and startup['stream_seq'] == 1
+print(json.dumps(dict(protocol_version=4, stream_seq=1, request_id='fixture-counts', kind='event', method='notifications.changed', params=dict(pending_questions=2,pending_approvals=3,pending_actions=7,unviewed_results=4))), flush=True)
+print(json.dumps(dict(protocol_version=4, stream_seq=2, request_id='fixture-ready', kind='event', method='ready', params=dict(port=31417, pid=os.getpid(), runtime_version='fixture-1'))), flush=True)
 request = json.loads(sys.stdin.buffer.readline())
 assert request['kind'] == 'request' and request['method'] == 'shutdown'
-print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind='reply', method='shutdown', result=dict(stopping=True))), flush=True)
+print(json.dumps(dict(protocol_version=4, request_id=request['request_id'], kind='reply', method='shutdown', result=dict(stopping=True))), flush=True)
 "#).unwrap();
         let runtime = DevelopmentRuntime::new(root.join(".venv/Scripts/python.exe"), source.clone()).unwrap();
         let data = directory.join("data");
@@ -442,8 +458,8 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
         command.env("FLOWMATE_TEST_INHERITED", "public-test-marker");
         let mut host = RuntimeHost::start_command(&data, &runtime.python, command, true,
             Arc::new(crate::credentials::tests::store()), Some(&runtime)).unwrap();
-        assert_eq!(serde_json::to_value(&host.connection).unwrap()["protocol_version"], 3,
-            "WebView API and private channel now both declare v2");
+        assert_eq!(serde_json::to_value(&host.connection).unwrap()["protocol_version"], 4,
+            "WebView API 与私有 Channel 均须声明 v4");
         assert_eq!(host.notifications().lock().unwrap().counts(), Some(PendingCounts { pending_questions: 2, pending_approvals: 3, pending_actions: 7, unviewed_results: 4 }));
         assert!(host.supervise()); assert!(!host.supervise());
         let logs = std::fs::read_to_string(data.join("desktop-host.jsonl")).unwrap();
@@ -475,7 +491,7 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
         std::fs::create_dir_all(&app_data).unwrap();
         let legacy_database = app_data.join("flowmate.sqlite3");
         std::fs::write(&legacy_database, b"public-legacy-database-marker").unwrap();
-        let directory = app_data.join("data-v3");
+        let directory = app_data.join("data-v4");
         let mut host = RuntimeHost::start_development(&directory, &runtime, true).unwrap();
         let address = host.connection.base_url.strip_prefix("http://").unwrap();
         for (authorization, expected) in [
@@ -484,15 +500,15 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
         ] {
             let mut stream = TcpStream::connect(address).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            write!(stream, "GET /v3/health HTTP/1.1\r\nHost: {address}\r\nOrigin: http://127.0.0.1:5173\r\n{authorization}Connection: close\r\n\r\n").unwrap();
+            write!(stream, "GET /v4/health HTTP/1.1\r\nHost: {address}\r\nOrigin: http://127.0.0.1:5173\r\n{authorization}Connection: close\r\n\r\n").unwrap();
             let mut response = String::new();
             stream.read_to_string(&mut response).unwrap();
             assert!(response.starts_with(expected), "{response}");
             if expected == "HTTP/1.1 200" {
                 let body: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
                 assert!(body["runtime_version"].as_str().is_some_and(|version| !version.is_empty()));
-                assert_eq!(body["api_version"], 3);
-                assert_eq!(body["schema_version"], 3);
+                assert_eq!(body["api_version"], 4);
+                assert_eq!(body["schema_version"], 4);
             }
         }
         host.stop();
@@ -505,15 +521,15 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
     }
 
     #[test]
-    #[ignore = "requires the real .local/m2/runtime frozen runtime; explicit invocation fails if absent"]
+    #[ignore = "requires the real .local/m3/runtime frozen runtime; explicit invocation fails if absent"]
     fn packaged_runtime_start_serves_health_and_stops_real_frozen_exe() {
         use std::{io::Read, net::TcpStream};
         use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).unwrap();
-        let executable = root.join(".local/m2/runtime/flowmate-runtime/flowmate-runtime.exe");
+        let executable = root.join(".local/m3/runtime/flowmate-runtime/flowmate-runtime.exe");
         assert!(executable.is_file(), "real frozen runtime is required: {}", executable.display());
-        let directory = root.join(".local/m2/acceptance").join(format!("frozen-host-{}", uuid::Uuid::new_v4())).join("独立 数据");
+        let directory = root.join(".local/m3/acceptance").join(format!("frozen-host-{}", uuid::Uuid::new_v4())).join("独立 数据");
         println!("frozen runtime: {}; evidence: {}", executable.display(), directory.display());
         // 现有产物只证明CLI接缝，不作为本次修改后的来源同源/最终分发证据。
         let mut host = RuntimeHost::start(&directory, &executable, false).unwrap();
@@ -534,15 +550,15 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
         ] {
             let mut stream = TcpStream::connect(address).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            write!(stream, "GET /v3/health HTTP/1.1\r\nHost: {address}\r\nOrigin: http://tauri.localhost\r\n{authorization}Connection: close\r\n\r\n").unwrap();
+            write!(stream, "GET /v4/health HTTP/1.1\r\nHost: {address}\r\nOrigin: http://tauri.localhost\r\n{authorization}Connection: close\r\n\r\n").unwrap();
             let mut response = String::new();
             stream.read_to_string(&mut response).unwrap();
             assert!(response.starts_with(expected), "{response}");
             if expected == "HTTP/1.1 200" {
                 let body: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
                 assert!(body["runtime_version"].as_str().is_some_and(|version| !version.is_empty()));
-                assert_eq!(body["api_version"], 3);
-                assert_eq!(body["schema_version"], 3);
+                assert_eq!(body["api_version"], 4);
+                assert_eq!(body["schema_version"], 4);
             }
             health.push(response);
         }
@@ -579,9 +595,9 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
         let script = r#"
             $startup = [Console]::In.ReadLine() | ConvertFrom-Json
             $descendant = Start-Process -PassThru -WindowStyle Hidden -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 300'
-            [Console]::WriteLine((@{protocol_version=3;stream_seq=1;request_id='wrong-ready';kind='event';method='ready';params=@{port=31418;pid=$descendant.Id;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
+            [Console]::WriteLine((@{protocol_version=4;stream_seq=1;request_id='wrong-ready';kind='event';method='ready';params=@{port=31418;pid=$descendant.Id;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
             $shutdown = [Console]::In.ReadLine() | ConvertFrom-Json
-            [Console]::WriteLine((@{protocol_version=3;request_id=$shutdown.request_id;kind='reply';method='shutdown';result=@{stopping=$true}} | ConvertTo-Json -Depth 8 -Compress))
+            [Console]::WriteLine((@{protocol_version=4;request_id=$shutdown.request_id;kind='reply';method='shutdown';result=@{stopping=$true}} | ConvertTo-Json -Depth 8 -Compress))
         "#;
         let (directory, executable, command) = fixture(script);
         let error = RuntimeHost::start_command(&directory, &executable, command, true,
@@ -596,10 +612,10 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
         let script = r#"
             $ErrorActionPreference='Stop'
             $startup = [Console]::In.ReadLine() | ConvertFrom-Json
-            if ($startup.protocol_version -ne 3 -or $startup.stream_seq -ne 1 -or $startup.kind -ne 'event' -or $startup.method -ne 'startup' -or -not $startup.params.token) { exit 3 }
+            if ($startup.protocol_version -ne 4 -or $startup.stream_seq -ne 1 -or $startup.kind -ne 'event' -or $startup.method -ne 'startup' -or -not $startup.params.token) { exit 3 }
             $descendant = Start-Process -PassThru -WindowStyle Hidden -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 300'
             [IO.File]::WriteAllText((Join-Path $startup.params.data_dir 'fixture-descendant.pid'),[string]$descendant.Id)
-            [Console]::WriteLine((@{protocol_version=3;stream_seq=1;request_id='fixture-ready';kind='event';method='ready';params=@{port=31415;pid=$PID;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
+            [Console]::WriteLine((@{protocol_version=4;stream_seq=1;request_id='fixture-ready';kind='event';method='ready';params=@{port=31415;pid=$PID;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
             [Console]::In.ReadLine() | Out-Null
             exit 0
         "#;
@@ -640,10 +656,10 @@ print(json.dumps(dict(protocol_version=3, request_id=request['request_id'], kind
     fn stop_sends_shutdown_request_and_allows_reply_before_tree_close() {
         let script = r#"
             $startup = [Console]::In.ReadLine() | ConvertFrom-Json
-            [Console]::WriteLine((@{protocol_version=3;stream_seq=1;request_id='ready';kind='event';method='ready';params=@{port=31415;pid=$PID;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
+            [Console]::WriteLine((@{protocol_version=4;stream_seq=1;request_id='ready';kind='event';method='ready';params=@{port=31415;pid=$PID;runtime_version='fixture-1'}} | ConvertTo-Json -Depth 8 -Compress))
             $shutdown = [Console]::In.ReadLine() | ConvertFrom-Json
             if ($shutdown.kind -ne 'request' -or $shutdown.method -ne 'shutdown') { exit 4 }
-            [Console]::WriteLine((@{protocol_version=3;request_id=$shutdown.request_id;kind='reply';method='shutdown';result=@{stopping=$true}} | ConvertTo-Json -Depth 8 -Compress))
+            [Console]::WriteLine((@{protocol_version=4;request_id=$shutdown.request_id;kind='reply';method='shutdown';result=@{stopping=$true}} | ConvertTo-Json -Depth 8 -Compress))
             [Console]::Out.Flush()
             [IO.File]::WriteAllText((Join-Path $startup.params.data_dir 'shutdown-replied'),'true')
         "#;
@@ -682,7 +698,7 @@ from flowmate.contracts.base import DomainError
 async def main():
     startup = decode_frame(sys.stdin.buffer.readline(), 16*1024*1024)
     assert startup.method == 'startup'
-    assert startup.protocol_version == 3 and startup.stream_seq == 1
+    assert startup.protocol_version == 4 and startup.stream_seq == 1
     assert set(startup.params) == {'token','data_dir','allowed_origins','desktop_diagnostics'}
     assert startup.params['desktop_diagnostics'] is False
     binding = ModelSecretBinding.model_validate_json(binding_json)

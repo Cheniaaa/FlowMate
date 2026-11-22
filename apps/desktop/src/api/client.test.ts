@@ -3,7 +3,7 @@ import { ApiError, RuntimeClient } from './client';
 import { invoke } from '@tauri-apps/api/core';
 import { event, grant, id, page, publication, resource, run, secondId } from '../test/fixtures';
 
-const connection = { base_url: 'http://127.0.0.1:54321', token: 'public-test-token', protocol_version: 3 };
+const connection = { base_url: 'http://127.0.0.1:54321', token: 'public-test-token', protocol_version: 4 };
 const meta = { command_id: id, expected_version: null };
 const client = () => new RuntimeClient(connection);
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
@@ -25,11 +25,11 @@ describe('真实 HTTP wire 边界', () => {
     expect((await client().commandStatus(id, meta.command_id)).status).toBe('confirmed');
     await client().setWorkspaceDirectory(id, { meta, data: { resource_id: resource.id } });
     expect(requests).toEqual([
-      { url: `${connection.base_url}/v3/runs/${id}/export-recovery`, method: 'GET' },
-      { url: `${connection.base_url}/v3/export-recovery/${publication.id}/restore`, method: 'POST', body: meta },
-      { url: `${connection.base_url}/v3/export-recovery/${publication.id}/release`, method: 'POST', body: meta },
-      { url: `${connection.base_url}/v3/sessions/${id}/commands/${meta.command_id}`, method: 'GET' },
-      { url: `${connection.base_url}/v3/workspaces/${id}/directory`, method: 'PUT', body: { meta, data: { resource_id: resource.id } } },
+      { url: `${connection.base_url}/v4/runs/${id}/export-recovery`, method: 'GET' },
+      { url: `${connection.base_url}/v4/export-recovery/${publication.id}/restore`, method: 'POST', body: meta },
+      { url: `${connection.base_url}/v4/export-recovery/${publication.id}/release`, method: 'POST', body: meta },
+      { url: `${connection.base_url}/v4/sessions/${id}/commands/${meta.command_id}`, method: 'GET' },
+      { url: `${connection.base_url}/v4/workspaces/${id}/directory`, method: 'PUT', body: { meta, data: { resource_id: resource.id } } },
     ]);
   });
   it.each(['resources', 'grants'] as const)('%s keyset 查询保留 session 范围、全状态及 opaque cursor；省略 session 查询工作区全部', async kind => {
@@ -42,14 +42,14 @@ describe('真实 HTTP wire 边界', () => {
     expect((await client()[kind](id)).items).toEqual(items);
     expect((await client()[kind](id, { session_id: secondId, cursor: 'stale', limit: 7 })).next_cursor).toBe('fresh');
     expect(requests).toEqual([
-      { url: `${connection.base_url}/v3/workspaces/${id}/${kind}`, token: 'Bearer public-test-token' },
-      { url: `${connection.base_url}/v3/workspaces/${id}/${kind}?session_id=${secondId}&cursor=stale&limit=7`, token: 'Bearer public-test-token' },
+      { url: `${connection.base_url}/v4/workspaces/${id}/${kind}`, token: 'Bearer public-test-token' },
+      { url: `${connection.base_url}/v4/workspaces/${id}/${kind}?session_id=${secondId}&cursor=stale&limit=7`, token: 'Bearer public-test-token' },
     ]);
   });
-  it('WebView 握手只接受协议 2', async () => {
+  it('WebView 握手接受协议 4 并拒绝旧协议 3', async () => {
+    vi.mocked(invoke).mockResolvedValue({ ...connection, protocol_version: 4 });
+    expect((await RuntimeClient.connect()).connection.protocol_version).toBe(4);
     vi.mocked(invoke).mockResolvedValue({ ...connection, protocol_version: 3 });
-    expect((await RuntimeClient.connect()).connection.protocol_version).toBe(3);
-    vi.mocked(invoke).mockResolvedValue({ ...connection, protocol_version: 2 });
     await expect(RuntimeClient.connect()).rejects.toThrow('Runtime 协议版本不兼容');
   });
   it('连接列表、详情和保存使用 v2 独立契约，模型 keyset 分页保留连接筛选', async () => {
@@ -64,12 +64,12 @@ describe('真实 HTTP wire 边界', () => {
     await client().saveConnection(id, { meta, data: saved });
     await client().models({ connection_id: id, cursor: 'old', limit: 5 });
     expect(requests.map(value => value.url)).toEqual([
-      `${connection.base_url}/v3/model-connections`, `${connection.base_url}/v3/model-connections/${id}`,
-      `${connection.base_url}/v3/model-connections/${id}`, `${connection.base_url}/v3/models?connection_id=${id}&cursor=old&limit=5`,
+      `${connection.base_url}/v4/model-connections`, `${connection.base_url}/v4/model-connections/${id}`,
+      `${connection.base_url}/v4/model-connections/${id}`, `${connection.base_url}/v4/models?connection_id=${id}&cursor=old&limit=5`,
     ]);
     expect(requests[2].body).toEqual({ meta, data: saved });
   });
-  it('使用 /v3、Bearer 及生成命令 envelope，cancel 仅发送 CommandMeta 并返回权威 completed', async () => {
+  it('使用 /v4、Bearer 及生成命令 envelope，cancel 仅发送 CommandMeta 并返回权威 completed', async () => {
     const requests: { url: string; body: unknown; token: string | null }[] = [];
     vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
       requests.push({ url, body: JSON.parse(init.body as string), token: new Headers(init.headers).get('Authorization') });
@@ -79,8 +79,8 @@ describe('真实 HTTP wire 边界', () => {
     await client().startRun(id, command);
     expect(await client().cancel(id, { ...meta, expected_version: 1 })).toMatchObject({ state: 'completed' });
     expect(requests).toEqual([
-      { url: `${connection.base_url}/v3/sessions/${id}/runs`, body: command, token: 'Bearer public-test-token' },
-      { url: `${connection.base_url}/v3/runs/${id}/cancel`, body: { ...meta, expected_version: 1 }, token: 'Bearer public-test-token' },
+      { url: `${connection.base_url}/v4/sessions/${id}/runs`, body: command, token: 'Bearer public-test-token' },
+      { url: `${connection.base_url}/v4/runs/${id}/cancel`, body: { ...meta, expected_version: 1 }, token: 'Bearer public-test-token' },
     ]);
   });
   it('集合以 Page 校验，不接受数组或新增字段，并仅暴露安全错误信息', async () => {
@@ -110,10 +110,10 @@ describe('真实 HTTP wire 边界', () => {
     expect(result.state).toBe('waiting_approval');
     expect(result).not.toHaveProperty('content_hash');
     expect(requests.map(request => request.url)).toEqual([
-      `${connection.base_url}/v3/workspaces/${id}/runs?cursor=opaque-page&limit=10`,
-      `${connection.base_url}/v3/workspaces/${id}/approvals?cursor=opaque-page`,
-      `${connection.base_url}/v3/workspaces/${id}/questions?cursor=opaque-page`,
-      `${connection.base_url}/v3/artifacts/${id}/export`,
+      `${connection.base_url}/v4/workspaces/${id}/runs?cursor=opaque-page&limit=10`,
+      `${connection.base_url}/v4/workspaces/${id}/approvals?cursor=opaque-page`,
+      `${connection.base_url}/v4/workspaces/${id}/questions?cursor=opaque-page`,
+      `${connection.base_url}/v4/artifacts/${id}/export`,
     ]);
     expect(requests[3].body).toEqual({ meta: { ...meta, expected_version: 1 }, data: { target_ref: id } });
   });
@@ -183,8 +183,8 @@ describe('SSE 恢复', () => {
     }, abort.signal);
     expect(received).toEqual([snapshot, { kind: 'delta', activity_id: id, index: 0, text: 'temp' }, { kind: 'durable', event_id: event.event_id, event }]);
     expect(requests.map(value => value.url)).toEqual([
-      `${connection.base_url}/v3/workspaces/${id}/events?after=0`, `${connection.base_url}/v3/workspaces/${id}/snapshot`,
-      `${connection.base_url}/v3/workspaces/${id}/events?after=9007199254740993`,
+      `${connection.base_url}/v4/workspaces/${id}/events?after=0`, `${connection.base_url}/v4/workspaces/${id}/snapshot`,
+      `${connection.base_url}/v4/workspaces/${id}/events?after=9007199254740993`,
     ]);
     expect(requests.every(value => value.method === 'GET' && value.token === 'Bearer public-test-token')).toBe(true);
   });

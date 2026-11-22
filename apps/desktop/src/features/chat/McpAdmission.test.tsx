@@ -7,7 +7,7 @@ import { Conversation } from './Conversation';
 import { toast } from 'sonner';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => undefined) }));
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 const workspace = { id, version: 1, name: '等待项目', directory_resource_id: null };
 const session = { id, version: 1, workspace_id: id, title: '等待会话', agent_profile_id: id, kind: 'interaction', archived: false };
 const ready = { ...mcpView, state: 'connected', catalog: { server_id: mcpConfig.id, config_revision: 1,
@@ -47,7 +47,7 @@ function harness() {
   let views: unknown[] = [mcpView], mark = BigInt(event.event_id);
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const parsed = new URL(url), path = parsed.pathname.replace('/v3', '');
+    const parsed = new URL(url), path = parsed.pathname.replace('/v4', '');
     if (init.method === 'POST') {
       writes.push({ path, body: JSON.parse(init.body as string), search: parsed.search });
       if (path.endsWith('/discover')) return response;

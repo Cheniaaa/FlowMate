@@ -10,7 +10,7 @@ import Settings from './Settings';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
-const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 3 });
+const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'public-token', protocol_version: 4 });
 const discovered = {
   connection_id: connection.id, connection_version: 1, status: 'ready', cached: false,
   fetched_at: '2026-11-20T12:00:00Z', message: '已读取此连接的型号列表',

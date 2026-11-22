@@ -73,7 +73,7 @@ it('真实删除被拦截后自动打开保存回执，显式恢复/处置再删
   expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('删除失败时保留这条草稿');
   await deleteProject();
   await waitFor(async () => {
-    const response = await fetch(`${fixture.connection.base_url}/v3/workspaces/${fixture.workspace.id}/snapshot`, {
+    const response = await fetch(`${fixture.connection.base_url}/v4/workspaces/${fixture.workspace.id}/snapshot`, {
       headers: { Authorization: `Bearer ${fixture.connection.token}` },
     });
     expect(response.status).toBe(404);

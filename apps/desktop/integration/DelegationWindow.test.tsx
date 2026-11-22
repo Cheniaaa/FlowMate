@@ -75,7 +75,7 @@ it('两窗从原会话读取同一份双层委派报告，刷新成员进度保�
         throw new Error(`联合验收未定义的宿主 IPC：${command}`);
       });
       vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
-        if (!String(input).startsWith(setup.connection.base_url + '/v3/')) throw new Error(`禁止外部请求：${input}`);
+        if (!String(input).startsWith(setup.connection.base_url + '/v4/')) throw new Error(`禁止外部请求：${input}`);
         const entry: typeof requests[number] = { path: new URL(String(input)).pathname, method: init.method ?? 'GET' };
         requests.push(entry);
         const response = await nativeFetch(input, { ...init, headers: {
@@ -133,7 +133,7 @@ it('两窗从原会话读取同一份双层委派报告，刷新成员进度保�
         const panel = within(dialog);
         await panel.findByRole('region', { name: '任务图' });
         writeFileSync(resolve(setup.directory, `${label}-progress.html`), dialog.outerHTML);
-        const tracePath = `/v3/runs/${run.id}/trace`;
+        const tracePath = `/v4/runs/${run.id}/trace`;
         const previous = completedGets(tracePath);
         await user.click(panel.getByRole('button', { name: '查看 Trace' }));
         const trace = within(await panel.findByRole('region', { name: '公开事件' }));
@@ -151,7 +151,7 @@ it('两窗从原会话读取同一份双层委派报告，刷新成员进度保�
         await user.click(await detail.findByRole('button', { name: '成员泳道' }));
         const lanes = await detail.findByRole('region', { name: '成员泳道' });
         await within(lanes).findByRole('heading', { name: setup.leaf });
-        const lanesPath = `/v3/runs/${run.id}/member-lanes`;
+        const lanesPath = `/v4/runs/${run.id}/member-lanes`;
         const previous = completedGets(lanesPath);
         await user.click(detail.getByRole('button', { name: '刷新详情' }));
         await waitFor(() => expect(completedGets(lanesPath)).toBeGreaterThan(previous));
@@ -214,7 +214,7 @@ it('两窗从原会话读取同一份双层委派报告，刷新成员进度保�
         [{ kind: 'text', text: `核验报告\n左侧：${markers.left}\n右侧：${markers.right}` }],
       ]);
       expect(requests.filter(entry => entry.method === 'POST')).toEqual([
-        { method: 'POST', path: `/v3/sessions/${setup.session_id}/runs`, status: 202 },
+        { method: 'POST', path: `/v4/sessions/${setup.session_id}/runs`, status: 202 },
       ]);
     } finally {
       for (const observer of observers) observer.disconnect();

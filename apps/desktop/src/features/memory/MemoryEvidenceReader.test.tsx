@@ -9,7 +9,7 @@ import { memory } from '../../test/memory-fixtures';
 import MemoryEvidenceReader from './MemoryEvidenceReader';
 
 afterEach(() => vi.unstubAllGlobals());
-const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+const client = () => new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
 const items: MemoryEvidencePage['items'] = memory.evidence.map(evidence => ({ evidence, available: true, reason: null }));
 const quote = '真实用户原话：<script>这是一段数据，不执行。</script>';
 function excerpt(record: MemoryRecord = memory, text = quote): MemoryEvidenceExcerpt {

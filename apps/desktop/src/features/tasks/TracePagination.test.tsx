@@ -46,13 +46,13 @@ function server(readTrace: (runId: string, cursor: string | null) => TracePage |
   });
   vi.mocked(listen).mockImplementation(async (name, callback) => { callbacks.set(name, callback); return () => {}; });
   vi.mocked(invoke).mockImplementation(async name => {
-    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'synthetic-trace', protocol_version: 3 };
+    if (name === 'runtime_connection') return { base_url: 'http://127.0.0.1:54321', token: 'synthetic-trace', protocol_version: 4 };
     if (name === 'take_workbench_navigation') { const value = navigation; navigation = null; return value; }
     if (name === 'take_settings_navigation' || name === 'pending_counts') return null;
     throw new Error(`未定义合成 IPC ${name}`);
   });
   vi.stubGlobal('fetch', async (input: string) => {
-    const url = new URL(input), path = url.pathname.replace('/v3', '');
+    const url = new URL(input), path = url.pathname.replace('/v4', '');
     const trace = path.match(/^\/runs\/([^/]+)\/trace$/);
     if (trace) {
       const cursor = url.searchParams.get('cursor'); requests.push({ runId: trace[1], cursor });

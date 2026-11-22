@@ -11,7 +11,7 @@ import TaskDetail from './TaskDetail';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 it('独立任务详情负责预算、范围、原始Trace，写命令核对绑定真实归属不改当前会话', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   vi.spyOn(client, 'run').mockResolvedValue({ ...runDetailSummary, run: { ...run, kind: 'managed', workspace_id: secondId, interaction_session_id: secondId },
     tasks: page([]), activities: page([]), artifacts: page([]), messages: page([]), questions: page([]), approvals: page([]), waits: page([]), consumptions: page([]), joins: page([]),
     budget: { id, run_id: id, version: 1, limits, steps: 1, model_requests: 1, task_count: 1, total_tokens: 0, reserved_tokens: 0, spent_units: '0', reserved_units: '0' }, watermark: '9007199254740993' });
@@ -40,8 +40,67 @@ const detail: RunDetail = { ...runDetailSummary, run: { ...run, kind: 'managed',
   tasks: page([]), activities: page([]), artifacts: page([]), messages: page([]), questions: page([]), approvals: page([]), waits: page([]), consumptions: page([]), joins: page([]),
   budget: { id, run_id: id, version: 1, limits, steps: 1, model_requests: 1, task_count: 1, total_tokens: 0, reserved_tokens: 0, spent_units: '0', reserved_units: '0' }, watermark: event.event_id };
 
+it('任务中心所选成员结果将准确Citation交给当前Run项目的受控阅读回调', async () => {
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 }), open = vi.fn();
+  const lane: MemberLane = { profile: { ...binding.config.agent_profile, display_name: '引用成员' },
+    activities: [], handoffs: [], task: { id: secondId, run_id: id, version: 2, kind: 'agent',
+      executor_id: 'builtin.agent', parent_task_id: id, origin_task_id: id, created_seq: 2, state: 'completed',
+      result_version: 1, reason: null, deadline_at: null, binding: { ...binding, agent_work: { kind: 'agent',
+        profile_id: id, goal: '核对资料', input_refs: [], output_schema: {}, success_criteria: [] } } } };
+  vi.stubGlobal('fetch', async (url: string) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/events')) return new Response(new ReadableStream());
+    if (path.endsWith('/member-lanes')) return Response.json([lane]);
+    if (path.endsWith('/results')) return Response.json(page([]));
+    if (path.endsWith(`/tasks/${secondId}/result`)) return Response.json({
+      handle: { task_id: secondId, run_id: id, lifetime: 'run_bound', submitted_state: 'completed' }, result_version: 1,
+      state: 'completed', artifacts: [], dependencies: [], error: null,
+      result: { status: 'completed', summary: '成员结论[1]。', citations: [{ marker: 1, evidence_id: secondId }],
+        artifact_ids: [], evidence_refs: [], structured_result: null, unresolved: [], verification: [], handled_failures: [] },
+    });
+    if (path.endsWith(`/runs/${id}`)) return Response.json(detail);
+    throw Error(path);
+  });
+  render(<TaskDetail client={client} store={createRuntimeStore(client)} runId={id} onOpenEvidence={open}
+    onCommand={vi.fn()} onQuestion={vi.fn()} onOpen={vi.fn()} />);
+  await userEvent.click(await screen.findByRole('button', { name: '成员泳道' }));
+  await userEvent.click(await screen.findByRole('button', { name: '查看引用成员的任务' }));
+  await userEvent.click(await screen.findByRole('button', { name: '查看引用 1' }));
+  expect(open).toHaveBeenCalledExactlyOnceWith(detail.run.workspace_id, secondId);
+});
+
+it('真实 SSE 无正文 accounting.settled 刷新可见 RunDetail 晚费用，不相关 Run 不重读', async () => {
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
+  let stream!: ReadableStreamDefaultController<Uint8Array>, settled = false, reads = 0;
+  vi.stubGlobal('fetch', async (url: string) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/events')) return new Response(new ReadableStream({ start(value) { stream = value; } }));
+    if (path.endsWith(`/runs/${id}`)) {
+      reads++;
+      return Response.json({ ...detail, watermark: (BigInt(event.event_id) + (settled ? 2n : 0n)).toString(),
+        cost_summary: { ...detail.cost_summary, calculated_units: settled ? '2500000000' : '0' } });
+    }
+    if (path.endsWith('/results')) return Response.json(page([]));
+    throw new Error(`未定义 ${path}`);
+  });
+  render(<TaskDetail client={client} store={createRuntimeStore(client)} runId={id}
+    onCommand={vi.fn()} onQuestion={vi.fn()} onOpen={vi.fn()} />);
+  await screen.findByLabelText('运行预算');
+  await waitFor(() => expect(stream).toBeDefined());
+  const notice = (runId: string, step: bigint) => ({ kind: 'durable',
+    event_id: (BigInt(event.event_id) + step).toString(), event: { ...event, kind: 'accounting.settled',
+      event_id: (BigInt(event.event_id) + step).toString(), workspace_id: null, session_id: null, run_id: runId,
+      payload: { scopes: [], deletions: [] } } });
+  await act(async () => { stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(notice(secondId, 1n))}\n\n`)); });
+  expect(reads).toBe(1);
+  settled = true;
+  await act(async () => { stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(notice(id, 2n))}\n\n`)); });
+  await screen.findByText('费用 $2.5 · 按用量计算');
+  expect(reads).toBe(2);
+});
+
 it('任务列表选择具名脚本步骤，从固定输出路径预览其 artifact ID', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   const activityId = '00000000-0000-4000-8000-000000000015';
   const artifact: ArtifactRef = { id: '00000000-0000-4000-8000-000000000020', version: 1, task_id: secondId, activity_id: activityId,
     content_hash: 'b'.repeat(64), media_type: 'text/plain', dependencies: [] };
@@ -71,7 +130,7 @@ it('任务列表选择具名脚本步骤，从固定输出路径预览其 artifa
 });
 
 it('真实view命令/SSE交叠保留同身份ResultInbox挂载，命令后正文可见且用户页签选择保留', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   const store = createRuntimeStore(client);
   const postStarted = barrier<void>(), postReply = barrier<void>(), refreshStarted = barrier<void>(), refreshReply = barrier<void>();
   let stream!: ReadableStreamDefaultController<Uint8Array>;
@@ -81,7 +140,7 @@ it('真实view命令/SSE交叠保留同身份ResultInbox挂载，命令后正文
   const position = (BigInt(event.event_id) + 1n).toString();
   const viewed = { ...delivered, version: 4, viewed_at: '2026-11-17T01:00:00Z' };
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }));
     if (path === `/results/${delivered.id}/view`) { postStarted.resolve(); await postReply.promise; return Response.json(viewed); }
     if (path === `/sessions/${id}/results`) return Response.json({ ...page([reads > 1 ? viewed : delivered]), watermark: reads > 1 ? position : event.event_id });
@@ -114,7 +173,7 @@ it('真实view命令/SSE交叠保留同身份ResultInbox挂载，命令后正文
 });
 
 it.each(['run', 'client'] as const)('%s身份切换在layout提交前隔离旧详情/选择，旧查询迟到不能重现', async change => {
-  const first = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'one', protocol_version: 3 });
+  const first = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'one', protocol_version: 4 });
   const second = new RuntimeClient({ ...first.connection, token: 'two' });
   const nextReply = barrier<RunDetail>();
   const oldReply = barrier<RunDetail>();
@@ -149,7 +208,7 @@ it.each(['run', 'client'] as const)('%s身份切换在layout提交前隔离旧�
 });
 
 it.each(['scope.revoked', 'scope.deleted'] as const)('%s保持详情外壳但清除来源正文；迟到结果/产物响应和旧分页不重现', async kind => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   const store = createRuntimeStore(client);
   const resultStarted = barrier<void>(), resultReply = barrier<void>(), artifactStarted = barrier<void>(), artifactReply = barrier<void>();
   const refreshStarted = barrier<void>(), refreshReply = barrier<void>(), pageStarted = barrier<void>(), pageReply = barrier<void>();
@@ -159,7 +218,7 @@ it.each(['scope.revoked', 'scope.deleted'] as const)('%s保持详情外壳但清
   let stream!: ReadableStreamDefaultController<Uint8Array>;
   const position = (BigInt(event.event_id) + 1n).toString();
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }));
     if (path === `/sessions/${id}/results`) return Response.json(page([delivered]));
     if (path === `/tasks/${secondId}/result`) {
@@ -204,14 +263,14 @@ it.each(['scope.revoked', 'scope.deleted'] as const)('%s保持详情外壳但清
 });
 
 it.each(['shared', 'detail'] as const)('双真实SSE订阅%s先处理；同delivery迟到重放不清预览，新同version消费/来源事实仍生效', async first => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:54321', token: 'test', protocol_version: 4 });
   const store = createRuntimeStore(client), sharedAbort = new AbortController();
   const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
   const sharedHandled = barrier<void>(), postStarted = barrier<void>(), postReply = barrier<void>();
   const runQuery = vi.spyOn(client, 'run');
   let entry = delivered, watermark = event.event_id, resultCalls = 0, viewCalls = 0;
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-    const path = new URL(url).pathname.replace('/v3', '');
+    const path = new URL(url).pathname.replace('/v4', '');
     if (path.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(controller) { controllers.push(controller); } }));
     if (path === `/workspaces/${id}/snapshot`) return Response.json({
       workspace: { id, version: 1, name: '双订阅项目', directory_resource_id: null },
@@ -292,7 +351,7 @@ it.each(['shared', 'detail'] as const)('双真实SSE订阅%s先处理；同deliv
 });
 
 it('任务详情泳道查询随真实成员事件刷新，固定两成员/工具归属/部分结果；来源失效隔离迟到正文', async () => {
-  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 3 });
+  const client = new RuntimeClient({ base_url: 'http://127.0.0.1:1', token: 'test', protocol_version: 4 });
   const store = createRuntimeStore(client);
   let handlers!: StreamHandlers;
   const child: MemberLane = { profile: { ...binding.config.agent_profile, display_name: '研究成员' }, handoffs: [], activities: [],
@@ -304,7 +363,7 @@ it('任务详情泳道查询随真实成员事件刷新，固定两成员/工具
   let bodyReply!: (value: Response) => void;
   vi.spyOn(client, 'watchWorkspace').mockImplementation(async (_id, _after, value) => { handlers = value; });
   vi.stubGlobal('fetch', async (url: string) => {
-    const path = new URL(url).pathname.replace('/v3', ''); requests.push(path);
+    const path = new URL(url).pathname.replace('/v4', ''); requests.push(path);
     if (path.endsWith('/member-lanes')) return Response.json(lanes);
     if (path.endsWith('/results')) return Response.json(page([]));
     if (path.endsWith('/result')) return new Promise<Response>(resolve => { bodyReply = resolve; });

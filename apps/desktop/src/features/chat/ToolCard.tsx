@@ -1,4 +1,5 @@
-import type { ModelMessage } from '../../generated/contracts';
+import type { KnowledgeResult, ModelMessage } from '../../generated/contracts';
+import { KnowledgeResult as validKnowledgeResult } from '../../generated/validators.js';
 import { knownOperationLabel } from '../tasks/operation-label';
 import Markdown from '../../components/Markdown';
 import { Button } from '../../components/ui/button';
@@ -24,9 +25,44 @@ const internalArguments = new Map([
   ['task.await', ['handle']], ['task.status', ['handle']], ['task.result', ['handle']],
   ['task.cancel', ['handle', 'expected_version']],
 ]);
+const knowledgeLabels: Record<string, string> = {
+  'knowledge.search': '检索项目资料', 'knowledge.read': '读取项目资料', 'knowledge.list_sources': '查看项目资料',
+};
+
+export function knowledgeResult(value: unknown): KnowledgeResult | undefined {
+  return validKnowledgeResult(value) ? value : undefined;
+}
+
+function KnowledgeContent({ value, onOpenEvidence }: { value: unknown; onOpenEvidence?: (id: string) => void }) {
+  const result = knowledgeResult(value);
+  if (!result) return <p>结果无法读取，请查看任务诊断。</p>;
+  const sources = new Map(result.sources.map(source => [source.id, source]));
+  return <>
+    {result.status === 'partial' && <p>部分检索未完成{result.mode === 'bm25' ? '，已使用关键词结果。' : '，可按现有资料继续。'}</p>}
+    {result.status === 'error' && <p>本次资料操作未完成，可调整问题后重试。</p>}
+    {result.evidence.map(item => {
+      const source = sources.get(item.source_id);
+      const historical = source && (source.status === 'removed'
+        || source.active_version !== null && source.active_version !== item.source_version);
+      const lines = item.locator.start_line === item.locator.end_line ? `${item.locator.start_line} 行`
+        : `${item.locator.start_line}–${item.locator.end_line} 行`;
+      return <section key={item.id} className="flex flex-col gap-2" aria-label="检索片段">
+        <div className="flex flex-wrap items-center gap-2"><strong>{source?.label ?? '项目资料'}</strong>
+          <span className="text-muted-foreground">{lines}{historical && ' · 历史原文'}</span>
+          {onOpenEvidence && <Button size="sm" variant="ghost" aria-label={`打开 ${source?.label ?? '原文'}`}
+            onClick={() => onOpenEvidence(item.id)}>打开</Button>}
+        </div>
+        <p className="whitespace-pre-wrap wrap-anywhere">{item.excerpt}</p>
+      </section>;
+    })}
+    {result.evidence.length === 0 && (result.sources.length
+      ? <ul>{result.sources.map(source => <li key={source.id}>{source.label}</li>)}</ul>
+      : result.status !== 'error' && <p>未找到相关资料。</p>)}
+  </>;
+}
 
 export function toolLabel(name: string, label?: string) {
-  return label ?? knownOperationLabel(name) ?? (name.startsWith('mcp.') ? 'MCP 工具调用' : name);
+  return label ?? knowledgeLabels[name] ?? knownOperationLabel(name) ?? (name.startsWith('mcp.') ? 'MCP 工具调用' : name);
 }
 
 function ToolContent({ value, client, operation, isMcp }: { value: unknown; client?: RuntimeClient; operation?: string; isMcp: boolean }) {
@@ -51,17 +87,19 @@ function ToolContent({ value, client, operation, isMcp }: { value: unknown; clie
   }
   return <pre>{JSON.stringify(value, null, 2)}</pre>;
 }
-export default function ToolCard({ part, results = [], showArguments = true, label, client, sourceOperation, openReceipt, deliveryArtifacts }: {
+export default function ToolCard({ part, results = [], showArguments = true, label, client, sourceOperation, openReceipt, deliveryArtifacts, onOpenEvidence }: {
   part: Extract<ModelMessage['parts'][number], { kind: 'tool_call' | 'tool_result' }>; results?: ToolResult[]; showArguments?: boolean;
   label?: string;
   client?: RuntimeClient;
   sourceOperation?: string;
   openReceipt?: (result: ToolResult, id: string) => void;
   deliveryArtifacts?: ReadonlySet<string>;
+  onOpenEvidence?: (id: string) => void;
 }) {
   const returned = part.kind === 'tool_result' ? [part] : results;
   const operation = part.kind === 'tool_call' ? part.name : sourceOperation;
   const mcp = operation?.startsWith('mcp.');
+  const knowledge = operation !== undefined && Object.hasOwn(knowledgeLabels, operation);
   const canShowRequery = mcp || operation === undefined;
   const failed = returned.some(result => result.error !== null);
   const uncertain = returned.some(result => result.error === 'mcp_call_uncertain');
@@ -70,8 +108,8 @@ export default function ToolCard({ part, results = [], showArguments = true, lab
     ? `原查询结果未确认 · 另发查询${uncertain ? '结果未确认' : failed ? '未完成' : '已返回'}`
     : uncertain ? '结果未确认' : failed ? '未完成' : '已返回';
   const title = part.kind === 'tool_call' ? (
-    label || knownOperationLabel(part.name) || part.name.startsWith('mcp.') ? toolLabel(part.name, label) : <code>{part.name}</code>
-  ) : part.origin_message_id === null ? '工具结果 · 无来源关联' : '工具结果 · 源调用未加载';
+    label || knowledge || knownOperationLabel(part.name) || part.name.startsWith('mcp.') ? toolLabel(part.name, label) : <code>{part.name}</code>
+  ) : knowledge ? toolLabel(operation!) : part.origin_message_id === null ? '工具结果 · 无来源关联' : '工具结果 · 源调用未加载';
   const input = part.kind === 'tool_call' && showArguments ? part.arguments : null;
   const hidden = operation ? internalArguments.get(operation) : undefined;
   const argumentsForDisplay = input && typeof input === 'object' && !Array.isArray(input)
@@ -81,7 +119,8 @@ export default function ToolCard({ part, results = [], showArguments = true, lab
     : argumentsForDisplay && Object.keys(argumentsForDisplay).length > 0;
   return <details className="tool-card"><summary><span>{title}</span>{' · '}
     <span className={`tool-state${failed ? ' tool-state--failed' : ''}`}>{state}</span></summary>
-    {hasArguments && <><p>调用参数</p><pre>{typeof argumentsForDisplay === 'string'
+    {knowledge ? input && typeof input === 'object' && !Array.isArray(input) && typeof input.query === 'string'
+      && <p>{input.query}</p> : hasArguments && <><p>调用参数</p><pre>{typeof argumentsForDisplay === 'string'
       ? argumentsForDisplay : JSON.stringify(argumentsForDisplay, null, 2)}</pre></>}
     {returned.map((result, index) => {
       const retry = canShowRequery && isRequery(result.result) ? result.result : null;
@@ -105,8 +144,9 @@ export default function ToolCard({ part, results = [], showArguments = true, lab
       }) : [];
       return <div className="tool-result" key={index}>
         {retry && <p>原查询未收到结果。下方记录属于另发查询。</p>}
-        {result.error !== null && <SkillExecutionNotice error={result.error} />}
-        {noContent ? null : receipt && !('texts' in receipt) ? ('preview' in receipt && typeof receipt.preview === 'string' && <pre>{receipt.preview}</pre>)
+        {result.error !== null && !knowledge && <SkillExecutionNotice error={result.error} />}
+        {knowledge ? <KnowledgeContent value={value} onOpenEvidence={onOpenEvidence} />
+          : noContent ? null : receipt && !('texts' in receipt) ? ('preview' in receipt && typeof receipt.preview === 'string' && <pre>{receipt.preview}</pre>)
           : <ToolContent value={value} client={client} operation={operation} isMcp={!!(mcp || retry)} />}
         {openReceipt && links.map(({ id, text }) =>
           <Button key={id} type="button" size="sm" variant="outline" onClick={() => openReceipt(result, id)}>{text}</Button>)}

@@ -26,7 +26,11 @@ AGENTS.md
 /docs/
 /evals/
 /experiments/
-/scripts/
+/scripts/*
+!/scripts/build_sidecar.py
+!/scripts/export_contracts.py
+!/scripts/runtime.spec
+!/scripts/runtime_entry.py
 /tests/
 .planning/
 .superpowers/
